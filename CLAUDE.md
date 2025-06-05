@@ -1,4 +1,8 @@
-# NAMU: High-Performance Rust Pipeline Engine
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
 
 NAMU is a high-performance Rust pipeline engine built as a multi-crate workspace. The project follows a distributed architecture with distinct components for different pipeline responsibilities.
 
