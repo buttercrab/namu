@@ -27,12 +27,12 @@ pub enum Node {
 }
 
 #[derive(Clone)]
-pub struct TraceNode<T> {
+pub struct TraceValue<T> {
     pub node: Arc<Node>,
     _phantom: PhantomData<T>,
 }
 
-impl<T> TraceNode<T> {
+impl<T> TraceValue<T> {
     pub fn graph_string(&self) -> String {
         let mut assignments = HashMap::<*const Node, String>::new();
         let mut lines = Vec::<String>::new();
@@ -141,8 +141,8 @@ impl<T> TraceNode<T> {
     }
 }
 
-pub fn new_call<T>(name: &'static str, func: Executable, parents: Vec<Arc<Node>>) -> TraceNode<T> {
-    TraceNode {
+pub fn new_call<T>(name: &'static str, func: Executable, parents: Vec<Arc<Node>>) -> TraceValue<T> {
+    TraceValue {
         node: Arc::new(Node::Call {
             name,
             func,
@@ -152,9 +152,9 @@ pub fn new_call<T>(name: &'static str, func: Executable, parents: Vec<Arc<Node>>
     }
 }
 
-pub fn new_literal<T: Debug + Send + Sync + 'static>(value: T) -> TraceNode<T> {
+pub fn new_literal<T: Debug + Send + Sync + 'static>(value: T) -> TraceValue<T> {
     let debug_repr = format!("{:?}", value);
-    TraceNode {
+    TraceValue {
         node: Arc::new(Node::Literal {
             value: Arc::new(value),
             debug_repr,
@@ -164,11 +164,11 @@ pub fn new_literal<T: Debug + Send + Sync + 'static>(value: T) -> TraceNode<T> {
 }
 
 pub fn graph_if<T: Clone + Send + Sync + Debug + 'static>(
-    cond: TraceNode<bool>,
-    then_branch: TraceNode<T>,
-    else_branch: TraceNode<T>,
-) -> TraceNode<T> {
-    TraceNode {
+    cond: TraceValue<bool>,
+    then_branch: TraceValue<T>,
+    else_branch: TraceValue<T>,
+) -> TraceValue<T> {
+    TraceValue {
         node: Arc::new(Node::If {
             cond: cond.node,
             then_branch: then_branch.node,

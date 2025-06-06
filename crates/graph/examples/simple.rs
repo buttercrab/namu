@@ -1,4 +1,4 @@
-use graph::{trace, TraceNode};
+use graph::{trace, TraceValue};
 
 #[trace]
 fn add(a: i32, b: i32) -> i32 {
@@ -15,7 +15,7 @@ fn two() -> i32 {
     2
 }
 
-fn workflow() -> TraceNode<i32> {
+fn workflow() -> TraceValue<i32> {
     let a = one();
     let b = two();
     let c = add(a, b);

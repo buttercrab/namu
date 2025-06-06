@@ -1,4 +1,4 @@
-use graph::{graph_if, trace, TraceNode};
+use graph::{graph_if, trace, TraceValue};
 
 #[trace]
 fn get_true() -> bool {
@@ -25,7 +25,7 @@ fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 
-fn conditional_workflow(condition: bool) -> TraceNode<i32> {
+fn conditional_workflow(condition: bool) -> TraceValue<i32> {
     let cond = if condition { get_true() } else { get_false() };
     let ten = get_ten();
     let twenty = get_twenty();

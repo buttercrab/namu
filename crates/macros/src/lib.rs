@@ -90,16 +90,16 @@ pub fn trace(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 let ty = &pat_type.ty;
                 if let Type::Path(type_path) = &**ty {
                     if let Some(segment) = type_path.path.segments.last() {
-                        if segment.ident != "TraceNode" {
+                        if segment.ident != "TraceValue" {
                             pat_type.ty = Box::new(
-                                syn::parse_str(&quote! { graph::TraceNode<#ty> }.to_string())
+                                syn::parse_str(&quote! { graph::TraceValue<#ty> }.to_string())
                                     .unwrap(),
                             );
                         }
                     }
                 } else {
                     pat_type.ty = Box::new(
-                        syn::parse_str(&quote! { graph::TraceNode<#ty> }.to_string()).unwrap(),
+                        syn::parse_str(&quote! { graph::TraceValue<#ty> }.to_string()).unwrap(),
                     );
                 }
 
@@ -112,7 +112,8 @@ pub fn trace(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     input_fn.sig.output =
-        syn::parse_str(&quote! { -> graph::TraceNode<#original_return_type> }.to_string()).unwrap();
+        syn::parse_str(&quote! { -> graph::TraceValue<#original_return_type> }.to_string())
+            .unwrap();
 
     let sig = &input_fn.sig;
 

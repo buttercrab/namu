@@ -1,4 +1,4 @@
-use graph::{new_literal, trace, workflow, TraceNode};
+use graph::{new_literal, trace, workflow, TraceValue};
 
 #[trace]
 fn is_positive(v: i32) -> bool {
@@ -16,7 +16,7 @@ fn identity(v: i32) -> i32 {
 }
 
 #[workflow]
-fn my_workflow(input: TraceNode<i32>) -> TraceNode<i32> {
+fn my_workflow(input: TraceValue<i32>) -> TraceValue<i32> {
     if is_positive(input.clone()) {
         double(input.clone())
     } else {
