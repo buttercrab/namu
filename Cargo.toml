@@ -1,2 +1,14 @@
 [workspace]
-members = ["crates/cli", "crates/graph", "crates/macros", "crates/master", "crates/task", "crates/worker"]
+resolver = "1"
+members = [
+  "crates/cli",
+  "crates/graph",
+  "crates/macros",
+  "crates/master",
+  "crates/task",
+  "crates/worker"
+]
+exclude = [
+  "tasks/*",
+  "pipelines/*",
+]
