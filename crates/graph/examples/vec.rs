@@ -1,29 +1,35 @@
-use graph::{trace, workflow, TraceValue};
+use graph::{task, workflow};
 
-#[trace]
+#[task]
 fn range() -> Vec<i32> {
     (0..10).collect()
 }
 
-#[trace]
+#[task]
 fn double(x: i32) -> i32 {
     x * 2
 }
 
-#[trace]
+#[task]
 fn is_even(x: i32) -> bool {
     x % 2 == 0
 }
 
 #[workflow]
-fn workflow() -> TraceValue<Vec<i32>> {
+fn workflow() -> graph::TracedValue<Vec<i32>> {
     let xs = range();
 
-    if is_even(xs) {
-        double(xs)
-    } else {
-        xs
-    }
+    if is_even(xs) { double(xs) } else { xs }
 }
 
-fn main() {}
+fn main() {
+    let graph = workflow();
+    let graph_str = graph.graph_string();
+    println!("{}", graph_str);
+    let result = graph.run::<Vec<i32>>();
+    println!("Result: {:?}", result);
+    let expected: Vec<i32> = (0..10)
+        .map(|x| if x % 2 == 0 { x * 2 } else { x })
+        .collect();
+    assert_eq!(result, expected);
+}

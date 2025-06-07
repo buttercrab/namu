@@ -1,2 +1,10 @@
 [workspace]
-members = ["crates/cli", "crates/graph", "crates/macros", "crates/master", "crates/task", "crates/worker"]
+members = [
+    "crates/cli",
+    "crates/graph",
+    "crates/macros",
+    "crates/master",
+    "crates/task",
+    "crates/worker",
+]
+resolver = "3"

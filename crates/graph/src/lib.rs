@@ -1,179 +1,338 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-pub use macros::{trace, workflow};
+pub use macros::{task, workflow};
+
+// --- Core Data Structures ---
 
 pub type Value = Arc<dyn Any + Send + Sync>;
 pub type Executable = Arc<dyn Fn(Vec<Value>) -> Value + Send + Sync>;
 
-pub enum Node {
+pub type NodeId = usize;
+pub type BlockId = usize;
+
+#[derive(Default)]
+pub struct Arena {
+    pub nodes: Vec<Node>,
+}
+
+impl Arena {
+    pub fn new_node(&mut self, kind: NodeKind) -> NodeId {
+        let id = self.nodes.len();
+
+        let inputs = match &kind {
+            NodeKind::Call { inputs, .. } => inputs.clone(),
+            _ => Vec::new(),
+        };
+
+        self.nodes.push(Node {
+            kind,
+            outputs: Vec::new(),
+        });
+
+        for &input_id in &inputs {
+            self.nodes[input_id].outputs.push(id);
+        }
+
+        id
+    }
+}
+
+pub enum NodeKind {
     Call {
         name: &'static str,
         func: Executable,
-        parents: Vec<Arc<Node>>,
+        inputs: Vec<NodeId>,
     },
     Literal {
         value: Value,
         debug_repr: String,
     },
-    If {
-        cond: Arc<Node>,
-        then_branch: Arc<Node>,
-        else_branch: Arc<Node>,
+    Phi {
+        from: Vec<(BlockId, NodeId)>,
     },
 }
 
-#[derive(Clone)]
-pub struct TraceValue<T> {
-    pub node: Arc<Node>,
+pub struct Node {
+    pub kind: NodeKind,
+    pub outputs: Vec<NodeId>,
+}
+
+pub enum Terminator {
+    Jump {
+        target: BlockId,
+    },
+    Branch {
+        condition: NodeId,
+        true_target: BlockId,
+        false_target: BlockId,
+    },
+    Return {
+        value: NodeId,
+    },
+}
+
+#[derive(Default)]
+pub struct BasicBlock {
+    pub instructions: Vec<NodeId>,
+    pub terminator: Option<Terminator>,
+}
+
+#[derive(Copy, Clone)]
+pub struct TracedValue<T> {
+    pub id: NodeId,
     _phantom: PhantomData<T>,
 }
 
-impl<T> TraceValue<T> {
-    pub fn graph_string(&self) -> String {
-        let mut assignments = HashMap::<*const Node, String>::new();
-        let mut lines = Vec::<String>::new();
-        let mut counter = 0;
-        let final_var =
-            self.to_pseudocode_recursive(&self.node, &mut assignments, &mut lines, &mut counter);
+impl<T> TracedValue<T> {
+    pub fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            _phantom: PhantomData,
+        }
+    }
+}
 
-        lines.push(format!("\n// Result: {}", final_var));
-        lines.join("\n")
+pub struct Graph {
+    pub arena: Arena,
+    pub blocks: Vec<BasicBlock>,
+}
+
+// --- Graph API ---
+
+impl Graph {
+    pub fn new(arena: Arena, blocks: Vec<BasicBlock>) -> Self {
+        Self { arena, blocks }
     }
 
-    fn to_pseudocode_recursive(
-        &self,
-        node_arc: &Arc<Node>,
-        assignments: &mut HashMap<*const Node, String>,
-        lines: &mut Vec<String>,
-        counter: &mut usize,
-    ) -> String {
-        let node_ptr = Arc::as_ptr(node_arc);
-        if let Some(var_name) = assignments.get(&node_ptr) {
-            return var_name.clone();
+    pub fn run<T: Clone + 'static>(&self) -> T {
+        let mut results = HashMap::<NodeId, Value>::new();
+        let mut queue: VecDeque<(BlockId, BlockId)> = VecDeque::new(); // (current_block_id, prev_block_id)
+
+        if !self.blocks.is_empty() {
+            queue.push_back((0, 0)); // Start at block 0, prev is dummy 0
         }
 
-        let current_var_name = format!("var{}", *counter);
-        *counter += 1;
+        let mut executed_blocks = HashSet::new();
 
-        assignments.insert(node_ptr, current_var_name.clone());
-
-        let line = match &**node_arc {
-            Node::Literal { debug_repr, .. } => {
-                format!("let {} = {};", current_var_name, debug_repr)
+        while let Some((block_id, prev_block_id)) = queue.pop_front() {
+            if executed_blocks.contains(&block_id) {
+                continue;
             }
-            Node::Call { name, parents, .. } => {
-                let parent_vars: Vec<String> = parents
-                    .iter()
-                    .map(|p| self.to_pseudocode_recursive(p, assignments, lines, counter))
-                    .collect();
-                format!(
-                    "let {} = {}({});",
-                    current_var_name,
-                    name,
-                    parent_vars.join(", ")
-                )
-            }
-            Node::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                let cond_var = self.to_pseudocode_recursive(cond, assignments, lines, counter);
-                let then_var =
-                    self.to_pseudocode_recursive(then_branch, assignments, lines, counter);
-                let else_var =
-                    self.to_pseudocode_recursive(else_branch, assignments, lines, counter);
-                format!(
-                    "let {} = if {} then {} else {};",
-                    current_var_name, cond_var, then_var, else_var
-                )
-            }
-        };
+            executed_blocks.insert(block_id);
 
-        lines.push(line);
-        current_var_name
-    }
+            let block = &self.blocks[block_id];
 
-    pub fn run(&self) -> T
-    where
-        T: Clone + 'static,
-    {
-        let mut results = HashMap::<*const Node, Value>::new();
-        let final_value = self.run_node(&self.node, &mut results);
-        final_value.downcast_ref::<T>().unwrap().clone()
-    }
+            // 1. Execute Phi nodes
+            for &node_id in &block.instructions {
+                if let NodeKind::Phi { from } = &self.arena.nodes[node_id].kind {
+                    let (_, value_node_id) = from
+                        .iter()
+                        .find(|(from_block_id, _)| *from_block_id == prev_block_id)
+                        .expect(
+                            "Invalid CFG: Phi node does not have an entry for predecessor block.",
+                        );
 
-    fn run_node(&self, node_arc: &Arc<Node>, results: &mut HashMap<*const Node, Value>) -> Value {
-        let node_ptr = Arc::as_ptr(node_arc);
-        if let Some(value) = results.get(&node_ptr) {
-            return value.clone();
-        }
-
-        let value = match &**node_arc {
-            Node::Literal { value, .. } => value.clone(),
-            Node::Call { func, parents, .. } => {
-                let inputs = parents
-                    .iter()
-                    .map(|p| self.run_node(p, results))
-                    .collect::<Vec<_>>();
-                func(inputs)
-            }
-            Node::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                let cond_result = self.run_node(cond, results);
-                if *cond_result.downcast_ref::<bool>().unwrap() {
-                    self.run_node(then_branch, results)
-                } else {
-                    self.run_node(else_branch, results)
+                    if let Some(value) = results.get(value_node_id) {
+                        results.insert(node_id, value.clone());
+                    }
                 }
             }
-        };
 
-        results.insert(node_ptr, value.clone());
-        value
+            // 2. Execute other instructions
+            for &node_id in &block.instructions {
+                if results.contains_key(&node_id) {
+                    continue; // Skip phis
+                }
+                let node = &self.arena.nodes[node_id];
+                let value = match &node.kind {
+                    NodeKind::Literal { value, .. } => value.clone(),
+                    NodeKind::Call { func, inputs, .. } => {
+                        let input_values = inputs
+                            .iter()
+                            .map(|&input_id| results[&input_id].clone())
+                            .collect::<Vec<_>>();
+                        func(input_values)
+                    }
+                    NodeKind::Phi { .. } => unreachable!(), // Handled above
+                };
+                results.insert(node_id, value);
+            }
+
+            // 3. Follow terminator
+            if let Some(terminator) = &block.terminator {
+                match terminator {
+                    Terminator::Jump { target } => {
+                        queue.push_back((*target, block_id));
+                    }
+                    Terminator::Branch {
+                        condition,
+                        true_target,
+                        false_target,
+                    } => {
+                        let cond_value = results[condition].downcast_ref::<bool>().unwrap();
+                        if *cond_value {
+                            queue.push_back((*true_target, block_id));
+                        } else {
+                            queue.push_back((*false_target, block_id));
+                        }
+                    }
+                    Terminator::Return { value } => {
+                        let final_value = results.get(value).unwrap();
+                        return final_value.downcast_ref::<T>().unwrap().clone();
+                    }
+                }
+            }
+        }
+
+        // Handle case for empty graph returning unit `()`
+        if self.blocks.is_empty() {
+            let unit_val: Value = Arc::new(());
+            if let Some(ret) = unit_val.downcast_ref::<T>() {
+                return ret.clone();
+            }
+        }
+
+        panic!("Workflow did not return a value");
+    }
+
+    pub fn graph_string(&self) -> String {
+        let mut s = String::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            s.push_str(&format!("Block {}:\n", i));
+            for &node_id in &block.instructions {
+                let node = &self.arena.nodes[node_id];
+                let line = match &node.kind {
+                    NodeKind::Literal { debug_repr, .. } => {
+                        format!("  let var{} = {};\n", node_id, debug_repr)
+                    }
+                    NodeKind::Call { name, inputs, .. } => {
+                        let parent_vars: Vec<String> =
+                            inputs.iter().map(|p| format!("var{}", p)).collect();
+                        format!(
+                            "  let var{} = {}({});\n",
+                            node_id,
+                            name,
+                            parent_vars.join(", ")
+                        )
+                    }
+                    NodeKind::Phi { from } => {
+                        let from_str: Vec<String> = from
+                            .iter()
+                            .map(|(b, v)| format!("[block {}, var{}]", b, v))
+                            .collect();
+                        format!("  let var{} = phi({});\n", node_id, from_str.join(", "))
+                    }
+                };
+                s.push_str(&line);
+            }
+
+            if let Some(terminator) = &block.terminator {
+                let term_str = match terminator {
+                    Terminator::Jump { target } => format!("  jump -> Block {}", target),
+                    Terminator::Branch {
+                        condition,
+                        true_target,
+                        false_target,
+                    } => format!(
+                        "  branch var{} ? Block {} : Block {}",
+                        condition, true_target, false_target
+                    ),
+                    Terminator::Return { value } => format!("  return var{}", value),
+                };
+                s.push_str(&term_str);
+                s.push('\n');
+            }
+        }
+        s
     }
 }
 
-pub fn new_call<T>(name: &'static str, func: Executable, parents: Vec<Arc<Node>>) -> TraceValue<T> {
-    TraceValue {
-        node: Arc::new(Node::Call {
+// --- Node Creation ---
+
+thread_local! {
+    pub static THREAD_LOCAL_BUILDER: std::cell::RefCell<Option<Builder>> = std::cell::RefCell::new(None);
+}
+
+pub fn new_call<T>(
+    name: &'static str,
+    func: Executable,
+    inputs: Vec<TracedValue<T>>,
+) -> TracedValue<T> {
+    THREAD_LOCAL_BUILDER.with(|builder_opt| {
+        let mut builder = builder_opt.borrow_mut();
+        let builder = builder
+            .as_mut()
+            .expect("A task function can only be called inside a workflow");
+
+        let input_ids = inputs.iter().map(|v| v.id).collect();
+        let kind = NodeKind::Call {
             name,
             func,
-            parents,
-        }),
-        _phantom: PhantomData,
-    }
+            inputs: input_ids,
+        };
+        let id = builder.add_instruction(kind);
+        TracedValue::new(id)
+    })
 }
 
-pub fn new_literal<T: Debug + Send + Sync + 'static>(value: T) -> TraceValue<T> {
-    let debug_repr = format!("{:?}", value);
-    TraceValue {
-        node: Arc::new(Node::Literal {
+pub fn new_literal<T: Debug + Send + Sync + 'static>(value: T) -> TracedValue<T> {
+    THREAD_LOCAL_BUILDER.with(|builder_opt| {
+        let mut builder = builder_opt.borrow_mut();
+        let builder = builder
+            .as_mut()
+            .expect("A literal can only be created inside a workflow");
+
+        let debug_repr = format!("{:?}", value);
+        let kind = NodeKind::Literal {
             value: Arc::new(value),
             debug_repr,
-        }),
-        _phantom: PhantomData,
-    }
+        };
+        let id = builder.add_instruction(kind);
+        TracedValue::new(id)
+    })
 }
 
-pub fn graph_if<T: Clone + Send + Sync + Debug + 'static>(
-    cond: TraceValue<bool>,
-    then_branch: TraceValue<T>,
-    else_branch: TraceValue<T>,
-) -> TraceValue<T> {
-    TraceValue {
-        node: Arc::new(Node::If {
-            cond: cond.node,
-            then_branch: then_branch.node,
-            else_branch: else_branch.node,
-        }),
-        _phantom: PhantomData,
+#[derive(Default)]
+pub struct Builder {
+    pub arena: Arena,
+    pub blocks: Vec<BasicBlock>,
+    pub current_block_id: BlockId,
+}
+
+impl Builder {
+    pub fn new() -> Self {
+        let mut builder = Self::default();
+        builder.blocks.push(BasicBlock::default());
+        builder
+    }
+
+    pub fn add_instruction(&mut self, kind: NodeKind) -> NodeId {
+        let node_id = self.arena.new_node(kind);
+        self.blocks[self.current_block_id]
+            .instructions
+            .push(node_id);
+        node_id
+    }
+
+    pub fn seal_block(&mut self, terminator: Terminator) {
+        self.blocks[self.current_block_id].terminator = Some(terminator);
+    }
+
+    pub fn new_block(&mut self) -> BlockId {
+        let block_id = self.blocks.len();
+        self.blocks.push(BasicBlock::default());
+        block_id
+    }
+
+    pub fn switch_to_block(&mut self, block_id: BlockId) {
+        self.current_block_id = block_id;
+    }
+
+    pub fn build(self) -> Graph {
+        Graph::new(self.arena, self.blocks)
     }
 }

@@ -2,160 +2,323 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
+use syn::visit_mut::{self, VisitMut};
 use syn::{
-    parse_macro_input,
-    visit_mut::{self, VisitMut},
-    Expr, FnArg, Ident, ItemFn, Pat, ReturnType, Type,
+    Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input, parse_quote,
 };
 
 #[proc_macro_attribute]
-pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input_fn = parse_macro_input!(item as ItemFn);
+pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let func_impl_name = format_ident!("__impl_{}", func_name);
 
-    struct WorkflowVisitor;
-    impl VisitMut for WorkflowVisitor {
-        fn visit_expr_mut(&mut self, expr: &mut Expr) {
-            // Recurse first to transform nested expressions
-            visit_mut::visit_expr_mut(self, expr);
+    let original_func_renamed = {
+        let mut f = func.clone();
+        f.sig.ident = func_impl_name.clone();
+        quote! {
+            #[allow(clippy::all)]
+            #f
+        }
+    };
 
-            if let Expr::If(if_expr) = expr {
-                let cond = &if_expr.cond;
-                let then_branch = &if_expr.then_branch;
+    let mut constructor_sig = func.sig.clone();
+    let mut arg_names = Vec::new();
+    let mut arg_types = Vec::new();
 
-                if let Some((_, else_branch)) = &if_expr.else_branch {
-                    let new_code = quote! {
-                        graph::graph_if(#cond, #then_branch, #else_branch)
-                    };
+    constructor_sig.inputs.clear();
+    for arg in func.sig.inputs.iter() {
+        if let syn::FnArg::Typed(pt) = arg {
+            let pat_ident = if let Pat::Ident(pi) = &*pt.pat {
+                pi
+            } else {
+                panic!("Only simple idents are supported in task arguments");
+            };
+            arg_names.push(pat_ident.ident.clone());
 
-                    if let Ok(new_expr) = syn::parse2(new_code.clone()) {
-                        *expr = new_expr;
-                    } else {
-                        let error = syn::Error::new_spanned(
-                            &mut *expr,
-                            format!(
-                                "Failed to transform 'if' expression. Generated code was: {}",
-                                new_code
-                            ),
-                        );
-                        *expr = syn::parse2(error.to_compile_error()).unwrap();
-                    }
-                }
-            }
+            let name = &pt.pat;
+            let ty = &pt.ty;
+            arg_types.push(ty.clone());
+            constructor_sig
+                .inputs
+                .push(parse_quote! { #name: graph::TracedValue<#ty> });
         }
     }
 
-    let mut visitor = WorkflowVisitor;
-    visitor.visit_block_mut(&mut input_fn.block);
+    let return_type = match &func.sig.output {
+        ReturnType::Type(_, ty) => quote! { #ty },
+        ReturnType::Default => quote! { () },
+    };
+    constructor_sig.output = parse_quote! { -> graph::TracedValue<#return_type> };
 
-    TokenStream::from(quote! { #input_fn })
+    let value_downcasts = arg_names.iter().enumerate().map(|(i, name)| {
+        let ty = &arg_types[i];
+        quote! {
+            let #name = __inputs[#i].downcast_ref::<#ty>().unwrap().clone();
+        }
+    });
+
+    let input_ids = arg_names.iter().map(|name| quote! { #name.id });
+
+    let constructor = quote! {
+        #[allow(non_snake_case)]
+        pub #constructor_sig {
+            let func: graph::Executable = std::sync::Arc::new(|__inputs| {
+                #(#value_downcasts)*
+                let result = #func_impl_name(#(#arg_names),*);
+                std::sync::Arc::new(result) as graph::Value
+            });
+
+            graph::THREAD_LOCAL_BUILDER.with(|builder_opt| {
+                let mut builder = builder_opt.borrow_mut();
+                let builder = builder.as_mut().expect("A task function can only be called inside a workflow");
+
+                let kind = graph::NodeKind::Call {
+                    name: stringify!(#func_name),
+                    func,
+                    inputs: vec![#(#input_ids),*],
+                };
+                let id = builder.add_instruction(kind);
+                graph::TracedValue::new(id)
+            })
+        }
+    };
+
+    quote! {
+        #original_func_renamed
+        #constructor
+    }
+    .into()
+}
+
+struct SsaBuilder {
+    scopes: Vec<std::collections::HashMap<Ident, (Ident, bool)>>, // name -> (ssa_name, is_mutable)
+    next_var_id: usize,
+    return_type: proc_macro2::TokenStream,
+}
+
+impl SsaBuilder {
+    fn new(return_type: proc_macro2::TokenStream) -> Self {
+        Self {
+            scopes: vec![Default::default()],
+            next_var_id: 0,
+            return_type,
+        }
+    }
+
+    fn new_ssa_name(&mut self, name: &Ident) -> Ident {
+        let id = self.next_var_id;
+        self.next_var_id += 1;
+        format_ident!("__ssa_{}_{}", name, id)
+    }
+
+    fn enter_scope(&mut self) {
+        self.scopes.push(Default::default());
+    }
+
+    fn exit_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn get_var(&self, name: &Ident) -> Option<(Ident, bool)> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(var_info) = scope.get(name) {
+                return Some(var_info.clone());
+            }
+        }
+        None
+    }
+
+    fn insert_var(&mut self, name: Ident, ssa_name: Ident, is_mutable: bool) {
+        self.scopes
+            .last_mut()
+            .unwrap()
+            .insert(name, (ssa_name, is_mutable));
+    }
+}
+
+impl VisitMut for SsaBuilder {
+    fn visit_block_mut(&mut self, i: &mut Block) {
+        self.enter_scope();
+        let num_stmts = i.stmts.len();
+        for (idx, stmt) in i.stmts.iter_mut().enumerate() {
+            if idx == num_stmts - 1 {
+                if let Stmt::Expr(expr, semi) = stmt {
+                    if semi.is_none() {
+                        self.visit_expr_mut(expr);
+                        continue;
+                    }
+                }
+            }
+            self.visit_stmt_mut(stmt);
+        }
+        self.exit_scope();
+    }
+
+    fn visit_expr_mut(&mut self, i: &mut Expr) {
+        match i {
+            Expr::If(if_expr) => {
+                // Manually visit children first
+                self.visit_expr_mut(&mut if_expr.cond);
+                self.visit_block_mut(&mut if_expr.then_branch);
+                if let Some((_, else_expr)) = &mut if_expr.else_branch {
+                    self.visit_expr_mut(else_expr);
+                }
+
+                // Now that children are rewritten, rewrite the if itself.
+                *i = self.rewrite_if(if_expr);
+                return; // Prevent default visit_mut recursion
+            }
+            Expr::Path(path) => {
+                if let Some(ident) = path.path.get_ident() {
+                    if let Some((ssa_var, _)) = self.get_var(ident) {
+                        *i = parse_quote! { #ssa_var };
+                    }
+                }
+            }
+            _ => {}
+        }
+        visit_mut::visit_expr_mut(self, i);
+    }
+
+    fn visit_stmt_mut(&mut self, i: &mut Stmt) {
+        if let Stmt::Local(local) = i {
+            let pat_ident = if let Pat::Ident(pi) = &local.pat {
+                pi
+            } else {
+                panic!("Only simple idents are supported in let bindings");
+            };
+
+            let name = pat_ident.ident.clone();
+            let ssa_name = self.new_ssa_name(&name);
+            let is_mutable = pat_ident.mutability.is_some();
+
+            self.insert_var(name, ssa_name.clone(), is_mutable);
+
+            if let Some(init) = &local.init {
+                let mut init_clone = init.expr.clone();
+                self.visit_expr_mut(&mut init_clone);
+
+                *i = parse_quote! {
+                    let #ssa_name = #init_clone;
+                };
+            } else {
+                panic!("Let bindings must be initialized");
+            }
+            return;
+        }
+        visit_mut::visit_stmt_mut(self, i);
+    }
+}
+
+impl SsaBuilder {
+    fn rewrite_if(&mut self, if_expr: &ExprIf) -> Expr {
+        let cond = if_expr.cond.clone();
+        let then_branch = if_expr.then_branch.clone();
+        let else_branch = if let Some((_, else_expr)) = &if_expr.else_branch {
+            quote! { {#else_expr} }
+        } else {
+            quote! { graph::new_literal(()) }
+        };
+
+        let return_type = &self.return_type;
+        let new_expr = quote! {
+            {
+                let result: graph::TracedValue<#return_type> = {
+                    let cond_val = #cond;
+
+                    let (then_block_id, else_block_id, merge_block_id) =
+                        graph::THREAD_LOCAL_BUILDER.with(|builder_cell| {
+                            let mut builder = builder_cell.borrow_mut();
+                            let builder = builder.as_mut().unwrap();
+
+                            let then_block_id = builder.new_block();
+                            let else_block_id = builder.new_block();
+                            let merge_block_id = builder.new_block();
+
+                            builder.seal_block(graph::Terminator::Branch {
+                                condition: cond_val.id,
+                                true_target: then_block_id,
+                                false_target: else_block_id,
+                            });
+
+                            (then_block_id, else_block_id, merge_block_id)
+                        });
+
+                    graph::THREAD_LOCAL_BUILDER.with(|builder_cell| {
+                        builder_cell
+                            .borrow_mut()
+                            .as_mut()
+                            .unwrap()
+                            .switch_to_block(then_block_id);
+                    });
+
+                    let then_val = #then_branch;
+
+                    graph::THREAD_LOCAL_BUILDER.with(|builder_cell| {
+                        let mut builder = builder_cell.borrow_mut();
+                        let builder = builder.as_mut().unwrap();
+                        builder.seal_block(graph::Terminator::Jump {
+                            target: merge_block_id,
+                        });
+                        builder.switch_to_block(else_block_id);
+                    });
+
+                    let else_val = #else_branch;
+
+                    graph::THREAD_LOCAL_BUILDER.with(|builder_cell| {
+                        let mut builder = builder_cell.borrow_mut();
+                        let builder = builder.as_mut().unwrap();
+
+                        builder.seal_block(graph::Terminator::Jump {
+                            target: merge_block_id,
+                        });
+                        builder.switch_to_block(merge_block_id);
+
+                        let kind = graph::NodeKind::Phi {
+                            from: vec![(then_block_id, then_val.id), (else_block_id, else_val.id)],
+                        };
+                        let id = builder.add_instruction(kind);
+                        graph::TracedValue::new(id)
+                    })
+                };
+                result
+            }
+        };
+
+        parse_quote! { #new_expr }
+    }
 }
 
 #[proc_macro_attribute]
-pub fn trace(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut input_fn = parse_macro_input!(item as ItemFn);
-    let original_fn = input_fn.clone();
-    let original_fn_name = &original_fn.sig.ident;
-    let new_original_fn_name = format_ident!("__trace_original_{}", original_fn_name);
+pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let mut func_body = func.block.clone();
 
-    let mut renamed_fn = original_fn.clone();
-    renamed_fn.sig.ident = new_original_fn_name.clone();
-
-    let fn_name = &input_fn.sig.ident;
-    let fn_name_str = fn_name.to_string();
-    let visibility = &input_fn.vis;
-
-    let original_return_type = match &input_fn.sig.output {
-        ReturnType::Default => quote! { () },
+    let return_type = match &func.sig.output {
         ReturnType::Type(_, ty) => quote! { #ty },
+        ReturnType::Default => quote! { () },
     };
 
-    let arg_types: Vec<Box<Type>> = input_fn
-        .sig
-        .inputs
-        .iter()
-        .map(|arg| {
-            if let FnArg::Typed(pat_type) = arg {
-                return pat_type.ty.clone();
-            }
-            panic!("Unsupported argument pattern");
-        })
-        .collect();
-
-    let arg_names: Vec<Ident> = input_fn
-        .sig
-        .inputs
-        .iter_mut()
-        .map(|arg| {
-            if let FnArg::Typed(pat_type) = arg {
-                let ty = &pat_type.ty;
-                if let Type::Path(type_path) = &**ty {
-                    if let Some(segment) = type_path.path.segments.last() {
-                        if segment.ident != "TraceValue" {
-                            pat_type.ty = Box::new(
-                                syn::parse_str(&quote! { graph::TraceValue<#ty> }.to_string())
-                                    .unwrap(),
-                            );
-                        }
-                    }
-                } else {
-                    pat_type.ty = Box::new(
-                        syn::parse_str(&quote! { graph::TraceValue<#ty> }.to_string()).unwrap(),
-                    );
-                }
-
-                if let Pat::Ident(pat_ident) = &*pat_type.pat {
-                    return pat_ident.ident.clone();
-                }
-            }
-            panic!("Unsupported argument pattern");
-        })
-        .collect();
-
-    input_fn.sig.output =
-        syn::parse_str(&quote! { -> graph::TraceValue<#original_return_type> }.to_string())
-            .unwrap();
-
-    let sig = &input_fn.sig;
-
-    let downcast_args = arg_types.iter().enumerate().map(|(i, ty)| {
-        let arg_name = format_ident!("arg_{}", i);
-        quote! {
-            let #arg_name = inputs[#i].downcast_ref::<#ty>().unwrap();
-        }
-    });
-
-    let arg_passing = arg_names.iter().enumerate().map(|(i, _)| {
-        let arg_name = format_ident!("arg_{}", i);
-        quote! { *#arg_name }
-    });
-
-    let wrapper_body = if arg_names.is_empty() {
-        quote! {
-            let func = std::sync::Arc::new(|_inputs: Vec<graph::Value>| {
-                let result = #new_original_fn_name();
-                std::sync::Arc::new(result) as graph::Value
-            });
-            graph::new_call(#fn_name_str, func, vec![])
-        }
-    } else {
-        quote! {
-            let func = std::sync::Arc::new(|inputs: Vec<graph::Value>| {
-                #(#downcast_args)*
-                let result = #new_original_fn_name(#(#arg_passing),*);
-                std::sync::Arc::new(result) as graph::Value
-            });
-
-            let parents = vec![#(#arg_names.node),*];
-
-            graph::new_call(#fn_name_str, func, parents)
-        }
-    };
+    SsaBuilder::new(return_type.clone()).visit_block_mut(&mut func_body);
 
     let expanded = quote! {
-        #renamed_fn
+        pub fn #func_name() -> graph::Graph {
+            let builder = graph::Builder::new();
+            graph::THREAD_LOCAL_BUILDER.with(|cell| {
+                *cell.borrow_mut() = Some(builder);
+            });
 
-        #visibility #sig {
-            #wrapper_body
+            let result_val: graph::TracedValue<#return_type> = #func_body;
+
+            let final_graph = graph::THREAD_LOCAL_BUILDER.with(|cell| {
+                let mut builder = cell.borrow_mut().take().unwrap();
+                builder.seal_block(graph::Terminator::Return { value: result_val.id });
+                builder.build()
+            });
+
+            final_graph
         }
     };
 

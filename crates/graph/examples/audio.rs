@@ -1,4 +1,4 @@
-use graph::{trace, workflow, TraceValue};
+use graph::{TracedValue, task, workflow};
 
 #[derive(Debug, Clone)]
 struct Audio {
@@ -6,7 +6,7 @@ struct Audio {
     sample_rate: u32,
 }
 
-#[trace]
+#[task]
 fn load_audios() -> Vec<Audio> {
     vec![
         Audio {
@@ -20,64 +20,67 @@ fn load_audios() -> Vec<Audio> {
     ]
 }
 
-#[trace]
+#[task]
 fn remove_bgm(audio: Audio) -> Vec<Audio> {
     vec![audio]
 }
 
-#[trace]
+#[task]
 fn detect_vad(audio: Audio) -> Vec<Audio> {
     vec![audio]
 }
 
-#[trace]
+#[task]
 fn detect_language(audio: Audio) -> String {
     "en".to_string()
 }
 
-#[trace]
-fn translate(audio: Audio, language: String) -> String {
+#[task]
+fn translate(audio: Audio) -> String {
     "blah blah".to_string()
 }
 
-#[trace]
+#[task]
 fn audio_length(audio: Audio) -> f32 {
     1.0
 }
 
-#[trace]
-fn cut_audio(audio: Audio, transcipt: String) -> (Audio, Audio) {
+#[task]
+fn cut_audio(audio: Audio, transcript: String) -> (Audio, Audio) {
     (audio.clone(), audio)
 }
 
-#[trace]
+#[task]
 fn save_audio(audio: Audio) {
     println!("Saving audio: {:?}", audio);
 }
 
-#[trace]
-fn compare_language(language: String) -> bool {
-    language == "en"
+#[task]
+fn is_not_english(language: String) -> bool {
+    language != "en"
+}
+
+#[task]
+fn is_long_audio(audio: Audio) -> bool {
+    audio_length(audio) > 10.0
 }
 
 #[workflow]
-fn workflow() -> TraceValue<()> {
+fn workflow() {
     let audio = load_audios();
     let audio = remove_bgm(audio);
-    let audio = detect_vad(audio);
+    let mut audio = detect_vad(audio);
 
-    if !compare_language(detect_language(audio)) {
+    if is_not_english(detect_language(audio)) {
         return ();
     }
 
-    while audio_length(audio) > 10.0 {
-        let transcipt = translate(audio, "en");
+    while is_long_audio(audio) {
+        let transcipt = translate(audio);
         let (audio_to_save, audio_to_cut) = cut_audio(audio, transcipt);
         audio = audio_to_cut;
         save_audio(audio_to_save);
     }
-
     ()
 }
-
 fn main() {}

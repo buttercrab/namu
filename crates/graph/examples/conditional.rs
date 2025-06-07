@@ -1,49 +1,80 @@
-use graph::{graph_if, trace, TraceValue};
+use graph::{task, workflow};
 
-#[trace]
-fn get_true() -> bool {
-    true
+#[task]
+fn is_positive(v: i32) -> bool {
+    v > 0
 }
 
-#[trace]
-fn get_false() -> bool {
-    false
+#[task]
+fn double(v: i32) -> i32 {
+    v * 2
 }
 
-#[trace]
-fn get_ten() -> i32 {
-    10
+#[task]
+fn is_negative(v: i32) -> bool {
+    v < 0
 }
 
-#[trace]
-fn get_twenty() -> i32 {
-    20
+#[task]
+fn identity(v: i32) -> i32 {
+    v
 }
 
-#[trace]
-fn add(a: i32, b: i32) -> i32 {
-    a + b
+#[workflow]
+fn simple_workflow() -> i32 {
+    let input = graph::new_literal(10);
+    if is_positive(input) {
+        double(input)
+    } else {
+        identity(input)
+    }
 }
 
-fn conditional_workflow(condition: bool) -> TraceValue<i32> {
-    let cond = if condition { get_true() } else { get_false() };
-    let ten = get_ten();
-    let twenty = get_twenty();
-    graph_if(cond, ten, twenty)
+#[workflow]
+fn complex_workflow() -> i32 {
+    let input = graph::new_literal(10);
+    if is_positive(input) {
+        double(input)
+    } else {
+        if is_negative(input) {
+            double(input)
+        } else {
+            identity(input)
+        }
+    }
+}
+
+#[workflow]
+fn complex_workflow2() -> i32 {
+    let input = graph::new_literal(10);
+    if is_positive(input) {
+        double(input)
+    } else if is_negative(input) {
+        double(input)
+    } else {
+        identity(input)
+    }
 }
 
 fn main() {
-    println!("--- True case ---");
-    let workflow_true = conditional_workflow(true);
-    println!("{}", workflow_true.graph_string());
-    let result_true = workflow_true.run();
-    println!("Result: {}", result_true);
-    assert_eq!(result_true, 10);
+    let graph = simple_workflow();
+    println!("{}", graph.graph_string());
 
-    println!("\n--- False case ---");
-    let workflow_false = conditional_workflow(false);
-    println!("{}", workflow_false.graph_string());
-    let result_false = workflow_false.run();
-    println!("Result: {}", result_false);
-    assert_eq!(result_false, 20);
+    let result1 = graph.run::<i32>();
+    println!("Result: {}", result1);
+    assert_eq!(result1, 20);
+
+    let graph = complex_workflow();
+    println!("{}", graph.graph_string());
+
+    let result2 = graph.run::<i32>();
+    println!("Result: {}", result2);
+    assert_eq!(result2, 20);
+
+    let graph = complex_workflow2();
+    println!("{}", graph.graph_string());
+
+    let result3 = graph.run::<i32>();
+    println!("Result: {}", result3);
+    assert_eq!(result3, 20);
 }

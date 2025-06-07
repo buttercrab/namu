@@ -1,31 +1,32 @@
-use graph::{trace, TraceValue};
+use graph::{task, workflow};
 
-#[trace]
+#[task]
 fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 
-#[trace]
+#[task]
 fn one() -> i32 {
     1
 }
 
-#[trace]
+#[task]
 fn two() -> i32 {
     2
 }
 
-fn workflow() -> TraceValue<i32> {
+#[workflow]
+fn workflow() -> i32 {
     let a = one();
     let b = two();
-    let c = add(a, b);
-    c
+    add(a, b)
 }
 
 fn main() {
-    let workflow = workflow();
-    let graph = workflow.graph_string();
-    println!("{}", graph);
-    let result = workflow.run();
+    let graph = workflow();
+    let graph_str = graph.graph_string();
+    println!("{}", graph_str);
+    let result = graph.run::<i32>();
     println!("Result: {:?}", result);
+    assert_eq!(result, 3);
 }
