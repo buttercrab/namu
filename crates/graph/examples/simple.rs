@@ -22,6 +22,15 @@ fn workflow() -> i32 {
     add(a, b)
 }
 
+#[workflow]
+fn workflow2() -> i32 {
+    let a = one();
+    let mut b = two();
+    b = add(a, b);
+    b = add(a, b);
+    b
+}
+
 fn main() {
     let graph = workflow();
     let graph_str = graph.graph_string();

@@ -1,5 +1,4 @@
 use std::any::Any;
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -254,47 +253,17 @@ impl Graph {
 
 // --- Node Creation ---
 
-thread_local! {
-    pub static THREAD_LOCAL_BUILDER: RefCell<Option<Builder>> = const { RefCell::new(None) };
-}
-
-pub fn new_call<T>(
-    name: &'static str,
-    func: Executable,
-    inputs: Vec<TracedValue<T>>,
+pub fn new_literal<T: Debug + Send + Sync + 'static>(
+    builder: &mut Builder,
+    value: T,
 ) -> TracedValue<T> {
-    THREAD_LOCAL_BUILDER.with(|builder_opt| {
-        let mut builder = builder_opt.borrow_mut();
-        let builder = builder
-            .as_mut()
-            .expect("A task function can only be called inside a workflow");
-
-        let input_ids = inputs.iter().map(|v| v.id).collect();
-        let kind = NodeKind::Call {
-            name,
-            func,
-            inputs: input_ids,
-        };
-        let id = builder.add_instruction(kind);
-        TracedValue::new(id)
-    })
-}
-
-pub fn new_literal<T: Debug + Send + Sync + 'static>(value: T) -> TracedValue<T> {
-    THREAD_LOCAL_BUILDER.with(|builder_opt| {
-        let mut builder = builder_opt.borrow_mut();
-        let builder = builder
-            .as_mut()
-            .expect("A literal can only be created inside a workflow");
-
-        let debug_repr = format!("{:?}", value);
-        let kind = NodeKind::Literal {
-            value: Arc::new(value),
-            debug_repr,
-        };
-        let id = builder.add_instruction(kind);
-        TracedValue::new(id)
-    })
+    let debug_repr = format!("{:?}", value);
+    let kind = NodeKind::Literal {
+        value: Arc::new(value),
+        debug_repr,
+    };
+    let id = builder.add_instruction(kind);
+    TracedValue::new(id)
 }
 
 #[derive(Default)]
