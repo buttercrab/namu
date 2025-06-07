@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -254,7 +255,7 @@ impl Graph {
 // --- Node Creation ---
 
 thread_local! {
-    pub static THREAD_LOCAL_BUILDER: std::cell::RefCell<Option<Builder>> = std::cell::RefCell::new(None);
+    pub static THREAD_LOCAL_BUILDER: RefCell<Option<Builder>> = const { RefCell::new(None) };
 }
 
 pub fn new_call<T>(
