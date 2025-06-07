@@ -27,6 +27,9 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut arg_types = Vec::new();
 
     constructor_sig.inputs.clear();
+    constructor_sig
+        .inputs
+        .push(parse_quote! { builder: &mut graph::Builder });
     for arg in func.sig.inputs.iter() {
         if let syn::FnArg::Typed(pt) = arg {
             let pat_ident = if let Pat::Ident(pi) = &*pt.pat {
@@ -69,18 +72,13 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 std::sync::Arc::new(result) as graph::Value
             });
 
-            graph::THREAD_LOCAL_BUILDER.with(|builder_opt| {
-                let mut builder = builder_opt.borrow_mut();
-                let builder = builder.as_mut().expect("A task function can only be called inside a workflow");
-
-                let kind = graph::NodeKind::Call {
-                    name: stringify!(#func_name),
-                    func,
-                    inputs: vec![#(#input_ids),*],
-                };
-                let id = builder.add_instruction(kind);
-                graph::TracedValue::new(id)
-            })
+            let kind = graph::NodeKind::Call {
+                name: stringify!(#func_name),
+                func,
+                inputs: vec![#(#input_ids),*],
+            };
+            let id = builder.add_instruction(kind);
+            graph::TracedValue::new(id)
         }
     };
 
@@ -95,14 +93,16 @@ struct SsaBuilder {
     scopes: Vec<std::collections::HashMap<Ident, (Ident, bool)>>, // name -> (ssa_name, is_mutable)
     next_var_id: usize,
     return_type: proc_macro2::TokenStream,
+    builder_ident: Ident,
 }
 
 impl SsaBuilder {
-    fn new(return_type: proc_macro2::TokenStream) -> Self {
+    fn new(return_type: proc_macro2::TokenStream, builder_ident: Ident) -> Self {
         Self {
             scopes: vec![Default::default()],
             next_var_id: 0,
             return_type,
+            builder_ident,
         }
     }
 
@@ -157,6 +157,20 @@ impl VisitMut for SsaBuilder {
 
     fn visit_expr_mut(&mut self, i: &mut Expr) {
         match i {
+            Expr::Call(call_expr) => {
+                // Manually visit children first to perform SSA substitution on args
+                self.visit_expr_mut(&mut call_expr.func);
+                for arg in call_expr.args.iter_mut() {
+                    self.visit_expr_mut(arg);
+                }
+
+                // Now, inject the builder argument.
+                let builder_ident = &self.builder_ident;
+                call_expr
+                    .args
+                    .insert(0, parse_quote! { &mut #builder_ident });
+                return; // Prevent double-visiting
+            }
             Expr::If(if_expr) => {
                 // Manually visit children first
                 self.visit_expr_mut(&mut if_expr.cond);
@@ -207,6 +221,34 @@ impl VisitMut for SsaBuilder {
             }
             return;
         }
+
+        if let Stmt::Expr(expr, _semi) = i {
+            if let Expr::Assign(assign_expr) = expr {
+                if let Expr::Path(path) = &*assign_expr.left {
+                    if let Some(name) = path.path.get_ident() {
+                        let var_info = self
+                            .get_var(name)
+                            .unwrap_or_else(|| panic!("Variable {} not found", name));
+
+                        if !var_info.1 {
+                            panic!("Cannot assign to immutable variable {}", name);
+                        }
+
+                        let mut rhs = assign_expr.right.clone();
+                        self.visit_expr_mut(&mut rhs);
+
+                        let ssa_name = self.new_ssa_name(name);
+                        self.insert_var(name.clone(), ssa_name.clone(), true);
+
+                        *i = parse_quote! {
+                            let #ssa_name = #rhs;
+                        };
+                        return;
+                    }
+                }
+            }
+        }
+
         visit_mut::visit_stmt_mut(self, i);
     }
 }
@@ -218,69 +260,48 @@ impl SsaBuilder {
         let else_branch = if let Some((_, else_expr)) = &if_expr.else_branch {
             quote! { {#else_expr} }
         } else {
-            quote! { graph::new_literal(()) }
+            let builder = &self.builder_ident;
+            quote! { graph::new_literal(&mut #builder, ()) }
         };
 
         let return_type = &self.return_type;
+        let builder = &self.builder_ident;
         let new_expr = quote! {
             {
                 let result: graph::TracedValue<#return_type> = {
                     let cond_val = #cond;
 
-                    let (then_block_id, else_block_id, merge_block_id) =
-                        graph::THREAD_LOCAL_BUILDER.with(|builder_cell| {
-                            let mut builder = builder_cell.borrow_mut();
-                            let builder = builder.as_mut().unwrap();
+                    let then_block_id = #builder.new_block();
+                    let else_block_id = #builder.new_block();
+                    let merge_block_id = #builder.new_block();
 
-                            let then_block_id = builder.new_block();
-                            let else_block_id = builder.new_block();
-                            let merge_block_id = builder.new_block();
-
-                            builder.seal_block(graph::Terminator::Branch {
-                                condition: cond_val.id,
-                                true_target: then_block_id,
-                                false_target: else_block_id,
-                            });
-
-                            (then_block_id, else_block_id, merge_block_id)
-                        });
-
-                    graph::THREAD_LOCAL_BUILDER.with(|builder_cell| {
-                        builder_cell
-                            .borrow_mut()
-                            .as_mut()
-                            .unwrap()
-                            .switch_to_block(then_block_id);
+                    #builder.seal_block(graph::Terminator::Branch {
+                        condition: cond_val.id,
+                        true_target: then_block_id,
+                        false_target: else_block_id,
                     });
+
+                    #builder.switch_to_block(then_block_id);
 
                     let then_val = #then_branch;
 
-                    graph::THREAD_LOCAL_BUILDER.with(|builder_cell| {
-                        let mut builder = builder_cell.borrow_mut();
-                        let builder = builder.as_mut().unwrap();
-                        builder.seal_block(graph::Terminator::Jump {
-                            target: merge_block_id,
-                        });
-                        builder.switch_to_block(else_block_id);
+                    #builder.seal_block(graph::Terminator::Jump {
+                        target: merge_block_id,
                     });
+                    #builder.switch_to_block(else_block_id);
 
                     let else_val = #else_branch;
 
-                    graph::THREAD_LOCAL_BUILDER.with(|builder_cell| {
-                        let mut builder = builder_cell.borrow_mut();
-                        let builder = builder.as_mut().unwrap();
+                    #builder.seal_block(graph::Terminator::Jump {
+                        target: merge_block_id,
+                    });
+                    #builder.switch_to_block(merge_block_id);
 
-                        builder.seal_block(graph::Terminator::Jump {
-                            target: merge_block_id,
-                        });
-                        builder.switch_to_block(merge_block_id);
-
-                        let kind = graph::NodeKind::Phi {
-                            from: vec![(then_block_id, then_val.id), (else_block_id, else_val.id)],
-                        };
-                        let id = builder.add_instruction(kind);
-                        graph::TracedValue::new(id)
-                    })
+                    let kind = graph::NodeKind::Phi {
+                        from: vec![(then_block_id, then_val.id), (else_block_id, else_val.id)],
+                    };
+                    let id = #builder.add_instruction(kind);
+                    graph::TracedValue::new(id)
                 };
                 result
             }
@@ -301,24 +322,17 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
         ReturnType::Default => quote! { () },
     };
 
-    SsaBuilder::new(return_type.clone()).visit_block_mut(&mut func_body);
+    let builder_ident = format_ident!("__builder");
+    SsaBuilder::new(return_type.clone(), builder_ident.clone()).visit_block_mut(&mut func_body);
 
     let expanded = quote! {
         pub fn #func_name() -> graph::Graph {
-            let builder = graph::Builder::new();
-            graph::THREAD_LOCAL_BUILDER.with(|cell| {
-                *cell.borrow_mut() = Some(builder);
-            });
+            let mut #builder_ident = graph::Builder::new();
 
             let result_val: graph::TracedValue<#return_type> = #func_body;
 
-            let final_graph = graph::THREAD_LOCAL_BUILDER.with(|cell| {
-                let mut builder = cell.borrow_mut().take().unwrap();
-                builder.seal_block(graph::Terminator::Return { value: result_val.id });
-                builder.build()
-            });
-
-            final_graph
+            #builder_ident.seal_block(graph::Terminator::Return { value: result_val.id });
+            #builder_ident.build()
         }
     };
 
