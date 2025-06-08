@@ -266,6 +266,17 @@ pub fn new_literal<T: Debug + Send + Sync + 'static>(
     TracedValue::new(id)
 }
 
+pub fn phi<T: Clone + 'static>(
+    builder: &mut Builder,
+    from: Vec<(BlockId, TracedValue<T>)>,
+) -> TracedValue<T> {
+    let kind = NodeKind::Phi {
+        from: from.iter().map(|(b, v)| (*b, v.id)).collect(),
+    };
+    let id = builder.add_instruction(kind);
+    TracedValue::new(id)
+}
+
 #[derive(Default)]
 pub struct Builder {
     pub arena: Arena,

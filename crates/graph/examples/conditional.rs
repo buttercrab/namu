@@ -56,19 +56,15 @@ fn complex_workflow2() -> i32 {
     }
 }
 
-// #[workflow]
-// fn complex_workflow3() -> i32 {
-//     let input = graph::new_literal(10);
-//     let mut b = input;
-//     if is_positive(input) {
-//         b = double(input);
-//     } else if is_negative(input) {
-//         b = double(input);
-//     } else {
-//         identity(input)
-//     }
-//     double(b)
-// }
+#[workflow]
+fn complex_workflow3() -> i32 {
+    let input = graph::new_literal(10);
+    let mut b = input;
+    if is_positive(input) {
+        b = double(input);
+    }
+    double(b)
+}
 
 fn main() {
     let graph = simple_workflow();

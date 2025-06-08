@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 macros = { path = "../macros" }
+
+[dev-dependencies]
+trybuild = "1.0"

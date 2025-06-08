@@ -1,10 +1,13 @@
 extern crate proc_macro;
 
+use std::collections::HashMap;
+
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::visit_mut::{self, VisitMut};
 use syn::{
-    Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input, parse_quote,
+    Block, Expr, ExprIf, ExprWhile, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input,
+    parse_quote,
 };
 
 #[proc_macro_attribute]
@@ -89,19 +92,40 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+#[derive(Default, Debug)]
+struct Scope {
+    vars: HashMap<Ident, (Ident, bool)>, // name -> (ssa_name, is_mutable)
+}
+
+impl Scope {
+    fn get(&self, name: &Ident) -> Option<(Ident, bool)> {
+        self.vars.get(name).cloned()
+    }
+
+    fn insert(&mut self, name: Ident, ssa_name: Ident, is_mutable: bool) {
+        self.vars.insert(name, (ssa_name, is_mutable));
+    }
+
+    fn merge(lhs: Scope, rhs: Scope) -> Scope {
+        let mut vars = lhs.vars;
+        vars.extend(rhs.vars);
+        Scope { vars }
+    }
+}
+
 struct SsaBuilder {
-    scopes: Vec<std::collections::HashMap<Ident, (Ident, bool)>>, // name -> (ssa_name, is_mutable)
+    scopes: Vec<Scope>,
     next_var_id: usize,
-    return_type: proc_macro2::TokenStream,
+    next_if_block_id: usize,
     builder_ident: Ident,
 }
 
 impl SsaBuilder {
-    fn new(return_type: proc_macro2::TokenStream, builder_ident: Ident) -> Self {
+    fn new(builder_ident: Ident) -> Self {
         Self {
             scopes: vec![Default::default()],
             next_var_id: 0,
-            return_type,
+            next_if_block_id: 0,
             builder_ident,
         }
     }
@@ -112,12 +136,18 @@ impl SsaBuilder {
         format_ident!("__ssa_{}_{}", name, id)
     }
 
+    fn new_if_id(&mut self) -> usize {
+        let id = self.next_if_block_id;
+        self.next_if_block_id += 1;
+        id
+    }
+
     fn enter_scope(&mut self) {
         self.scopes.push(Default::default());
     }
 
-    fn exit_scope(&mut self) {
-        self.scopes.pop();
+    fn exit_scope(&mut self) -> Scope {
+        self.scopes.pop().unwrap()
     }
 
     fn get_var(&self, name: &Ident) -> Option<(Ident, bool)> {
@@ -133,43 +163,59 @@ impl SsaBuilder {
         self.scopes
             .last_mut()
             .unwrap()
-            .insert(name, (ssa_name, is_mutable));
+            .insert(name, ssa_name, is_mutable);
     }
 }
 
 impl VisitMut for SsaBuilder {
     fn visit_block_mut(&mut self, i: &mut Block) {
+        let has_return_expr = if let Some(last_stmt) = i.stmts.last() {
+            matches!(last_stmt, Stmt::Expr(_, None))
+        } else {
+            false
+        };
+
         self.enter_scope();
-        let num_stmts = i.stmts.len();
-        for (idx, stmt) in i.stmts.iter_mut().enumerate() {
-            if idx == num_stmts - 1 {
-                if let Stmt::Expr(expr, semi) = stmt {
-                    if semi.is_none() {
-                        self.visit_expr_mut(expr);
-                        continue;
-                    }
-                }
-            }
+        for stmt in i.stmts.iter_mut() {
             self.visit_stmt_mut(stmt);
         }
         self.exit_scope();
+
+        if !has_return_expr {
+            let builder_ident = &self.builder_ident;
+            let new_expr: Expr = parse_quote! {
+                graph::new_literal(&mut #builder_ident, ())
+            };
+            i.stmts.push(Stmt::Expr(new_expr, None));
+        }
     }
 
     fn visit_expr_mut(&mut self, i: &mut Expr) {
         match i {
             Expr::Call(call_expr) => {
-                // Manually visit children first to perform SSA substitution on args
-                self.visit_expr_mut(&mut call_expr.func);
                 for arg in call_expr.args.iter_mut() {
                     self.visit_expr_mut(arg);
                 }
 
-                // Now, inject the builder argument.
                 let builder_ident = &self.builder_ident;
                 call_expr
                     .args
                     .insert(0, parse_quote! { &mut #builder_ident });
-                return; // Prevent double-visiting
+            }
+            Expr::Path(path) => {
+                let Some(ident) = path.path.get_ident() else {
+                    panic!("Only simple idents are supported in let bindings");
+                };
+                let Some((ssa_var, _)) = self.get_var(ident) else {
+                    panic!("Variable {} not found", ident);
+                };
+
+                *i = parse_quote! { #ssa_var };
+            }
+            Expr::Assign(_) => {
+                panic!(
+                    "Assignments are not supported in expressions, put semicolon after the assignment"
+                );
             }
             Expr::If(if_expr) => {
                 // Manually visit children first
@@ -179,135 +225,147 @@ impl VisitMut for SsaBuilder {
                     self.visit_expr_mut(else_expr);
                 }
 
-                // Now that children are rewritten, rewrite the if itself.
-                *i = self.rewrite_if(if_expr);
-                return; // Prevent default visit_mut recursion
+                *i = self.handle_if(if_expr);
             }
-            Expr::Path(path) => {
-                if let Some(ident) = path.path.get_ident() {
-                    if let Some((ssa_var, _)) = self.get_var(ident) {
-                        *i = parse_quote! { #ssa_var };
-                    }
-                }
+            Expr::While(while_expr) => {
+                self.visit_expr_mut(&mut while_expr.cond);
+                self.visit_block_mut(&mut while_expr.body);
+
+                *i = self.handle_while(while_expr);
             }
-            _ => {}
+            _ => visit_mut::visit_expr_mut(self, i),
         }
-        visit_mut::visit_expr_mut(self, i);
     }
 
     fn visit_stmt_mut(&mut self, i: &mut Stmt) {
-        if let Stmt::Local(local) = i {
-            let pat_ident = if let Pat::Ident(pi) = &local.pat {
-                pi
-            } else {
-                panic!("Only simple idents are supported in let bindings");
-            };
-
-            let name = pat_ident.ident.clone();
-            let ssa_name = self.new_ssa_name(&name);
-            let is_mutable = pat_ident.mutability.is_some();
-
-            self.insert_var(name, ssa_name.clone(), is_mutable);
-
-            if let Some(init) = &local.init {
-                let mut init_clone = init.expr.clone();
-                self.visit_expr_mut(&mut init_clone);
-
-                *i = parse_quote! {
-                    let #ssa_name = #init_clone;
+        match i {
+            Stmt::Local(local) => {
+                let Pat::Ident(pat_ident) = &local.pat else {
+                    panic!("Only simple idents are supported in let bindings");
                 };
-            } else {
-                panic!("Let bindings must be initialized");
+                let Some(mut init) = local.init.as_ref().cloned() else {
+                    panic!("Let bindings must be initialized");
+                };
+
+                let ssa_name = self.handle_assign(&pat_ident.ident, &mut init.expr, true);
+                let rhs = init.expr;
+                *i = parse_quote! { let #ssa_name = #rhs; };
             }
-            return;
-        }
+            Stmt::Expr(Expr::Assign(assign_expr), _semi) => {
+                let Expr::Path(path) = &*assign_expr.left else {
+                    panic!("Only simple idents are supported in let bindings");
+                };
+                let Some(name) = path.path.get_ident() else {
+                    panic!("Only simple idents are supported in let bindings");
+                };
+                let ssa_name = self.handle_assign(name, &mut assign_expr.right, false);
+                let rhs = &assign_expr.right;
 
-        if let Stmt::Expr(expr, _semi) = i {
-            if let Expr::Assign(assign_expr) = expr {
-                if let Expr::Path(path) = &*assign_expr.left {
-                    if let Some(name) = path.path.get_ident() {
-                        let var_info = self
-                            .get_var(name)
-                            .unwrap_or_else(|| panic!("Variable {} not found", name));
-
-                        if !var_info.1 {
-                            panic!("Cannot assign to immutable variable {}", name);
-                        }
-
-                        let mut rhs = assign_expr.right.clone();
-                        self.visit_expr_mut(&mut rhs);
-
-                        let ssa_name = self.new_ssa_name(name);
-                        self.insert_var(name.clone(), ssa_name.clone(), true);
-
-                        *i = parse_quote! {
-                            let #ssa_name = #rhs;
-                        };
-                        return;
-                    }
-                }
+                *i = parse_quote! { let #ssa_name = #rhs; };
             }
+            Stmt::Expr(expr, _semi) => self.visit_expr_mut(expr),
+            _ => visit_mut::visit_stmt_mut(self, i),
         }
-
-        visit_mut::visit_stmt_mut(self, i);
     }
 }
 
 impl SsaBuilder {
-    fn rewrite_if(&mut self, if_expr: &ExprIf) -> Expr {
-        let cond = if_expr.cond.clone();
-        let then_branch = if_expr.then_branch.clone();
-        let else_branch = if let Some((_, else_expr)) = &if_expr.else_branch {
-            quote! { {#else_expr} }
-        } else {
-            let builder = &self.builder_ident;
-            quote! { graph::new_literal(&mut #builder, ()) }
-        };
+    fn handle_assign(&mut self, name: &Ident, rhs: &mut Expr, new: bool) -> Ident {
+        if !new {
+            let var_info = self
+                .get_var(name)
+                .unwrap_or_else(|| panic!("Variable '{}' not found", name));
 
-        let return_type = &self.return_type;
-        let builder = &self.builder_ident;
-        let new_expr = quote! {
-            {
-                let result: graph::TracedValue<#return_type> = {
-                    let cond_val = #cond;
-
-                    let then_block_id = #builder.new_block();
-                    let else_block_id = #builder.new_block();
-                    let merge_block_id = #builder.new_block();
-
-                    #builder.seal_block(graph::Terminator::Branch {
-                        condition: cond_val.id,
-                        true_target: then_block_id,
-                        false_target: else_block_id,
-                    });
-
-                    #builder.switch_to_block(then_block_id);
-
-                    let then_val = #then_branch;
-
-                    #builder.seal_block(graph::Terminator::Jump {
-                        target: merge_block_id,
-                    });
-                    #builder.switch_to_block(else_block_id);
-
-                    let else_val = #else_branch;
-
-                    #builder.seal_block(graph::Terminator::Jump {
-                        target: merge_block_id,
-                    });
-                    #builder.switch_to_block(merge_block_id);
-
-                    let kind = graph::NodeKind::Phi {
-                        from: vec![(then_block_id, then_val.id), (else_block_id, else_val.id)],
-                    };
-                    let id = #builder.add_instruction(kind);
-                    graph::TracedValue::new(id)
-                };
-                result
+            if !var_info.1 {
+                panic!("Cannot assign to immutable variable '{}'", name);
             }
-        };
+        }
 
-        parse_quote! { #new_expr }
+        self.visit_expr_mut(rhs);
+
+        let ssa_name = self.new_ssa_name(name);
+        self.insert_var(name.clone(), ssa_name.clone(), true);
+
+        ssa_name
+    }
+
+    fn handle_if(&mut self, if_expr: &ExprIf) -> Expr {
+        let builder = self.builder_ident.clone();
+
+        let cond = &if_expr.cond;
+        let then_branch = &if_expr.then_branch;
+
+        let if_id = self.new_if_id();
+        let then_block_id = format_ident!("__if_then_block_{}", if_id);
+        let merge_block_id = format_ident!("__if_merge_block_{}", if_id);
+        let then_predecessor_id = format_ident!("__if_then_predecessor_{}", if_id);
+        let then_val = format_ident!("__if_then_val_{}", if_id);
+
+        let (else_block_setup, else_block_impl, false_target, phi_call) =
+            if let Some((_, else_expr)) = &if_expr.else_branch {
+                // Case 1: `if-else` expression
+                let else_block_id = format_ident!("__if_else_block_{}", if_id);
+                let else_predecessor_id = format_ident!("__if_else_predecessor_{}", if_id);
+                let else_val = format_ident!("__if_else_val_{}", if_id);
+
+                let setup = quote! { let #else_block_id = #builder.new_block(); };
+                let implementation = quote! {
+                    #builder.switch_to_block(#else_block_id);
+                    let #else_val = #else_expr;
+                    let #else_predecessor_id = #builder.current_block_id;
+                    #builder.seal_block(graph::Terminator::Jump {
+                        target: #merge_block_id,
+                    });
+                };
+                let phi = quote! {
+                    graph::phi(
+                        &mut #builder,
+                        vec![
+                            (#then_predecessor_id, #then_val),
+                            (#else_predecessor_id, #else_val),
+                        ],
+                    )
+                };
+
+                (Some(setup), Some(implementation), else_block_id, Some(phi))
+            } else {
+                // Case 2: `if` expression without `else`. The value is always `()`.
+                let false_target = merge_block_id.clone();
+
+                (None, None, false_target, None)
+            };
+
+        parse_quote! {
+            {
+                let #then_block_id = #builder.new_block();
+                #else_block_setup
+                let #merge_block_id = #builder.new_block();
+
+                let __if_condition = #cond;
+                #builder.seal_block(graph::Terminator::Branch {
+                    condition: __if_condition.id,
+                    true_target: #then_block_id,
+                    false_target: #false_target,
+                });
+
+                #builder.switch_to_block(#then_block_id);
+                let #then_val = #then_branch;
+                let #then_predecessor_id = #builder.current_block_id;
+                #builder.seal_block(graph::Terminator::Jump {
+                    target: #merge_block_id,
+                });
+
+                #else_block_impl
+
+                #builder.switch_to_block(#merge_block_id);
+
+                #phi_call
+            }
+        }
+    }
+
+    fn handle_while(&mut self, while_expr: &ExprWhile) -> Expr {
+        unimplemented!()
     }
 }
 
@@ -317,19 +375,14 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func_name = &func.sig.ident;
     let mut func_body = func.block.clone();
 
-    let return_type = match &func.sig.output {
-        ReturnType::Type(_, ty) => quote! { #ty },
-        ReturnType::Default => quote! { () },
-    };
-
     let builder_ident = format_ident!("__builder");
-    SsaBuilder::new(return_type.clone(), builder_ident.clone()).visit_block_mut(&mut func_body);
+    SsaBuilder::new(builder_ident.clone()).visit_block_mut(&mut func_body);
 
     let expanded = quote! {
         pub fn #func_name() -> graph::Graph {
             let mut #builder_ident = graph::Builder::new();
 
-            let result_val: graph::TracedValue<#return_type> = #func_body;
+            let result_val = #func_body;
 
             #builder_ident.seal_block(graph::Terminator::Return { value: result_val.id });
             #builder_ident.build()
