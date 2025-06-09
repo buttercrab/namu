@@ -1,5 +1,5 @@
-error: Cannot assign to immutable variable 'x'
+error: cannot assign twice to immutable variable `x`
  --> tests/compile-fail/01-assign-to-immutable.rs:6:5
   |
-6 |     x = graph::new_literal(2); // Error: cannot assign to immutable variable
+6 |     x = graph::new_literal(2);
   |     ^

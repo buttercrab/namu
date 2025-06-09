@@ -42,7 +42,7 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
             abort!(arg, "`self` is not supported");
         };
         let Pat::Ident(pat_ident) = &*pt.pat else {
-            abort!(pt, "Only simple idents are supported in task arguments");
+            abort!(pt, "only simple idents are supported in task arguments");
         };
         let name = &pt.pat;
         let ty = &pt.ty;
@@ -207,10 +207,10 @@ impl VisitMut for SsaBuilder {
             }
             Expr::Path(path) => {
                 let Some(ident) = path.path.get_ident() else {
-                    abort!(path, "Only simple idents are supported in let bindings");
+                    abort!(path, "only simple idents are supported in let bindings");
                 };
                 let Some((ssa_var, _)) = self.get_var(ident) else {
-                    abort!(ident, "Variable '{}' not found", ident);
+                    abort!(ident, "cannot find value `{}` in this scope", ident);
                 };
 
                 *i = parse_quote! { #ssa_var };
@@ -218,7 +218,7 @@ impl VisitMut for SsaBuilder {
             Expr::Assign(expr) => {
                 abort!(
                     expr,
-                    "Assignments are not supported in expressions, put semicolon after the assignment"
+                    "assignments are not supported in expressions, put semicolon after the assignment"
                 );
             }
             Expr::If(if_expr) => {
@@ -245,10 +245,10 @@ impl VisitMut for SsaBuilder {
         match i {
             Stmt::Local(local) => {
                 let Pat::Ident(pat_ident) = &local.pat else {
-                    abort!(local, "Only simple idents are supported in let bindings");
+                    abort!(local, "only simple idents are supported in let bindings");
                 };
                 let Some(mut init) = local.init.as_ref().cloned() else {
-                    abort!(local, "Let bindings must be initialized");
+                    abort!(local, "let bindings must be initialized");
                 };
 
                 let is_mut = pat_ident.mutability.is_some();
@@ -264,19 +264,19 @@ impl VisitMut for SsaBuilder {
                 let Expr::Path(path) = &*assign_expr.left else {
                     abort!(
                         assign_expr,
-                        "Only simple idents are supported in let bindings"
+                        "only simple idents are supported in let bindings"
                     );
                 };
                 let Some(name) = path.path.get_ident() else {
-                    abort!(path, "Only simple idents are supported in let bindings");
+                    abort!(path, "only simple idents are supported in let bindings");
                 };
 
                 let Some((_, is_mut)) = self.get_var(name) else {
-                    abort!(name, "Variable '{}' not found", name);
+                    abort!(name, "cannot find value `{}` in this scope", name);
                 };
 
                 if !is_mut {
-                    abort!(name, "Cannot assign to immutable variable '{}'", name);
+                    abort!(name, "cannot assign twice to immutable variable `{}`", name);
                 }
 
                 self.visit_expr_mut(&mut assign_expr.right);

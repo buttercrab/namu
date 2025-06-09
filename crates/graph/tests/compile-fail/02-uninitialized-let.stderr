@@ -1,5 +1,5 @@
-error: Only simple idents are supported in let bindings
+error: only simple idents are supported in let bindings
  --> tests/compile-fail/02-uninitialized-let.rs:5:5
   |
-5 |     let x: graph::TracedValue<i32>; // Error: Let bindings must be initialized
+5 |     let x: graph::TracedValue<i32>;
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
