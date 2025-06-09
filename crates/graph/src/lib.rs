@@ -96,19 +96,77 @@ impl<T> TracedValue<T> {
     }
 }
 
-pub struct Graph {
+pub struct Graph<T> {
     pub arena: Arena,
     pub blocks: Vec<BasicBlock>,
+    _phantom: PhantomData<T>,
 }
 
 // --- Graph API ---
 
-impl Graph {
+impl<T> Graph<T> {
     pub fn new(arena: Arena, blocks: Vec<BasicBlock>) -> Self {
-        Self { arena, blocks }
+        Self {
+            arena,
+            blocks,
+            _phantom: PhantomData,
+        }
     }
 
-    pub fn run<T: Clone + 'static>(&self) -> T {
+    pub fn graph_string(&self) -> String {
+        let mut s = String::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            s.push_str(&format!("Block {}:\n", i));
+            for &node_id in &block.instructions {
+                let node = &self.arena.nodes[node_id];
+                let line = match &node.kind {
+                    NodeKind::Literal { debug_repr, .. } => {
+                        format!("  let var{} = {};\n", node_id, debug_repr)
+                    }
+                    NodeKind::Call { name, inputs, .. } => {
+                        let parent_vars: Vec<String> =
+                            inputs.iter().map(|p| format!("var{}", p)).collect();
+                        format!(
+                            "  let var{} = {}({});\n",
+                            node_id,
+                            name,
+                            parent_vars.join(", ")
+                        )
+                    }
+                    NodeKind::Phi { from } => {
+                        let from_str: Vec<String> = from
+                            .iter()
+                            .map(|(b, v)| format!("[block {}, var{}]", b, v))
+                            .collect();
+                        format!("  let var{} = phi({});\n", node_id, from_str.join(", "))
+                    }
+                };
+                s.push_str(&line);
+            }
+
+            if let Some(terminator) = &block.terminator {
+                let term_str = match terminator {
+                    Terminator::Jump { target } => format!("  jump -> Block {}", target),
+                    Terminator::Branch {
+                        condition,
+                        true_target,
+                        false_target,
+                    } => format!(
+                        "  branch var{} ? Block {} : Block {}",
+                        condition, true_target, false_target
+                    ),
+                    Terminator::Return { value } => format!("  return var{}", value),
+                };
+                s.push_str(&term_str);
+                s.push('\n');
+            }
+        }
+        s
+    }
+}
+
+impl<T: Clone + 'static> Graph<T> {
+    pub fn run(&self) -> T {
         let mut results = HashMap::<NodeId, Value>::new();
         let mut queue: VecDeque<(BlockId, BlockId)> = VecDeque::new(); // (current_block_id, prev_block_id)
 
@@ -198,63 +256,12 @@ impl Graph {
 
         panic!("Workflow did not return a value");
     }
-
-    pub fn graph_string(&self) -> String {
-        let mut s = String::new();
-        for (i, block) in self.blocks.iter().enumerate() {
-            s.push_str(&format!("Block {}:\n", i));
-            for &node_id in &block.instructions {
-                let node = &self.arena.nodes[node_id];
-                let line = match &node.kind {
-                    NodeKind::Literal { debug_repr, .. } => {
-                        format!("  let var{} = {};\n", node_id, debug_repr)
-                    }
-                    NodeKind::Call { name, inputs, .. } => {
-                        let parent_vars: Vec<String> =
-                            inputs.iter().map(|p| format!("var{}", p)).collect();
-                        format!(
-                            "  let var{} = {}({});\n",
-                            node_id,
-                            name,
-                            parent_vars.join(", ")
-                        )
-                    }
-                    NodeKind::Phi { from } => {
-                        let from_str: Vec<String> = from
-                            .iter()
-                            .map(|(b, v)| format!("[block {}, var{}]", b, v))
-                            .collect();
-                        format!("  let var{} = phi({});\n", node_id, from_str.join(", "))
-                    }
-                };
-                s.push_str(&line);
-            }
-
-            if let Some(terminator) = &block.terminator {
-                let term_str = match terminator {
-                    Terminator::Jump { target } => format!("  jump -> Block {}", target),
-                    Terminator::Branch {
-                        condition,
-                        true_target,
-                        false_target,
-                    } => format!(
-                        "  branch var{} ? Block {} : Block {}",
-                        condition, true_target, false_target
-                    ),
-                    Terminator::Return { value } => format!("  return var{}", value),
-                };
-                s.push_str(&term_str);
-                s.push('\n');
-            }
-        }
-        s
-    }
 }
 
 // --- Node Creation ---
 
-pub fn new_literal<T: Debug + Send + Sync + 'static>(
-    builder: &mut Builder,
+pub fn new_literal<T: Debug + Send + Sync + 'static, U>(
+    builder: &mut Builder<U>,
     value: T,
 ) -> TracedValue<T> {
     let debug_repr = format!("{:?}", value);
@@ -266,10 +273,7 @@ pub fn new_literal<T: Debug + Send + Sync + 'static>(
     TracedValue::new(id)
 }
 
-pub fn phi<T: Clone + 'static>(
-    builder: &mut Builder,
-    from: Vec<(BlockId, TracedValue<T>)>,
-) -> TracedValue<T> {
+pub fn phi<T, U>(builder: &mut Builder<U>, from: Vec<(BlockId, TracedValue<T>)>) -> TracedValue<T> {
     let kind = NodeKind::Phi {
         from: from.iter().map(|(b, v)| (*b, v.id)).collect(),
     };
@@ -277,16 +281,21 @@ pub fn phi<T: Clone + 'static>(
     TracedValue::new(id)
 }
 
-#[derive(Default)]
-pub struct Builder {
+pub struct Builder<T> {
     pub arena: Arena,
     pub blocks: Vec<BasicBlock>,
     pub current_block_id: BlockId,
+    _phantom: PhantomData<T>,
 }
 
-impl Builder {
+impl<T> Builder<T> {
     pub fn new() -> Self {
-        let mut builder = Self::default();
+        let mut builder = Self {
+            arena: Arena::default(),
+            blocks: Vec::new(),
+            current_block_id: 0,
+            _phantom: PhantomData,
+        };
         builder.blocks.push(BasicBlock::default());
         builder
     }
@@ -313,7 +322,7 @@ impl Builder {
         self.current_block_id = block_id;
     }
 
-    pub fn build(self) -> Graph {
+    pub fn build(self) -> Graph<T> {
         Graph::new(self.arena, self.blocks)
     }
 }

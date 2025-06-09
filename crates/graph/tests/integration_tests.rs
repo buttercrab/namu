@@ -54,7 +54,7 @@ fn simple_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run::<i32>(), 3);
+    assert_eq!(graph.run(), 3);
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn reassignment_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run::<i32>(), 4);
+    assert_eq!(graph.run(), 4);
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn conditional_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run::<i32>(), 20);
+    assert_eq!(graph.run(), 20);
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn nested_conditional_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run::<i32>(), -20);
+    assert_eq!(graph.run(), -20);
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn mutable_var_in_conditional_branch_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run::<i32>(), 20);
+    assert_eq!(graph.run(), 20);
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn conditional_execution_does_not_execute_un_taken_branch() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run::<i32>(), 20);
+    assert_eq!(graph.run(), 20);
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn mutable_var_updated_in_conditional_and_used_after() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run::<i32>(), 40);
+    assert_eq!(graph.run(), 40);
 }
 
 // --- Graph Structure Tests ---

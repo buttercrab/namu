@@ -30,10 +30,12 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut arg_names = Vec::new();
     let mut arg_types = Vec::new();
 
+    constructor_sig.generics = parse_quote! { <T: Clone + 'static> };
+
     constructor_sig.inputs.clear();
     constructor_sig
         .inputs
-        .push(parse_quote! { builder: &mut graph::Builder });
+        .push(parse_quote! { builder: &mut graph::Builder<T> });
 
     for arg in func.sig.inputs.iter() {
         let syn::FnArg::Typed(pt) = arg else {
@@ -382,12 +384,17 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func_name = &func.sig.ident;
     let mut func_body = func.block.clone();
 
+    let return_type = match &func.sig.output {
+        ReturnType::Type(_, ty) => quote! { #ty },
+        ReturnType::Default => quote! { () },
+    };
+
     let builder_ident = format_ident!("__builder");
     SsaBuilder::new(builder_ident.clone()).visit_block_mut(&mut func_body);
 
     let expanded = quote! {
-        pub fn #func_name() -> graph::Graph {
-            let mut #builder_ident = graph::Builder::new();
+        pub fn #func_name() -> graph::Graph<#return_type> {
+            let mut #builder_ident = graph::Builder::<#return_type>::new();
 
             let result_val = #func_body;
 

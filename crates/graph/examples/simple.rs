@@ -35,7 +35,7 @@ fn main() {
     let graph = workflow();
     let graph_str = graph.graph_string();
     println!("{}", graph_str);
-    let result = graph.run::<i32>();
+    let result = graph.run();
     println!("Result: {:?}", result);
     assert_eq!(result, 3);
 }
