@@ -251,8 +251,12 @@ impl VisitMut for SsaBuilder {
                     abort!(local, "Let bindings must be initialized");
                 };
 
-                // TODO: change is_mut
-                let ssa_name = self.handle_assign(&pat_ident.ident, &mut init.expr, true, true);
+                let is_mut = pat_ident.mutability.is_some();
+                self.visit_expr_mut(&mut init.expr);
+
+                let ssa_name = self.new_ssa_name(&pat_ident.ident);
+                self.insert_var(pat_ident.ident.clone(), ssa_name.clone(), is_mut);
+
                 let rhs = init.expr;
                 *i = parse_quote! { let #ssa_name = #rhs; };
             }
@@ -266,7 +270,20 @@ impl VisitMut for SsaBuilder {
                 let Some(name) = path.path.get_ident() else {
                     abort!(path, "Only simple idents are supported in let bindings");
                 };
-                let ssa_name = self.handle_assign(name, &mut assign_expr.right, false, true);
+
+                let Some((_, is_mut)) = self.get_var(name) else {
+                    abort!(name, "Variable '{}' not found", name);
+                };
+
+                if !is_mut {
+                    abort!(name, "Cannot assign to immutable variable '{}'", name);
+                }
+
+                self.visit_expr_mut(&mut assign_expr.right);
+
+                let ssa_name = self.new_ssa_name(name);
+                self.insert_var(name.clone(), ssa_name.clone(), is_mut);
+
                 let rhs = &assign_expr.right;
 
                 *i = parse_quote! { let #ssa_name = #rhs; };
@@ -278,25 +295,6 @@ impl VisitMut for SsaBuilder {
 }
 
 impl SsaBuilder {
-    fn handle_assign(&mut self, name: &Ident, rhs: &mut Expr, new: bool, is_mut: bool) -> Ident {
-        if !new {
-            let Some((_, is_mut)) = self.get_var(name) else {
-                abort!(name, "Variable '{}' not found", name);
-            };
-
-            if !is_mut {
-                abort!(name, "Cannot assign to immutable variable '{}'", name);
-            }
-        }
-
-        self.visit_expr_mut(rhs);
-
-        let ssa_name = self.new_ssa_name(name);
-        self.insert_var(name.clone(), ssa_name.clone(), is_mut);
-
-        ssa_name
-    }
-
     fn handle_if(&mut self, if_expr: &ExprIf) -> Expr {
         let builder = self.builder_ident.clone();
 

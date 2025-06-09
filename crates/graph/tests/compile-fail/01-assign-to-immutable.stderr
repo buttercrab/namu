@@ -1,7 +1,5 @@
-error: custom attribute panicked
- --> tests/compile-fail/01-assign-to-immutable.rs:3:1
+error: Cannot assign to immutable variable 'x'
+ --> tests/compile-fail/01-assign-to-immutable.rs:6:5
   |
-3 | #[workflow]
-  | ^^^^^^^^^^^
-  |
-  = help: message: Cannot assign to immutable variable 'x'
+6 |     x = graph::new_literal(2); // Error: cannot assign to immutable variable
+  |     ^

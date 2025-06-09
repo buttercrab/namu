@@ -3,4 +3,3 @@ error: Only simple idents are supported in let bindings
   |
 5 |     let x: graph::TracedValue<i32>; // Error: Let bindings must be initialized
   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  
