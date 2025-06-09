@@ -1,7 +1,6 @@
-error: custom attribute panicked
- --> tests/compile-fail/02-uninitialized-let.rs:3:1
+error: Only simple idents are supported in let bindings
+ --> tests/compile-fail/02-uninitialized-let.rs:5:5
   |
-3 | #[workflow]
-  | ^^^^^^^^^^^
-  |
-  = help: message: Only simple idents are supported in let bindings
+5 |     let x: graph::TracedValue<i32>; // Error: Let bindings must be initialized
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  

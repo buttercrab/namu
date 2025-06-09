@@ -3,6 +3,7 @@ extern crate proc_macro;
 use std::collections::HashMap;
 
 use proc_macro::TokenStream;
+use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
 use syn::visit_mut::{self, VisitMut};
 use syn::{
@@ -10,6 +11,7 @@ use syn::{
     parse_quote,
 };
 
+#[proc_macro_error]
 #[proc_macro_attribute]
 pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
@@ -20,7 +22,6 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let mut f = func.clone();
         f.sig.ident = func_impl_name.clone();
         quote! {
-            #[allow(clippy::all)]
             #f
         }
     };
@@ -33,22 +34,22 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     constructor_sig
         .inputs
         .push(parse_quote! { builder: &mut graph::Builder });
-    for arg in func.sig.inputs.iter() {
-        if let syn::FnArg::Typed(pt) = arg {
-            let pat_ident = if let Pat::Ident(pi) = &*pt.pat {
-                pi
-            } else {
-                panic!("Only simple idents are supported in task arguments");
-            };
-            arg_names.push(pat_ident.ident.clone());
 
-            let name = &pt.pat;
-            let ty = &pt.ty;
-            arg_types.push(ty.clone());
-            constructor_sig
-                .inputs
-                .push(parse_quote! { #name: graph::TracedValue<#ty> });
-        }
+    for arg in func.sig.inputs.iter() {
+        let syn::FnArg::Typed(pt) = arg else {
+            abort!(arg, "`self` is not supported");
+        };
+        let Pat::Ident(pat_ident) = &*pt.pat else {
+            abort!(pt, "Only simple idents are supported in task arguments");
+        };
+        let name = &pt.pat;
+        let ty = &pt.ty;
+
+        arg_names.push(pat_ident.ident.clone());
+        arg_types.push(ty.clone());
+        constructor_sig
+            .inputs
+            .push(parse_quote! { #name: graph::TracedValue<#ty> });
     }
 
     let return_type = match &func.sig.output {
@@ -204,16 +205,17 @@ impl VisitMut for SsaBuilder {
             }
             Expr::Path(path) => {
                 let Some(ident) = path.path.get_ident() else {
-                    panic!("Only simple idents are supported in let bindings");
+                    abort!(path, "Only simple idents are supported in let bindings");
                 };
                 let Some((ssa_var, _)) = self.get_var(ident) else {
-                    panic!("Variable {} not found", ident);
+                    abort!(ident, "Variable '{}' not found", ident);
                 };
 
                 *i = parse_quote! { #ssa_var };
             }
-            Expr::Assign(_) => {
-                panic!(
+            Expr::Assign(expr) => {
+                abort!(
+                    expr,
                     "Assignments are not supported in expressions, put semicolon after the assignment"
                 );
             }
@@ -241,24 +243,28 @@ impl VisitMut for SsaBuilder {
         match i {
             Stmt::Local(local) => {
                 let Pat::Ident(pat_ident) = &local.pat else {
-                    panic!("Only simple idents are supported in let bindings");
+                    abort!(local, "Only simple idents are supported in let bindings");
                 };
                 let Some(mut init) = local.init.as_ref().cloned() else {
-                    panic!("Let bindings must be initialized");
+                    abort!(local, "Let bindings must be initialized");
                 };
 
-                let ssa_name = self.handle_assign(&pat_ident.ident, &mut init.expr, true);
+                // TODO: change is_mut
+                let ssa_name = self.handle_assign(&pat_ident.ident, &mut init.expr, true, true);
                 let rhs = init.expr;
                 *i = parse_quote! { let #ssa_name = #rhs; };
             }
             Stmt::Expr(Expr::Assign(assign_expr), _semi) => {
                 let Expr::Path(path) = &*assign_expr.left else {
-                    panic!("Only simple idents are supported in let bindings");
+                    abort!(
+                        assign_expr,
+                        "Only simple idents are supported in let bindings"
+                    );
                 };
                 let Some(name) = path.path.get_ident() else {
-                    panic!("Only simple idents are supported in let bindings");
+                    abort!(path, "Only simple idents are supported in let bindings");
                 };
-                let ssa_name = self.handle_assign(name, &mut assign_expr.right, false);
+                let ssa_name = self.handle_assign(name, &mut assign_expr.right, false, true);
                 let rhs = &assign_expr.right;
 
                 *i = parse_quote! { let #ssa_name = #rhs; };
@@ -270,21 +276,21 @@ impl VisitMut for SsaBuilder {
 }
 
 impl SsaBuilder {
-    fn handle_assign(&mut self, name: &Ident, rhs: &mut Expr, new: bool) -> Ident {
+    fn handle_assign(&mut self, name: &Ident, rhs: &mut Expr, new: bool, is_mut: bool) -> Ident {
         if !new {
-            let var_info = self
-                .get_var(name)
-                .unwrap_or_else(|| panic!("Variable '{}' not found", name));
+            let Some((_, is_mut)) = self.get_var(name) else {
+                abort!(name, "Variable '{}' not found", name);
+            };
 
-            if !var_info.1 {
-                panic!("Cannot assign to immutable variable '{}'", name);
+            if !is_mut {
+                abort!(name, "Cannot assign to immutable variable '{}'", name);
             }
         }
 
         self.visit_expr_mut(rhs);
 
         let ssa_name = self.new_ssa_name(name);
-        self.insert_var(name.clone(), ssa_name.clone(), true);
+        self.insert_var(name.clone(), ssa_name.clone(), is_mut);
 
         ssa_name
     }
@@ -369,6 +375,7 @@ impl SsaBuilder {
     }
 }
 
+#[proc_macro_error]
 #[proc_macro_attribute]
 pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
