@@ -8,16 +8,6 @@ fn add(a: i32, b: i32) -> i32 {
 }
 
 #[task]
-fn one() -> i32 {
-    1
-}
-
-#[task]
-fn two() -> i32 {
-    2
-}
-
-#[task]
 fn is_positive(v: i32) -> bool {
     v > 0
 }
@@ -48,8 +38,8 @@ fn panicker() -> i32 {
 fn simple_workflow_run() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let a = one();
-        let b = two();
+        let a = 1;
+        let b = 2;
         add(a, b)
     }
 
@@ -61,8 +51,8 @@ fn simple_workflow_run() {
 fn reassignment_workflow_run() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let a = one();
-        let mut b = two();
+        let a = 1;
+        let mut b = 2;
         b = add(a, b); // b is now 3
         b = add(a, b); // b is now 4
         b
@@ -113,7 +103,9 @@ fn mutable_var_in_conditional_branch_run() {
     #[workflow]
     fn test_workflow() -> i32 {
         let mut val = 10;
-        val = if is_positive(val) { double(val) } else { val };
+        if is_positive(val) {
+            val = double(val);
+        }
         val
     }
 
@@ -142,11 +134,12 @@ fn mutable_var_updated_in_conditional_and_used_after() {
     #[workflow]
     fn test_workflow() -> i32 {
         let input = 10;
-        let mut b = input;
-        b = if is_positive(input) {
-            double(input)
+        let mut b = 0;
+        if is_positive(input) {
+            b = double(input);
         } else {
-            identity(input)
+            let a = identity(input);
+            b = a;
         };
         add(b, b)
     }
@@ -161,13 +154,13 @@ fn mutable_var_updated_in_conditional_and_used_after() {
 fn simple_graph_structure() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let a = one();
+        let a = 1;
         add(a, a)
     }
 
     let graph = test_workflow();
     let expected_graph_str = "Block 0:
-  let var0 = one();
+  let var0 = 1;
   let var1 = add(var0, var0);
   return var1
 ";

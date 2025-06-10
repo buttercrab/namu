@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use proc_macro::TokenStream;
 use proc_macro_error::{abort, proc_macro_error};
@@ -91,23 +91,8 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-#[derive(Default, Debug, Clone)]
-struct Scope {
-    vars: HashMap<Ident, bool>, // name -> is_mutable
-}
-
-impl Scope {
-    fn get(&self, name: &Ident) -> Option<bool> {
-        self.vars.get(name).cloned()
-    }
-
-    fn insert(&mut self, name: Ident, is_mutable: bool) {
-        self.vars.insert(name, is_mutable);
-    }
-}
-
 struct WorkflowVisitor {
-    scopes: Vec<Scope>,
+    scopes: Vec<HashSet<Ident>>,
     next_if_block_id: usize,
     builder_ident: Ident,
     last_expr_has_value: bool,
@@ -133,21 +118,20 @@ impl WorkflowVisitor {
         self.scopes.push(Default::default());
     }
 
-    fn exit_scope(&mut self) -> Scope {
-        self.scopes.pop().unwrap()
+    fn exit_scope(&mut self) {
+        self.scopes.pop();
     }
 
-    fn get_var(&self, name: &Ident) -> Option<bool> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(is_mut) = scope.get(name) {
-                return Some(is_mut);
-            }
-        }
-        None
+    fn insert_var(&mut self, name: Ident) {
+        self.scopes.last_mut().unwrap().insert(name);
     }
 
-    fn insert_var(&mut self, name: Ident, is_mutable: bool) {
-        self.scopes.last_mut().unwrap().insert(name, is_mutable);
+    fn list_vars(&self) -> Vec<Ident> {
+        self.scopes
+            .iter()
+            .map(|x| x.iter().cloned())
+            .flatten()
+            .collect()
     }
 }
 
@@ -179,12 +163,12 @@ impl VisitMut for WorkflowVisitor {
 
                 self.last_expr_has_value = true;
             }
-            Expr::Path(path) => {
-                if let Some(ident) = path.path.get_ident() {
-                    if self.get_var(ident).is_none() {
-                        abort!(ident, "cannot find value `{}` in this scope", ident);
-                    }
-                }
+            Expr::Path(_) => {
+                // if let Some(ident) = path.path.get_ident() {
+                //     if self.get_var(ident).is_none() {
+                //         abort!(ident, "cannot find value `{}` in this scope", ident);
+                //     }
+                // }
 
                 self.last_expr_has_value = true;
             }
@@ -215,7 +199,9 @@ impl VisitMut for WorkflowVisitor {
                 if let Some(init) = &mut local.init {
                     let is_mut = pat_ident.mutability.is_some();
                     self.visit_expr_mut(&mut init.expr);
-                    self.insert_var(pat_ident.ident.clone(), is_mut);
+                    if is_mut {
+                        self.insert_var(pat_ident.ident.clone());
+                    }
                 } else {
                     abort!(local, "let bindings must be initialized");
                 }
@@ -223,23 +209,23 @@ impl VisitMut for WorkflowVisitor {
                 self.last_expr_has_value = false;
             }
             Stmt::Expr(Expr::Assign(assign_expr), _semi) => {
-                let Expr::Path(path) = &*assign_expr.left else {
+                let Expr::Path(_) = &*assign_expr.left else {
                     abort!(
                         assign_expr,
                         "only simple idents are supported in let bindings"
                     );
                 };
-                let Some(name) = path.path.get_ident() else {
-                    abort!(path, "only simple idents are supported in let bindings");
-                };
+                // let Some(name) = path.path.get_ident() else {
+                //     abort!(path, "only simple idents are supported in let bindings");
+                // };
 
-                let Some(is_mut) = self.get_var(name) else {
-                    abort!(name, "cannot find value `{}` in this scope", name);
-                };
+                // let Some(is_mut) = self.get_var(name) else {
+                //     abort!(name, "cannot find value `{}` in this scope", name);
+                // };
 
-                if !is_mut {
-                    abort!(name, "cannot assign twice to immutable variable `{}`", name);
-                }
+                // if !is_mut {
+                //     abort!(name, "cannot assign twice to immutable variable `{}`", name);
+                // }
 
                 self.visit_expr_mut(&mut assign_expr.right);
 
@@ -256,48 +242,34 @@ impl WorkflowVisitor {
         let builder = self.builder_ident.clone();
         let if_id = self.new_if_id();
 
-        // --- 1. Identify mutable variables in scope before the `if` ---
-        let mut mutable_vars = HashMap::new();
-        for scope in self.scopes.iter().rev() {
-            for (name, &is_mutable) in &scope.vars {
-                if is_mutable && !mutable_vars.contains_key(name) {
-                    mutable_vars.insert(name.clone(), name.clone());
-                }
-            }
-        }
+        let vars = self.list_vars();
 
-        // --- 2. Create pre-capture statements for mutable vars ---
-        let pre_if_captures = mutable_vars.keys().map(|name| {
+        self.visit_expr_mut(&mut if_expr.cond);
+        let cond = &if_expr.cond;
+
+        let pre_if_captures = vars.iter().map(|name| {
             let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
             quote! { let #pre_if_name = #name; }
         });
 
-        // --- 3. Visit condition ---
-        self.visit_expr_mut(&mut if_expr.cond);
-        let cond = &if_expr.cond;
-
-        // --- 4. Set up block IDs ---
         let then_block_id = format_ident!("__if_then_block_{}", if_id);
         let merge_block_id = format_ident!("__if_merge_block_{}", if_id);
         let parent_predecessor_id = format_ident!("__if_parent_predecessor_{}", if_id);
 
-        // --- 5. Process `then` branch ---
         self.visit_block_mut(&mut if_expr.then_branch);
         let then_branch_body = &if_expr.then_branch;
         let then_has_value = self.last_expr_has_value;
 
-        let then_post_captures = mutable_vars.keys().map(|name| {
+        let then_post_captures = vars.iter().map(|name| {
             let post_then_name = format_ident!("__post_then_{}_{}", name, if_id);
             quote! { let #post_then_name = #name; }
         });
 
-        // --- 6. Process `else` branch ---
         let (else_block_setup, else_block_impl, false_target, phi) =
             if let Some((_, else_expr)) = &mut if_expr.else_branch {
                 let else_block_id = format_ident!("__if_else_block_{}", if_id);
 
-                // --- reset mutable vars for the `else` branch ---
-                let else_resets = mutable_vars.keys().map(|name| {
+                let else_resets = vars.iter().map(|name| {
                     let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
                     quote! { #name = #pre_if_name; }
                 });
@@ -305,7 +277,7 @@ impl WorkflowVisitor {
                 self.visit_expr_mut(else_expr);
                 let else_has_value = self.last_expr_has_value;
 
-                let else_post_captures = mutable_vars.keys().map(|name| {
+                let else_post_captures = vars.iter().map(|name| {
                     let post_else_name = format_ident!("__post_else_{}_{}", name, if_id);
                     quote! { let #post_else_name = #name; }
                 });
@@ -343,8 +315,7 @@ impl WorkflowVisitor {
                 (None, None, merge_block_id.clone(), None)
             };
 
-        // --- 7. Create phi nodes for all mutable variables ---
-        let merge_phis = mutable_vars.keys().map(|name| {
+        let merge_phis = vars.iter().map(|name| {
             let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
             let post_then_name = format_ident!("__post_then_{}_{}", name, if_id);
             let then_predecessor_id = format_ident!("__then_predecessor_id_{}", if_id);
