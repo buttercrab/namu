@@ -32,7 +32,7 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     constructor_sig.inputs.clear();
     constructor_sig
         .inputs
-        .push(parse_quote! { builder: &mut graph::Builder<T> });
+        .push(parse_quote! { builder: &graph::Builder<T> });
 
     for arg in func.sig.inputs.iter() {
         let syn::FnArg::Typed(pt) = arg else {
@@ -94,6 +94,7 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
 struct WorkflowVisitor {
     scopes: Vec<HashSet<Ident>>,
     next_if_block_id: usize,
+    next_while_block_id: usize,
     builder_ident: Ident,
     last_expr_has_value: bool,
 }
@@ -103,6 +104,7 @@ impl WorkflowVisitor {
         Self {
             scopes: vec![],
             next_if_block_id: 0,
+            next_while_block_id: 0,
             builder_ident,
             last_expr_has_value: false,
         }
@@ -111,6 +113,12 @@ impl WorkflowVisitor {
     fn new_if_id(&mut self) -> usize {
         let id = self.next_if_block_id;
         self.next_if_block_id += 1;
+        id
+    }
+
+    fn new_while_id(&mut self) -> usize {
+        let id = self.next_while_block_id;
+        self.next_while_block_id += 1;
         id
     }
 
@@ -157,9 +165,7 @@ impl VisitMut for WorkflowVisitor {
                 }
 
                 let builder_ident = &self.builder_ident;
-                call_expr
-                    .args
-                    .insert(0, parse_quote! { &mut #builder_ident });
+                call_expr.args.insert(0, parse_quote! { &#builder_ident });
 
                 self.last_expr_has_value = true;
             }
@@ -181,9 +187,13 @@ impl VisitMut for WorkflowVisitor {
             Expr::If(if_expr) => {
                 *i = self.handle_if(if_expr);
             }
+            Expr::While(while_expr) => {
+                *i = self.handle_while(while_expr);
+                self.last_expr_has_value = false;
+            }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
-                *i = parse_quote! { graph::new_literal(&mut #builder_ident, #lit) };
+                *i = parse_quote! { graph::new_literal(&#builder_ident, #lit) };
                 self.last_expr_has_value = true;
             }
             _ => visit_mut::visit_expr_mut(self, i),
@@ -209,25 +219,23 @@ impl VisitMut for WorkflowVisitor {
                 self.last_expr_has_value = false;
             }
             Stmt::Expr(Expr::Assign(assign_expr), _semi) => {
-                let Expr::Path(_) = &*assign_expr.left else {
+                let Expr::Path(path) = &*assign_expr.left else {
                     abort!(
                         assign_expr,
                         "only simple idents are supported in let bindings"
                     );
                 };
-                // let Some(name) = path.path.get_ident() else {
-                //     abort!(path, "only simple idents are supported in let bindings");
-                // };
-
-                // let Some(is_mut) = self.get_var(name) else {
-                //     abort!(name, "cannot find value `{}` in this scope", name);
-                // };
-
-                // if !is_mut {
-                //     abort!(name, "cannot assign twice to immutable variable `{}`", name);
-                // }
+                let Some(name) = path.path.get_ident() else {
+                    abort!(path, "only simple idents are supported in let bindings");
+                };
 
                 self.visit_expr_mut(&mut assign_expr.right);
+
+                let right = &assign_expr.right;
+                let new_assign: Stmt = parse_quote! {
+                    #name = #right;
+                };
+                *i = new_assign;
 
                 self.last_expr_has_value = false;
             }
@@ -291,7 +299,7 @@ impl WorkflowVisitor {
                         #else_expr
                     };
                     #(#else_post_captures)*
-                    let #else_predecessor_id = #builder.current_block_id;
+                    let #else_predecessor_id = #builder.current_block_id();
                     #builder.seal_block(graph::Terminator::jump(#merge_block_id));
                 };
 
@@ -299,7 +307,7 @@ impl WorkflowVisitor {
                 let phi = if then_has_value && else_has_value {
                     Some(quote! {
                          graph::phi(
-                            &mut #builder,
+                            &#builder,
                             vec![
                                 (#then_predecessor_id, __then_val),
                                 (#else_predecessor_id, __else_val)
@@ -329,7 +337,7 @@ impl WorkflowVisitor {
             };
 
             quote! {
-                #name = graph::phi(&mut #builder, #phi_inputs);
+                #name = graph::phi(&#builder, #phi_inputs);
             }
         });
 
@@ -344,13 +352,13 @@ impl WorkflowVisitor {
                 let #merge_block_id = #builder.new_block();
 
                 let __if_condition = #cond;
-                let #parent_predecessor_id = #builder.current_block_id;
+                let #parent_predecessor_id = #builder.current_block_id();
                 #builder.seal_block(graph::Terminator::branch(__if_condition.id, #then_block_id, #false_target));
 
                 #builder.switch_to_block(#then_block_id);
                 let __then_val = #then_branch_body;
                 #(#then_post_captures)*
-                let #then_predecessor_id = #builder.current_block_id;
+                let #then_predecessor_id = #builder.current_block_id();
                 #builder.seal_block(graph::Terminator::jump(#merge_block_id));
 
                 #else_block_impl
@@ -359,6 +367,96 @@ impl WorkflowVisitor {
                 #(#merge_phis)*
 
                 #phi
+            }
+        }
+    }
+
+    fn handle_while(&mut self, while_expr: &mut syn::ExprWhile) -> Expr {
+        let while_id = self.new_while_id();
+        let builder = self.builder_ident.clone();
+        let vars = self.list_vars();
+
+        let header_block_id = format_ident!("__while_header_block_{}", while_id);
+        let body_block_id = format_ident!("__while_body_block_{}", while_id);
+        let exit_block_id = format_ident!("__while_exit_block_{}", while_id);
+        let parent_predecessor_id = format_ident!("__while_parent_predecessor_{}", while_id);
+
+        let pre_while_captures = vars.iter().map(|name| {
+            let pre_while_name = format_ident!("__pre_while_{}_{}", name, while_id);
+            quote! { let #pre_while_name = #name; }
+        });
+
+        let phi_node_creations = vars.iter().map(|name| {
+            let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, while_id);
+            quote! {
+                let #phi_node_id = #builder.arena_mut().new_node(graph::NodeKind::Phi { from: vec![] });
+                #name = graph::TracedValue::new(#phi_node_id);
+                #builder.add_instruction_to_current_block(#phi_node_id);
+            }
+        });
+
+        self.visit_expr_mut(&mut while_expr.cond);
+        let cond = &while_expr.cond;
+
+        self.visit_block_mut(&mut while_expr.body);
+        let body_block = &while_expr.body;
+
+        let post_body_captures = vars.iter().map(|name| {
+            let post_body_name = format_ident!("__post_body_{}_{}", name, while_id);
+            quote! { let #post_body_name = #name; }
+        });
+
+        let body_predecessor_id = format_ident!("__body_predecessor_id_{}", while_id);
+
+        let mut phi_patchers = proc_macro2::TokenStream::new();
+        for var in &vars {
+            let phi_node_id = format_ident!("__{}_phi_node_id_{}", var, while_id);
+            let pre_while_name = format_ident!("__pre_while_{}_{}", var, while_id);
+            let post_body_name = format_ident!("__post_body_{}_{}", var, while_id);
+            phi_patchers.extend(quote! {
+                if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. })
+                    = #builder.arena_mut().nodes.get_mut(#phi_node_id) {
+                    *from = vec![
+                        (#parent_predecessor_id, #pre_while_name.id),
+                        (#body_predecessor_id, #post_body_name.id)
+                    ];
+                }
+            });
+        }
+
+        let exit_phis = vars.iter().map(|name| {
+            let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, while_id);
+            quote! {
+                #name = graph::TracedValue::new(#phi_node_id);
+            }
+        });
+
+        parse_quote! {
+            {
+                #(#pre_while_captures)*
+
+                let #header_block_id = #builder.new_block();
+                let #body_block_id = #builder.new_block();
+                let #exit_block_id = #builder.new_block();
+
+                let #parent_predecessor_id = #builder.current_block_id();
+                #builder.seal_block(graph::Terminator::jump(#header_block_id));
+
+                #builder.switch_to_block(#header_block_id);
+                #(#phi_node_creations)*
+                let __while_cond = #cond;
+                #builder.seal_block(graph::Terminator::branch(__while_cond.id, #body_block_id, #exit_block_id));
+
+                #builder.switch_to_block(#body_block_id);
+                #body_block;
+                #(#post_body_captures)*
+                let #body_predecessor_id = #builder.current_block_id();
+                #builder.seal_block(graph::Terminator::jump(#header_block_id));
+
+                #phi_patchers
+
+                #builder.switch_to_block(#exit_block_id);
+                #(#exit_phis)*
             }
         }
     }
@@ -385,7 +483,7 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = if visitor.last_expr_has_value {
         quote! {
             pub fn #func_name() -> graph::Graph<#return_type> {
-                let mut #builder_ident = graph::Builder::<#return_type>::new();
+                let #builder_ident = graph::Builder::<#return_type>::new();
 
                 let __result = #func_body;
 
@@ -396,7 +494,7 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             pub fn #func_name() -> graph::Graph<#return_type> {
-                let mut #builder_ident = graph::Builder::<#return_type>::new();
+                let #builder_ident = graph::Builder::<#return_type>::new();
 
                 #func_body;
 

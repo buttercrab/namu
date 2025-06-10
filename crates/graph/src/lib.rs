@@ -1,5 +1,6 @@
 use std::any::Any;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::cell::{Ref, RefCell, RefMut};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -118,6 +119,12 @@ impl<T> TracedValue<T> {
     }
 }
 
+struct BuilderInner {
+    arena: Arena,
+    blocks: Vec<BasicBlock>,
+    current_block_id: BlockId,
+}
+
 pub struct Graph<T> {
     pub arena: Arena,
     pub blocks: Vec<BasicBlock>,
@@ -197,42 +204,16 @@ impl<T: Clone + 'static> Graph<T> {
     pub fn run(&self) -> T {
         let mut results = HashMap::<NodeId, Value>::new();
         let mut queue: VecDeque<(BlockId, BlockId)> = VecDeque::new(); // (current_block_id, prev_block_id)
+        let mut return_value = None;
 
         if !self.blocks.is_empty() {
             queue.push_back((0, 0)); // Start at block 0, prev is dummy 0
         }
 
-        let mut executed_blocks = HashSet::new();
-
         while let Some((block_id, prev_block_id)) = queue.pop_front() {
-            if executed_blocks.contains(&block_id) {
-                continue;
-            }
-            executed_blocks.insert(block_id);
-
             let block = &self.blocks[block_id];
 
-            // 1. Execute Phi nodes
             for &node_id in &block.instructions {
-                if let NodeKind::Phi { from } = &self.arena.nodes[node_id].kind {
-                    let (_, value_node_id) = from
-                        .iter()
-                        .find(|(from_block_id, _)| *from_block_id == prev_block_id)
-                        .expect(
-                            "Invalid CFG: Phi node does not have an entry for predecessor block.",
-                        );
-
-                    if let Some(value) = results.get(value_node_id) {
-                        results.insert(node_id, value.clone());
-                    }
-                }
-            }
-
-            // 2. Execute other instructions
-            for &node_id in &block.instructions {
-                if results.contains_key(&node_id) {
-                    continue; // Skip phis
-                }
                 let node = &self.arena.nodes[node_id];
                 let value = match &node.kind {
                     NodeKind::Literal { value, .. } => value.clone(),
@@ -243,12 +224,23 @@ impl<T: Clone + 'static> Graph<T> {
                             .collect::<Vec<_>>();
                         func(input_values)
                     }
-                    NodeKind::Phi { .. } => unreachable!(), // Handled above
+                    NodeKind::Phi { from } => {
+                        let (_, value_node_id) = from
+                        .iter()
+                        .find(|(from_block_id, _)| *from_block_id == prev_block_id)
+                        .expect(
+                            "Invalid CFG: Phi node does not have an entry for predecessor block.",
+                        );
+
+                        results
+                            .get(value_node_id)
+                            .expect("Phi node has no value")
+                            .clone()
+                    }
                 };
                 results.insert(node_id, value);
             }
 
-            // 3. Follow terminator
             if let Some(terminator) = &block.terminator {
                 match terminator {
                     Terminator::Jump { target } => {
@@ -259,51 +251,54 @@ impl<T: Clone + 'static> Graph<T> {
                         true_target,
                         false_target,
                     } => {
-                        let cond_value = results[condition].downcast_ref::<bool>().unwrap();
-                        if *cond_value {
+                        let cond_val = results[condition].downcast_ref::<bool>().unwrap();
+                        if *cond_val {
                             queue.push_back((*true_target, block_id));
                         } else {
                             queue.push_back((*false_target, block_id));
                         }
                     }
-                    Terminator::Return { value: Some(value) } => {
-                        let final_value = results.get(value).unwrap();
-                        return final_value.downcast_ref::<T>().unwrap().clone();
-                    }
-                    Terminator::Return { value: None } => {
-                        unimplemented!()
+                    Terminator::Return { value } => {
+                        return_value = *value;
+                        break;
                     }
                 }
             }
         }
 
-        // Handle case for empty graph returning unit `()`
-        if self.blocks.is_empty() {
-            let unit_val: Value = Arc::new(());
-            if let Some(ret) = unit_val.downcast_ref::<T>() {
-                return ret.clone();
-            }
+        if let Some(return_node_id) = return_value {
+            results
+                .get(&return_node_id)
+                .and_then(|v| v.downcast_ref::<T>().cloned())
+                .expect("Workflow returned a value of the wrong type")
+        } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<()>() {
+            // If the expected return type is unit, we can fake it.
+            // This is a bit of a hack, but it's necessary to support workflows that
+            // don't explicitly return a value.
+            let unit: Arc<dyn Any + Send + Sync> = Arc::new(());
+            unit.downcast_ref::<T>().cloned().unwrap()
+        } else {
+            panic!("Workflow did not return a value");
         }
-
-        panic!("Workflow did not return a value");
     }
 }
 
-// --- Node Creation ---
+// --- Builder API ---
 
 pub fn new_literal<T: Debug + Send + Sync + 'static, U>(
-    builder: &mut Builder<U>,
+    builder: &Builder<U>,
     value: T,
 ) -> TracedValue<T> {
     let debug_repr = format!("{:?}", value);
-    builder.add_instruction(NodeKind::Literal {
+    let kind = NodeKind::Literal {
         value: Arc::new(value),
         debug_repr,
-    })
+    };
+    builder.add_instruction(kind)
 }
 
 pub fn phi<G: 'static, T: Clone + 'static>(
-    builder: &mut Builder<G>,
+    builder: &Builder<G>,
     from: Vec<(BlockId, TracedValue<T>)>,
 ) -> TracedValue<T> {
     if from.is_empty() {
@@ -328,9 +323,7 @@ pub fn phi<G: 'static, T: Clone + 'static>(
 }
 
 pub struct Builder<T> {
-    pub arena: Arena,
-    pub blocks: Vec<BasicBlock>,
-    pub current_block_id: BlockId,
+    inner: RefCell<BuilderInner>,
     _phantom: PhantomData<T>,
 }
 
@@ -343,34 +336,63 @@ impl<T> Default for Builder<T> {
 impl<T> Builder<T> {
     pub fn new() -> Self {
         Self {
-            arena: Arena::default(),
-            blocks: vec![BasicBlock::default()],
-            current_block_id: 0,
+            inner: RefCell::new(BuilderInner {
+                arena: Arena::default(),
+                blocks: vec![BasicBlock::default()],
+                current_block_id: 0,
+            }),
             _phantom: PhantomData,
         }
     }
 
-    pub fn add_instruction<V>(&mut self, kind: NodeKind) -> TracedValue<V> {
-        let id = self.arena.new_node(kind);
-        self.blocks[self.current_block_id].instructions.push(id);
+    pub fn current_block_id(&self) -> BlockId {
+        self.inner.borrow().current_block_id
+    }
+
+    pub fn arena(&self) -> Ref<Arena> {
+        Ref::map(self.inner.borrow(), |inner| &inner.arena)
+    }
+
+    pub fn arena_mut(&self) -> RefMut<Arena> {
+        RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.arena)
+    }
+
+    pub fn add_instruction<V>(&self, kind: NodeKind) -> TracedValue<V> {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.arena.new_node(kind);
+        let current_block_id = inner.current_block_id;
+        inner.blocks[current_block_id].instructions.push(id);
         TracedValue::new(id)
     }
 
-    pub fn seal_block(&mut self, terminator: Terminator) {
-        self.blocks[self.current_block_id].terminator = Some(terminator);
+    pub fn add_instruction_to_current_block(&self, node_id: NodeId) {
+        let mut inner = self.inner.borrow_mut();
+        let current_block_id = inner.current_block_id;
+        inner.blocks[current_block_id].instructions.push(node_id);
     }
 
-    pub fn new_block(&mut self) -> BlockId {
-        let block_id = self.blocks.len();
-        self.blocks.push(BasicBlock::default());
-        block_id
+    pub fn seal_block(&self, terminator: Terminator) {
+        let mut inner = self.inner.borrow_mut();
+        let current_block_id = inner.current_block_id;
+        let current_block = &mut inner.blocks[current_block_id];
+        assert!(current_block.terminator.is_none(), "Block already sealed");
+        current_block.terminator = Some(terminator);
     }
 
-    pub fn switch_to_block(&mut self, block_id: BlockId) {
-        self.current_block_id = block_id;
+    pub fn new_block(&self) -> BlockId {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.blocks.len();
+        inner.blocks.push(BasicBlock::default());
+        id
+    }
+
+    pub fn switch_to_block(&self, block_id: BlockId) {
+        let mut inner = self.inner.borrow_mut();
+        inner.current_block_id = block_id;
     }
 
     pub fn build(self) -> Graph<T> {
-        Graph::new(self.arena, self.blocks)
+        let inner = self.inner.into_inner();
+        Graph::new(inner.arena, inner.blocks)
     }
 }
