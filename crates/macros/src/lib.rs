@@ -80,8 +80,7 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 func,
                 inputs: vec![#(#input_ids),*],
             };
-            let id = builder.add_instruction(kind);
-            graph::TracedValue::new(id)
+            builder.add_instruction(kind)
         }
     };
 
