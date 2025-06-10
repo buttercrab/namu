@@ -1,5 +1,3 @@
-extern crate proc_macro;
-
 use std::collections::HashMap;
 
 use proc_macro::TokenStream;
@@ -7,8 +5,7 @@ use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
 use syn::visit_mut::{self, VisitMut};
 use syn::{
-    Block, Expr, ExprIf, ExprWhile, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input,
-    parse_quote,
+    Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input, parse_quote,
 };
 
 #[proc_macro_error]
@@ -95,48 +92,34 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct Scope {
-    vars: HashMap<Ident, (Ident, bool)>, // name -> (ssa_name, is_mutable)
+    vars: HashMap<Ident, bool>, // name -> is_mutable
 }
 
 impl Scope {
-    fn get(&self, name: &Ident) -> Option<(Ident, bool)> {
+    fn get(&self, name: &Ident) -> Option<bool> {
         self.vars.get(name).cloned()
     }
 
-    fn insert(&mut self, name: Ident, ssa_name: Ident, is_mutable: bool) {
-        self.vars.insert(name, (ssa_name, is_mutable));
-    }
-
-    fn merge(lhs: Scope, rhs: Scope) -> Scope {
-        let mut vars = lhs.vars;
-        vars.extend(rhs.vars);
-        Scope { vars }
+    fn insert(&mut self, name: Ident, is_mutable: bool) {
+        self.vars.insert(name, is_mutable);
     }
 }
 
-struct SsaBuilder {
+struct WorkflowVisitor {
     scopes: Vec<Scope>,
-    next_var_id: usize,
     next_if_block_id: usize,
     builder_ident: Ident,
 }
 
-impl SsaBuilder {
+impl WorkflowVisitor {
     fn new(builder_ident: Ident) -> Self {
         Self {
-            scopes: vec![Default::default()],
-            next_var_id: 0,
+            scopes: vec![],
             next_if_block_id: 0,
             builder_ident,
         }
-    }
-
-    fn new_ssa_name(&mut self, name: &Ident) -> Ident {
-        let id = self.next_var_id;
-        self.next_var_id += 1;
-        format_ident!("__ssa_{}_{}", name, id)
     }
 
     fn new_if_id(&mut self) -> usize {
@@ -153,24 +136,21 @@ impl SsaBuilder {
         self.scopes.pop().unwrap()
     }
 
-    fn get_var(&self, name: &Ident) -> Option<(Ident, bool)> {
+    fn get_var(&self, name: &Ident) -> Option<bool> {
         for scope in self.scopes.iter().rev() {
-            if let Some(var_info) = scope.get(name) {
-                return Some(var_info.clone());
+            if let Some(is_mut) = scope.get(name) {
+                return Some(is_mut);
             }
         }
         None
     }
 
-    fn insert_var(&mut self, name: Ident, ssa_name: Ident, is_mutable: bool) {
-        self.scopes
-            .last_mut()
-            .unwrap()
-            .insert(name, ssa_name, is_mutable);
+    fn insert_var(&mut self, name: Ident, is_mutable: bool) {
+        self.scopes.last_mut().unwrap().insert(name, is_mutable);
     }
 }
 
-impl VisitMut for SsaBuilder {
+impl VisitMut for WorkflowVisitor {
     fn visit_block_mut(&mut self, i: &mut Block) {
         let has_return_expr = if let Some(last_stmt) = i.stmts.last() {
             matches!(last_stmt, Stmt::Expr(_, None))
@@ -178,11 +158,9 @@ impl VisitMut for SsaBuilder {
             false
         };
 
-        self.enter_scope();
         for stmt in i.stmts.iter_mut() {
             self.visit_stmt_mut(stmt);
         }
-        self.exit_scope();
 
         if !has_return_expr {
             let builder_ident = &self.builder_ident;
@@ -191,6 +169,12 @@ impl VisitMut for SsaBuilder {
             };
             i.stmts.push(Stmt::Expr(new_expr, None));
         }
+    }
+
+    fn visit_expr_block_mut(&mut self, i: &mut syn::ExprBlock) {
+        self.enter_scope();
+        visit_mut::visit_expr_block_mut(self, i);
+        self.exit_scope();
     }
 
     fn visit_expr_mut(&mut self, i: &mut Expr) {
@@ -206,14 +190,11 @@ impl VisitMut for SsaBuilder {
                     .insert(0, parse_quote! { &mut #builder_ident });
             }
             Expr::Path(path) => {
-                let Some(ident) = path.path.get_ident() else {
-                    abort!(path, "only simple idents are supported in let bindings");
-                };
-                let Some((ssa_var, _)) = self.get_var(ident) else {
-                    abort!(ident, "cannot find value `{}` in this scope", ident);
-                };
-
-                *i = parse_quote! { #ssa_var };
+                if let Some(ident) = path.path.get_ident() {
+                    if self.get_var(ident).is_none() {
+                        abort!(ident, "cannot find value `{}` in this scope", ident);
+                    }
+                }
             }
             Expr::Assign(expr) => {
                 abort!(
@@ -222,20 +203,11 @@ impl VisitMut for SsaBuilder {
                 );
             }
             Expr::If(if_expr) => {
-                // Manually visit children first
-                self.visit_expr_mut(&mut if_expr.cond);
-                self.visit_block_mut(&mut if_expr.then_branch);
-                if let Some((_, else_expr)) = &mut if_expr.else_branch {
-                    self.visit_expr_mut(else_expr);
-                }
-
                 *i = self.handle_if(if_expr);
             }
-            Expr::While(while_expr) => {
-                self.visit_expr_mut(&mut while_expr.cond);
-                self.visit_block_mut(&mut while_expr.body);
-
-                *i = self.handle_while(while_expr);
+            Expr::Lit(lit) => {
+                let builder_ident = &self.builder_ident;
+                *i = parse_quote! { graph::new_literal(&mut #builder_ident, #lit) };
             }
             _ => visit_mut::visit_expr_mut(self, i),
         }
@@ -247,18 +219,13 @@ impl VisitMut for SsaBuilder {
                 let Pat::Ident(pat_ident) = &local.pat else {
                     abort!(local, "only simple idents are supported in let bindings");
                 };
-                let Some(mut init) = local.init.as_ref().cloned() else {
+                if let Some(init) = &mut local.init {
+                    let is_mut = pat_ident.mutability.is_some();
+                    self.visit_expr_mut(&mut init.expr);
+                    self.insert_var(pat_ident.ident.clone(), is_mut);
+                } else {
                     abort!(local, "let bindings must be initialized");
-                };
-
-                let is_mut = pat_ident.mutability.is_some();
-                self.visit_expr_mut(&mut init.expr);
-
-                let ssa_name = self.new_ssa_name(&pat_ident.ident);
-                self.insert_var(pat_ident.ident.clone(), ssa_name.clone(), is_mut);
-
-                let rhs = init.expr;
-                *i = parse_quote! { let #ssa_name = #rhs; };
+                }
             }
             Stmt::Expr(Expr::Assign(assign_expr), _semi) => {
                 let Expr::Path(path) = &*assign_expr.left else {
@@ -271,7 +238,7 @@ impl VisitMut for SsaBuilder {
                     abort!(path, "only simple idents are supported in let bindings");
                 };
 
-                let Some((_, is_mut)) = self.get_var(name) else {
+                let Some(is_mut) = self.get_var(name) else {
                     abort!(name, "cannot find value `{}` in this scope", name);
                 };
 
@@ -280,13 +247,6 @@ impl VisitMut for SsaBuilder {
                 }
 
                 self.visit_expr_mut(&mut assign_expr.right);
-
-                let ssa_name = self.new_ssa_name(name);
-                self.insert_var(name.clone(), ssa_name.clone(), is_mut);
-
-                let rhs = &assign_expr.right;
-
-                *i = parse_quote! { let #ssa_name = #rhs; };
             }
             Stmt::Expr(expr, _semi) => self.visit_expr_mut(expr),
             _ => visit_mut::visit_stmt_mut(self, i),
@@ -294,60 +254,128 @@ impl VisitMut for SsaBuilder {
     }
 }
 
-impl SsaBuilder {
-    fn handle_if(&mut self, if_expr: &ExprIf) -> Expr {
+impl WorkflowVisitor {
+    fn handle_if(&mut self, if_expr: &mut ExprIf) -> Expr {
         let builder = self.builder_ident.clone();
-
-        let cond = &if_expr.cond;
-        let then_branch = &if_expr.then_branch;
-
         let if_id = self.new_if_id();
+
+        // --- 1. Identify mutable variables in scope before the `if` ---
+        let mut mutable_vars = HashMap::new();
+        for scope in self.scopes.iter().rev() {
+            for (name, &is_mutable) in &scope.vars {
+                if is_mutable && !mutable_vars.contains_key(name) {
+                    mutable_vars.insert(name.clone(), name.clone());
+                }
+            }
+        }
+
+        // --- 2. Create pre-capture statements for mutable vars ---
+        let pre_if_captures = mutable_vars.keys().map(|name| {
+            let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
+            quote! { let #pre_if_name = #name; }
+        });
+
+        // --- 3. Visit condition ---
+        self.visit_expr_mut(&mut if_expr.cond);
+        let cond = &if_expr.cond;
+
+        // --- 4. Set up block IDs ---
         let then_block_id = format_ident!("__if_then_block_{}", if_id);
         let merge_block_id = format_ident!("__if_merge_block_{}", if_id);
-        let then_predecessor_id = format_ident!("__if_then_predecessor_{}", if_id);
-        let then_val = format_ident!("__if_then_val_{}", if_id);
+        let parent_predecessor_id = format_ident!("__if_parent_predecessor_{}", if_id);
 
-        let (else_block_setup, else_block_impl, false_target, phi_call) =
-            if let Some((_, else_expr)) = &if_expr.else_branch {
-                // Case 1: `if-else` expression
+        // --- 5. Process `then` branch ---
+        self.enter_scope();
+        self.visit_block_mut(&mut if_expr.then_branch);
+        self.exit_scope();
+        let then_branch_body = &if_expr.then_branch;
+
+        let then_post_captures = mutable_vars.keys().map(|name| {
+            let post_then_name = format_ident!("__post_then_{}_{}", name, if_id);
+            quote! { let #post_then_name = #name; }
+        });
+
+        // --- 6. Process `else` branch ---
+        let (else_block_setup, else_block_impl, false_target, return_phi) =
+            if let Some((_, else_expr)) = &mut if_expr.else_branch {
                 let else_block_id = format_ident!("__if_else_block_{}", if_id);
-                let else_predecessor_id = format_ident!("__if_else_predecessor_{}", if_id);
-                let else_val = format_ident!("__if_else_val_{}", if_id);
+
+                // --- reset mutable vars for the `else` branch ---
+                let else_resets = mutable_vars.keys().map(|name| {
+                    let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
+                    quote! { #name = #pre_if_name; }
+                });
+
+                self.enter_scope();
+                self.visit_expr_mut(else_expr);
+                self.exit_scope();
+
+                let else_post_captures = mutable_vars.keys().map(|name| {
+                    let post_else_name = format_ident!("__post_else_{}_{}", name, if_id);
+                    quote! { let #post_else_name = #name; }
+                });
 
                 let setup = quote! { let #else_block_id = #builder.new_block(); };
+                let else_predecessor_id = format_ident!("__else_predecessor_id_{}", if_id);
                 let implementation = quote! {
                     #builder.switch_to_block(#else_block_id);
-                    let #else_val = #else_expr;
+                    let __else_val = {
+                        #(#else_resets)*
+                        #else_expr
+                    };
+                    #(#else_post_captures)*
                     let #else_predecessor_id = #builder.current_block_id;
-                    #builder.seal_block(graph::Terminator::Jump {
-                        target: #merge_block_id,
-                    });
+                    #builder.seal_block(graph::Terminator::Jump { target: #merge_block_id });
                 };
+
+                let then_predecessor_id = format_ident!("__then_predecessor_id_{}", if_id);
                 let phi = quote! {
-                    graph::phi(
+                     graph::phi(
                         &mut #builder,
                         vec![
-                            (#then_predecessor_id, #then_val),
-                            (#else_predecessor_id, #else_val),
-                        ],
+                            (#then_predecessor_id, __then_val),
+                            (#else_predecessor_id, __else_val)
+                        ]
                     )
                 };
 
-                (Some(setup), Some(implementation), else_block_id, Some(phi))
+                (Some(setup), Some(implementation), else_block_id, phi)
             } else {
-                // Case 2: `if` expression without `else`. The value is always `()`.
-                let false_target = merge_block_id.clone();
-
-                (None, None, false_target, None)
+                let phi = quote! { graph::new_literal(&mut #builder, ()) };
+                (None, None, merge_block_id.clone(), phi)
             };
 
+        // --- 7. Create phi nodes for all mutable variables ---
+        let merge_phis = mutable_vars.keys().map(|name| {
+            let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
+            let post_then_name = format_ident!("__post_then_{}_{}", name, if_id);
+            let then_predecessor_id = format_ident!("__then_predecessor_id_{}", if_id);
+
+            let phi_inputs = if if_expr.else_branch.is_some() {
+                let post_else_name = format_ident!("__post_else_{}_{}", name, if_id);
+                let else_predecessor_id = format_ident!("__else_predecessor_id_{}", if_id);
+                quote! { vec![(#then_predecessor_id, #post_then_name), (#else_predecessor_id, #post_else_name)] }
+            } else {
+                quote! { vec![(#then_predecessor_id, #post_then_name), (#parent_predecessor_id, #pre_if_name)] }
+            };
+
+            quote! {
+                #name = graph::phi(&mut #builder, #phi_inputs);
+            }
+        });
+
+        // --- 8. Assemble the final expression ---
+        let then_predecessor_id = format_ident!("__then_predecessor_id_{}", if_id);
         parse_quote! {
             {
+                #(#pre_if_captures)*
+
                 let #then_block_id = #builder.new_block();
                 #else_block_setup
                 let #merge_block_id = #builder.new_block();
 
                 let __if_condition = #cond;
+                let #parent_predecessor_id = #builder.current_block_id;
                 #builder.seal_block(graph::Terminator::Branch {
                     condition: __if_condition.id,
                     true_target: #then_block_id,
@@ -355,23 +383,19 @@ impl SsaBuilder {
                 });
 
                 #builder.switch_to_block(#then_block_id);
-                let #then_val = #then_branch;
+                let __then_val = #then_branch_body;
+                #(#then_post_captures)*
                 let #then_predecessor_id = #builder.current_block_id;
-                #builder.seal_block(graph::Terminator::Jump {
-                    target: #merge_block_id,
-                });
+                #builder.seal_block(graph::Terminator::Jump { target: #merge_block_id });
 
                 #else_block_impl
 
                 #builder.switch_to_block(#merge_block_id);
+                #(#merge_phis)*
 
-                #phi_call
+                #return_phi
             }
         }
-    }
-
-    fn handle_while(&mut self, while_expr: &ExprWhile) -> Expr {
-        unimplemented!()
     }
 }
 
@@ -388,7 +412,10 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let builder_ident = format_ident!("__builder");
-    SsaBuilder::new(builder_ident.clone()).visit_block_mut(&mut func_body);
+    let mut visitor = WorkflowVisitor::new(builder_ident.clone());
+    visitor.enter_scope();
+    visitor.visit_block_mut(&mut func_body);
+    visitor.exit_scope();
 
     let expanded = quote! {
         pub fn #func_name() -> graph::Graph<#return_type> {

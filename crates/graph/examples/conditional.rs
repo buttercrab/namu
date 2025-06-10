@@ -22,7 +22,7 @@ fn identity(v: i32) -> i32 {
 
 #[workflow]
 fn simple_workflow() -> i32 {
-    let input = graph::new_literal(10);
+    let input = 10;
     if is_positive(input) {
         double(input)
     } else {
@@ -32,7 +32,7 @@ fn simple_workflow() -> i32 {
 
 #[workflow]
 fn complex_workflow() -> i32 {
-    let input = graph::new_literal(10);
+    let input = 10;
     if is_positive(input) {
         double(input)
     } else {
@@ -46,7 +46,7 @@ fn complex_workflow() -> i32 {
 
 #[workflow]
 fn complex_workflow2() -> i32 {
-    let input = graph::new_literal(10);
+    let input = 10;
     if is_positive(input) {
         double(input)
     } else if is_negative(input) {
@@ -58,7 +58,7 @@ fn complex_workflow2() -> i32 {
 
 #[workflow]
 fn complex_workflow3() -> i32 {
-    let input = graph::new_literal(10);
+    let input = 10;
     let mut b = input;
     if is_positive(input) {
         b = double(input);

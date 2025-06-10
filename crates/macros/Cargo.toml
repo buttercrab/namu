@@ -11,4 +11,4 @@ convert_case = "0.8"
 proc-macro2 = "1"
 proc-macro-error = { version = "1", default-features = false }
 quote = "1"
-syn = { version = "2", features = ["full", "visit-mut"] }
+syn = { version = "2", features = ["full", "visit-mut", "visit"] }

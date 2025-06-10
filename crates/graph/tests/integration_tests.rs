@@ -76,7 +76,7 @@ fn reassignment_workflow_run() {
 fn conditional_workflow_run() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let input = graph::new_literal(10);
+        let input = 10;
         if is_positive(input) {
             double(input)
         } else {
@@ -92,11 +92,11 @@ fn conditional_workflow_run() {
 fn nested_conditional_workflow_run() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let input = graph::new_literal(-10);
-        if is_positive(input) {
+        let input = 10;
+        if is_negative(input) {
             double(input)
         } else {
-            if is_negative(input) {
+            if is_positive(input) {
                 double(input)
             } else {
                 identity(input)
@@ -105,14 +105,14 @@ fn nested_conditional_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), -20);
+    assert_eq!(graph.run(), 20);
 }
 
 #[test]
 fn mutable_var_in_conditional_branch_run() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let mut val = graph::new_literal(10);
+        let mut val = 10;
         val = if is_positive(val) { double(val) } else { val };
         val
     }
@@ -125,7 +125,7 @@ fn mutable_var_in_conditional_branch_run() {
 fn conditional_execution_does_not_execute_un_taken_branch() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let input = graph::new_literal(10);
+        let input = 10;
         if is_positive(input) {
             double(input)
         } else {
@@ -141,7 +141,7 @@ fn conditional_execution_does_not_execute_un_taken_branch() {
 fn mutable_var_updated_in_conditional_and_used_after() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let input = graph::new_literal(10);
+        let input = 10;
         let mut b = input;
         b = if is_positive(input) {
             double(input)
@@ -178,7 +178,7 @@ fn simple_graph_structure() {
 fn conditional_graph_structure() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let input = graph::new_literal(10);
+        let input = 10;
         if is_positive(input) {
             double(input)
         } else {
@@ -208,7 +208,7 @@ Block 3:
 fn nested_conditional_graph_structure() {
     #[workflow]
     fn test_workflow() -> i32 {
-        let input = graph::new_literal(10);
+        let input = 10;
         if is_positive(input) {
             double(input)
         } else if is_negative(input) {

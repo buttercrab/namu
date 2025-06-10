@@ -265,20 +265,35 @@ pub fn new_literal<T: Debug + Send + Sync + 'static, U>(
     value: T,
 ) -> TracedValue<T> {
     let debug_repr = format!("{:?}", value);
-    let kind = NodeKind::Literal {
+    builder.add_instruction(NodeKind::Literal {
         value: Arc::new(value),
         debug_repr,
-    };
-    let id = builder.add_instruction(kind);
-    TracedValue::new(id)
+    })
 }
 
-pub fn phi<T, U>(builder: &mut Builder<U>, from: Vec<(BlockId, TracedValue<T>)>) -> TracedValue<T> {
-    let kind = NodeKind::Phi {
-        from: from.iter().map(|(b, v)| (*b, v.id)).collect(),
-    };
-    let id = builder.add_instruction(kind);
-    TracedValue::new(id)
+pub fn phi<G: 'static, T: Clone + 'static>(
+    builder: &mut Builder<G>,
+    from: Vec<(BlockId, TracedValue<T>)>,
+) -> TracedValue<T> {
+    if from.is_empty() {
+        panic!("phi node must have at least one incoming value");
+    }
+
+    let first_node_id = from[0].1.id;
+    if from
+        .iter()
+        .skip(1)
+        .all(|(_, value)| value.id == first_node_id)
+    {
+        return TracedValue::new(first_node_id);
+    }
+
+    let from = from
+        .into_iter()
+        .map(|(block, value)| (block, value.id))
+        .collect();
+
+    builder.add_instruction(NodeKind::Phi { from })
 }
 
 pub struct Builder<T> {
@@ -288,24 +303,26 @@ pub struct Builder<T> {
     _phantom: PhantomData<T>,
 }
 
+impl<T> Default for Builder<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> Builder<T> {
     pub fn new() -> Self {
-        let mut builder = Self {
+        Self {
             arena: Arena::default(),
-            blocks: Vec::new(),
+            blocks: vec![BasicBlock::default()],
             current_block_id: 0,
             _phantom: PhantomData,
-        };
-        builder.blocks.push(BasicBlock::default());
-        builder
+        }
     }
 
-    pub fn add_instruction(&mut self, kind: NodeKind) -> NodeId {
-        let node_id = self.arena.new_node(kind);
-        self.blocks[self.current_block_id]
-            .instructions
-            .push(node_id);
-        node_id
+    pub fn add_instruction<V>(&mut self, kind: NodeKind) -> TracedValue<V> {
+        let id = self.arena.new_node(kind);
+        self.blocks[self.current_block_id].instructions.push(id);
+        TracedValue::new(id)
     }
 
     pub fn seal_block(&mut self, terminator: Terminator) {
