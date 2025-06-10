@@ -31,6 +31,16 @@ fn workflow2() -> i32 {
     b
 }
 
+#[workflow]
+fn workflow3() {
+    let a = one();
+    let b = two();
+    {
+        let c = add(a, b);
+    }
+    let b = two();
+}
+
 fn main() {
     let graph = workflow();
     let graph_str = graph.graph_string();

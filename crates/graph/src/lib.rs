@@ -71,8 +71,30 @@ pub enum Terminator {
         false_target: BlockId,
     },
     Return {
-        value: NodeId,
+        value: Option<NodeId>,
     },
+}
+
+impl Terminator {
+    pub fn jump(target: BlockId) -> Self {
+        Self::Jump { target }
+    }
+
+    pub fn branch(condition: NodeId, true_target: BlockId, false_target: BlockId) -> Self {
+        Self::Branch {
+            condition,
+            true_target,
+            false_target,
+        }
+    }
+
+    pub fn return_value(value: NodeId) -> Self {
+        Self::Return { value: Some(value) }
+    }
+
+    pub fn return_unit() -> Self {
+        Self::Return { value: None }
+    }
 }
 
 #[derive(Default)]
@@ -155,7 +177,13 @@ impl<T> Graph<T> {
                         "  branch var{} ? Block {} : Block {}",
                         condition, true_target, false_target
                     ),
-                    Terminator::Return { value } => format!("  return var{}", value),
+                    Terminator::Return { value } => {
+                        if let Some(value) = value {
+                            format!("  return var{}", value)
+                        } else {
+                            "  return ()".to_string()
+                        }
+                    }
                 };
                 s.push_str(&term_str);
                 s.push('\n');
@@ -238,9 +266,12 @@ impl<T: Clone + 'static> Graph<T> {
                             queue.push_back((*false_target, block_id));
                         }
                     }
-                    Terminator::Return { value } => {
+                    Terminator::Return { value: Some(value) } => {
                         let final_value = results.get(value).unwrap();
                         return final_value.downcast_ref::<T>().unwrap().clone();
+                    }
+                    Terminator::Return { value: None } => {
+                        unimplemented!()
                     }
                 }
             }

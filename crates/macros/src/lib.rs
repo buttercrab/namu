@@ -110,6 +110,7 @@ struct WorkflowVisitor {
     scopes: Vec<Scope>,
     next_if_block_id: usize,
     builder_ident: Ident,
+    last_expr_has_value: bool,
 }
 
 impl WorkflowVisitor {
@@ -118,6 +119,7 @@ impl WorkflowVisitor {
             scopes: vec![],
             next_if_block_id: 0,
             builder_ident,
+            last_expr_has_value: false,
         }
     }
 
@@ -151,29 +153,16 @@ impl WorkflowVisitor {
 
 impl VisitMut for WorkflowVisitor {
     fn visit_block_mut(&mut self, i: &mut Block) {
-        let has_return_expr = if let Some(last_stmt) = i.stmts.last() {
-            matches!(last_stmt, Stmt::Expr(_, None))
-        } else {
-            false
-        };
-
+        self.enter_scope();
         for stmt in i.stmts.iter_mut() {
             self.visit_stmt_mut(stmt);
         }
-
-        if !has_return_expr {
-            let builder_ident = &self.builder_ident;
-            let new_expr: Expr = parse_quote! {
-                graph::new_literal(&mut #builder_ident, ())
-            };
-            i.stmts.push(Stmt::Expr(new_expr, None));
-        }
-    }
-
-    fn visit_expr_block_mut(&mut self, i: &mut syn::ExprBlock) {
-        self.enter_scope();
-        visit_mut::visit_expr_block_mut(self, i);
         self.exit_scope();
+
+        self.last_expr_has_value = self.last_expr_has_value
+            && i.stmts
+                .last()
+                .is_some_and(|stmt| matches!(stmt, Stmt::Expr(_, None)));
     }
 
     fn visit_expr_mut(&mut self, i: &mut Expr) {
@@ -187,6 +176,8 @@ impl VisitMut for WorkflowVisitor {
                 call_expr
                     .args
                     .insert(0, parse_quote! { &mut #builder_ident });
+
+                self.last_expr_has_value = true;
             }
             Expr::Path(path) => {
                 if let Some(ident) = path.path.get_ident() {
@@ -194,6 +185,8 @@ impl VisitMut for WorkflowVisitor {
                         abort!(ident, "cannot find value `{}` in this scope", ident);
                     }
                 }
+
+                self.last_expr_has_value = true;
             }
             Expr::Assign(expr) => {
                 abort!(
@@ -207,6 +200,7 @@ impl VisitMut for WorkflowVisitor {
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
                 *i = parse_quote! { graph::new_literal(&mut #builder_ident, #lit) };
+                self.last_expr_has_value = true;
             }
             _ => visit_mut::visit_expr_mut(self, i),
         }
@@ -225,6 +219,8 @@ impl VisitMut for WorkflowVisitor {
                 } else {
                     abort!(local, "let bindings must be initialized");
                 }
+
+                self.last_expr_has_value = false;
             }
             Stmt::Expr(Expr::Assign(assign_expr), _semi) => {
                 let Expr::Path(path) = &*assign_expr.left else {
@@ -246,6 +242,8 @@ impl VisitMut for WorkflowVisitor {
                 }
 
                 self.visit_expr_mut(&mut assign_expr.right);
+
+                self.last_expr_has_value = false;
             }
             Stmt::Expr(expr, _semi) => self.visit_expr_mut(expr),
             _ => visit_mut::visit_stmt_mut(self, i),
@@ -284,10 +282,9 @@ impl WorkflowVisitor {
         let parent_predecessor_id = format_ident!("__if_parent_predecessor_{}", if_id);
 
         // --- 5. Process `then` branch ---
-        self.enter_scope();
         self.visit_block_mut(&mut if_expr.then_branch);
-        self.exit_scope();
         let then_branch_body = &if_expr.then_branch;
+        let then_has_value = self.last_expr_has_value;
 
         let then_post_captures = mutable_vars.keys().map(|name| {
             let post_then_name = format_ident!("__post_then_{}_{}", name, if_id);
@@ -295,7 +292,7 @@ impl WorkflowVisitor {
         });
 
         // --- 6. Process `else` branch ---
-        let (else_block_setup, else_block_impl, false_target, return_phi) =
+        let (else_block_setup, else_block_impl, false_target, phi) =
             if let Some((_, else_expr)) = &mut if_expr.else_branch {
                 let else_block_id = format_ident!("__if_else_block_{}", if_id);
 
@@ -305,9 +302,8 @@ impl WorkflowVisitor {
                     quote! { #name = #pre_if_name; }
                 });
 
-                self.enter_scope();
                 self.visit_expr_mut(else_expr);
-                self.exit_scope();
+                let else_has_value = self.last_expr_has_value;
 
                 let else_post_captures = mutable_vars.keys().map(|name| {
                     let post_else_name = format_ident!("__post_else_{}_{}", name, if_id);
@@ -324,24 +320,27 @@ impl WorkflowVisitor {
                     };
                     #(#else_post_captures)*
                     let #else_predecessor_id = #builder.current_block_id;
-                    #builder.seal_block(graph::Terminator::Jump { target: #merge_block_id });
+                    #builder.seal_block(graph::Terminator::jump(#merge_block_id));
                 };
 
                 let then_predecessor_id = format_ident!("__then_predecessor_id_{}", if_id);
-                let phi = quote! {
-                     graph::phi(
-                        &mut #builder,
-                        vec![
-                            (#then_predecessor_id, __then_val),
-                            (#else_predecessor_id, __else_val)
-                        ]
-                    )
+                let phi = if then_has_value && else_has_value {
+                    Some(quote! {
+                         graph::phi(
+                            &mut #builder,
+                            vec![
+                                (#then_predecessor_id, __then_val),
+                                (#else_predecessor_id, __else_val)
+                            ]
+                        )
+                    })
+                } else {
+                    None
                 };
 
                 (Some(setup), Some(implementation), else_block_id, phi)
             } else {
-                let phi = quote! { graph::new_literal(&mut #builder, ()) };
-                (None, None, merge_block_id.clone(), phi)
+                (None, None, merge_block_id.clone(), None)
             };
 
         // --- 7. Create phi nodes for all mutable variables ---
@@ -375,24 +374,20 @@ impl WorkflowVisitor {
 
                 let __if_condition = #cond;
                 let #parent_predecessor_id = #builder.current_block_id;
-                #builder.seal_block(graph::Terminator::Branch {
-                    condition: __if_condition.id,
-                    true_target: #then_block_id,
-                    false_target: #false_target,
-                });
+                #builder.seal_block(graph::Terminator::branch(__if_condition.id, #then_block_id, #false_target));
 
                 #builder.switch_to_block(#then_block_id);
                 let __then_val = #then_branch_body;
                 #(#then_post_captures)*
                 let #then_predecessor_id = #builder.current_block_id;
-                #builder.seal_block(graph::Terminator::Jump { target: #merge_block_id });
+                #builder.seal_block(graph::Terminator::jump(#merge_block_id));
 
                 #else_block_impl
 
                 #builder.switch_to_block(#merge_block_id);
                 #(#merge_phis)*
 
-                #return_phi
+                #phi
             }
         }
     }
@@ -416,14 +411,27 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     visitor.visit_block_mut(&mut func_body);
     visitor.exit_scope();
 
-    let expanded = quote! {
-        pub fn #func_name() -> graph::Graph<#return_type> {
-            let mut #builder_ident = graph::Builder::<#return_type>::new();
+    let expanded = if visitor.last_expr_has_value {
+        quote! {
+            pub fn #func_name() -> graph::Graph<#return_type> {
+                let mut #builder_ident = graph::Builder::<#return_type>::new();
 
-            let result_val = #func_body;
+                let __result = #func_body;
 
-            #builder_ident.seal_block(graph::Terminator::Return { value: result_val.id });
-            #builder_ident.build()
+                #builder_ident.seal_block(graph::Terminator::return_value(__result.id));
+                #builder_ident.build()
+            }
+        }
+    } else {
+        quote! {
+            pub fn #func_name() -> graph::Graph<#return_type> {
+                let mut #builder_ident = graph::Builder::<#return_type>::new();
+
+                #func_body;
+
+                #builder_ident.seal_block(graph::Terminator::return_unit());
+                #builder_ident.build()
+            }
         }
     };
 
