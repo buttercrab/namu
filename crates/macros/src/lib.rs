@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use darling::{FromMeta, ast::NestedMeta};
 use proc_macro::TokenStream;
 use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
@@ -8,84 +9,227 @@ use syn::{
     Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input, parse_quote,
 };
 
+#[derive(Debug, FromMeta)]
+struct TaskArgs {
+    #[darling(default)]
+    r#type: TaskType,
+}
+
+#[derive(Debug, Default, FromMeta, PartialEq)]
+#[darling(rename_all = "snake_case")]
+enum TaskType {
+    #[default]
+    Single,
+    Batch,
+    Stream,
+}
+
 #[proc_macro_error]
 #[proc_macro_attribute]
-pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let func = parse_macro_input!(item as ItemFn);
-    let func_name = &func.sig.ident;
-    let func_impl_name = format_ident!("__impl_{}", func_name);
-
-    let original_func_renamed = {
-        let mut f = func.clone();
-        f.sig.ident = func_impl_name.clone();
-        quote! {
-            #f
+pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr_args = match NestedMeta::parse_meta_list(attr.into()) {
+        Ok(v) => v,
+        Err(e) => {
+            return TokenStream::from(darling::Error::from(e).write_errors());
+        }
+    };
+    let args = match TaskArgs::from_list(&attr_args) {
+        Ok(v) => v,
+        Err(e) => {
+            return TokenStream::from(e.write_errors());
         }
     };
 
-    let mut constructor_sig = func.sig.clone();
+    let func = parse_macro_input!(item as ItemFn);
+    let func_name = &func.sig.ident;
+    let struct_name = format_ident!("__{}", func_name);
+
+    // Keep a renamed version of the original function for the implementation
+    let task_impl_func = {
+        let mut f = func.clone();
+        f.sig.ident = format_ident!("__impl_{}", func_name);
+        quote! { #f }
+    };
+    let task_impl_func_name = format_ident!("__impl_{}", func_name);
+
+    // --- Argument & Return Type Analysis ---
     let mut arg_names = Vec::new();
     let mut arg_types = Vec::new();
-
-    constructor_sig.generics = parse_quote! { <T: Clone + 'static> };
-
-    constructor_sig.inputs.clear();
-    constructor_sig
-        .inputs
-        .push(parse_quote! { builder: &graph::Builder<T> });
-
     for arg in func.sig.inputs.iter() {
         let syn::FnArg::Typed(pt) = arg else {
             abort!(arg, "`self` is not supported");
         };
         let Pat::Ident(pat_ident) = &*pt.pat else {
-            abort!(pt, "only simple idents are supported in task arguments");
+            abort!(pt, "only simple idents are supported");
         };
-        let name = &pt.pat;
-        let ty = &pt.ty;
-
         arg_names.push(pat_ident.ident.clone());
-        arg_types.push(ty.clone());
+        arg_types.push(pt.ty.clone());
+    }
+
+    let (input_type, input_packing) = if arg_types.len() == 1 {
+        let ty = &arg_types[0];
+        let name = &arg_names[0];
+        (quote! { #ty }, quote! { #name })
+    } else {
+        (quote! { (#(#arg_types),*) }, quote! { (#(#arg_names),*) })
+    };
+
+    let output_type = match &func.sig.output {
+        ReturnType::Type(_, ty) => quote! { #ty },
+        ReturnType::Default => quote! { () },
+    };
+
+    // --- Generate Trait Implementation ---
+    let task_trait_impl = match args.r#type {
+        TaskType::Single => {
+            let input_destructuring = if arg_names.len() == 1 {
+                let name = &arg_names[0];
+                quote! { let #name = input; }
+            } else {
+                quote! { let (#(#arg_names),*) = input; }
+            };
+            quote! {
+                struct #struct_name;
+                impl task::Task for #struct_name {
+                    type Config = ();
+                    type Input = #input_type;
+                    type Output = #output_type;
+                    fn new(_config: Self::Config) -> Self { Self }
+                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, Self::Output)>) {
+                        task::SingleTask::run(self, recv, send);
+                    }
+                }
+                impl task::SingleTask for #struct_name {
+                    fn call(&mut self, input: Self::Input) -> Self::Output {
+                        #input_destructuring
+                        #task_impl_func_name(#(#arg_names),*)
+                    }
+                }
+            }
+        }
+        TaskType::Batch => {
+            if arg_names.len() != 1 {
+                abort!(
+                    func.sig.inputs,
+                    "Batch task must have exactly one argument: Vec<Input>"
+                );
+            }
+            quote! {
+                struct #struct_name;
+                impl task::Task for #struct_name {
+                    type Config = ();
+                    type Input = #input_type;
+                    type Output = #output_type;
+                    fn new(_config: Self::Config) -> Self { Self }
+                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, Self::Output)>) {
+                        task::BatchedTask::run(self, recv, send);
+                    }
+                }
+                impl task::BatchedTask for #struct_name {
+                    fn batch_size(&self) -> usize { 16 } // Default, could be an attribute
+                    fn call(&mut self, input: Vec<Self::Input>) -> Vec<Self::Output> {
+                        #task_impl_func_name(input)
+                    }
+                }
+            }
+        }
+        TaskType::Stream => {
+            if arg_names.len() != 1 {
+                abort!(
+                    func.sig.inputs,
+                    "Stream task must have exactly one argument: Input"
+                );
+            }
+            quote! {
+                #[allow(non_camel_case_types)]
+                struct #struct_name;
+                impl task::Task for #struct_name {
+                    type Config = ();
+                    type Input = #input_type;
+                    type Output = #output_type;
+                    fn new(_config: Self::Config) -> Self { Self }
+                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, Self::Output)>) {
+                        task::StreamTask::run(self, recv, send);
+                    }
+                }
+                impl task::StreamTask for #struct_name {
+                    fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Self::Output> {
+                        #task_impl_func_name(input)
+                    }
+                }
+            }
+        }
+    };
+
+    // --- Generate Constructor for Graph Builder (Backward Compatible) ---
+    let mut constructor_sig = func.sig.clone();
+    constructor_sig.generics = parse_quote! { <T: Clone + 'static> };
+    constructor_sig.inputs.clear();
+    constructor_sig
+        .inputs
+        .push(parse_quote! { builder: &graph::Builder<T> });
+    for (name, ty) in arg_names.iter().zip(arg_types.iter()) {
         constructor_sig
             .inputs
             .push(parse_quote! { #name: graph::TracedValue<#ty> });
     }
-
-    let return_type = match &func.sig.output {
-        ReturnType::Type(_, ty) => quote! { #ty },
-        ReturnType::Default => quote! { () },
-    };
-    constructor_sig.output = parse_quote! { -> graph::TracedValue<#return_type> };
+    constructor_sig.output = parse_quote! { -> graph::TracedValue<#output_type> };
 
     let value_downcasts = arg_names.iter().enumerate().map(|(i, name)| {
         let ty = &arg_types[i];
-        quote! {
-            let #name = __inputs[#i].downcast_ref::<#ty>().unwrap().clone();
-        }
+        quote! { let #name = __inputs[#i].downcast_ref::<#ty>().unwrap().clone(); }
     });
-
     let input_ids = arg_names.iter().map(|name| quote! { #name.id });
 
+    // A unique, static-friendly identifier for the task
+    let task_id_str = format!("{}::{}", func.sig.ident, file!());
+
+    let registrar_name = format_ident!("__factory_{}", func_name);
+    let static_registrar_name = format_ident!("__REG_ONCE_{}", func_name);
+
+    let factory_logic = match args.r#type {
+        TaskType::Single => quote! {
+            std::sync::Arc::new(|__inputs| {
+                #(#value_downcasts)*
+                let mut task_instance = #struct_name;
+                let result = task::SingleTask::call(&mut task_instance, #input_packing);
+                std::sync::Arc::new(result) as graph::Value
+            })
+        },
+        _ => quote! {
+            panic!("Task type not supported by the local graph::run() executor");
+        },
+    };
+
     let constructor = quote! {
+        // This function creates a factory which in turn creates the executable closure.
+        fn #registrar_name() -> graph::TaskFactory {
+            std::sync::Arc::new(|| {
+                #factory_logic
+            })
+        }
+
         #[allow(non_snake_case)]
         pub #constructor_sig {
-            let func: graph::Executable = std::sync::Arc::new(|__inputs| {
-                #(#value_downcasts)*
-                let result = #func_impl_name(#(#arg_names),*);
-                std::sync::Arc::new(result) as graph::Value
+            // Ensure this task is registered in the global registry, but only once.
+            static #static_registrar_name: std::sync::Once = std::sync::Once::new();
+            #static_registrar_name.call_once(|| {
+                graph::register_task(#task_id_str.to_string(), #registrar_name());
             });
 
             let kind = graph::NodeKind::Call {
                 name: stringify!(#func_name),
-                func,
+                task_id: #task_id_str.to_string(),
                 inputs: vec![#(#input_ids),*],
             };
             builder.add_instruction(kind)
         }
     };
 
+    // --- Assemble Final Token Stream ---
     quote! {
-        #original_func_renamed
+        #task_impl_func
+        #task_trait_impl
         #constructor
     }
     .into()
@@ -93,8 +237,7 @@ pub fn task(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct WorkflowVisitor {
     scopes: Vec<HashSet<Ident>>,
-    next_if_block_id: usize,
-    next_while_block_id: usize,
+    next_control_flow_id: usize,
     builder_ident: Ident,
     last_expr_has_value: bool,
 }
@@ -103,22 +246,15 @@ impl WorkflowVisitor {
     fn new(builder_ident: Ident) -> Self {
         Self {
             scopes: vec![],
-            next_if_block_id: 0,
-            next_while_block_id: 0,
+            next_control_flow_id: 0,
             builder_ident,
             last_expr_has_value: false,
         }
     }
 
-    fn new_if_id(&mut self) -> usize {
-        let id = self.next_if_block_id;
-        self.next_if_block_id += 1;
-        id
-    }
-
-    fn new_while_id(&mut self) -> usize {
-        let id = self.next_while_block_id;
-        self.next_while_block_id += 1;
+    fn new_control_flow_id(&mut self) -> usize {
+        let id = self.next_control_flow_id;
+        self.next_control_flow_id += 1;
         id
     }
 
@@ -248,7 +384,7 @@ impl VisitMut for WorkflowVisitor {
 impl WorkflowVisitor {
     fn handle_if(&mut self, if_expr: &mut ExprIf) -> Expr {
         let builder = self.builder_ident.clone();
-        let if_id = self.new_if_id();
+        let id = self.new_control_flow_id();
 
         let vars = self.list_vars();
 
@@ -256,29 +392,29 @@ impl WorkflowVisitor {
         let cond = &if_expr.cond;
 
         let pre_if_captures = vars.iter().map(|name| {
-            let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
+            let pre_if_name = format_ident!("__pre_if_{}_{}", name, id);
             quote! { let #pre_if_name = #name; }
         });
 
-        let then_block_id = format_ident!("__if_then_block_{}", if_id);
-        let merge_block_id = format_ident!("__if_merge_block_{}", if_id);
-        let parent_predecessor_id = format_ident!("__if_parent_predecessor_{}", if_id);
+        let then_block_id = format_ident!("__if_then_block_{}", id);
+        let merge_block_id = format_ident!("__if_merge_block_{}", id);
+        let parent_predecessor_id = format_ident!("__if_parent_predecessor_{}", id);
 
         self.visit_block_mut(&mut if_expr.then_branch);
         let then_branch_body = &if_expr.then_branch;
         let then_has_value = self.last_expr_has_value;
 
         let then_post_captures = vars.iter().map(|name| {
-            let post_then_name = format_ident!("__post_then_{}_{}", name, if_id);
+            let post_then_name = format_ident!("__post_then_{}_{}", name, id);
             quote! { let #post_then_name = #name; }
         });
 
         let (else_block_setup, else_block_impl, false_target, phi) =
             if let Some((_, else_expr)) = &mut if_expr.else_branch {
-                let else_block_id = format_ident!("__if_else_block_{}", if_id);
+                let else_block_id = format_ident!("__if_else_block_{}", id);
 
                 let else_resets = vars.iter().map(|name| {
-                    let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
+                    let pre_if_name = format_ident!("__pre_if_{}_{}", name, id);
                     quote! { #name = #pre_if_name; }
                 });
 
@@ -286,12 +422,12 @@ impl WorkflowVisitor {
                 let else_has_value = self.last_expr_has_value;
 
                 let else_post_captures = vars.iter().map(|name| {
-                    let post_else_name = format_ident!("__post_else_{}_{}", name, if_id);
+                    let post_else_name = format_ident!("__post_else_{}_{}", name, id);
                     quote! { let #post_else_name = #name; }
                 });
 
                 let setup = quote! { let #else_block_id = #builder.new_block(); };
-                let else_predecessor_id = format_ident!("__else_predecessor_id_{}", if_id);
+                let else_predecessor_id = format_ident!("__else_predecessor_id_{}", id);
                 let implementation = quote! {
                     #builder.switch_to_block(#else_block_id);
                     let __else_val = {
@@ -303,7 +439,7 @@ impl WorkflowVisitor {
                     #builder.seal_block(graph::Terminator::jump(#merge_block_id));
                 };
 
-                let then_predecessor_id = format_ident!("__then_predecessor_id_{}", if_id);
+                let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
                 let phi = if then_has_value && else_has_value {
                     Some(quote! {
                          graph::phi(
@@ -324,13 +460,13 @@ impl WorkflowVisitor {
             };
 
         let merge_phis = vars.iter().map(|name| {
-            let pre_if_name = format_ident!("__pre_if_{}_{}", name, if_id);
-            let post_then_name = format_ident!("__post_then_{}_{}", name, if_id);
-            let then_predecessor_id = format_ident!("__then_predecessor_id_{}", if_id);
+            let pre_if_name = format_ident!("__pre_if_{}_{}", name, id);
+            let post_then_name = format_ident!("__post_then_{}_{}", name, id);
+            let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
 
             let phi_inputs = if if_expr.else_branch.is_some() {
-                let post_else_name = format_ident!("__post_else_{}_{}", name, if_id);
-                let else_predecessor_id = format_ident!("__else_predecessor_id_{}", if_id);
+                let post_else_name = format_ident!("__post_else_{}_{}", name, id);
+                let else_predecessor_id = format_ident!("__else_predecessor_id_{}", id);
                 quote! { vec![(#then_predecessor_id, #post_then_name), (#else_predecessor_id, #post_else_name)] }
             } else {
                 quote! { vec![(#then_predecessor_id, #post_then_name), (#parent_predecessor_id, #pre_if_name)] }
@@ -342,7 +478,7 @@ impl WorkflowVisitor {
         });
 
         // --- 8. Assemble the final expression ---
-        let then_predecessor_id = format_ident!("__then_predecessor_id_{}", if_id);
+        let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
         parse_quote! {
             {
                 #(#pre_if_captures)*
@@ -372,22 +508,22 @@ impl WorkflowVisitor {
     }
 
     fn handle_while(&mut self, while_expr: &mut syn::ExprWhile) -> Expr {
-        let while_id = self.new_while_id();
+        let id = self.new_control_flow_id();
         let builder = self.builder_ident.clone();
         let vars = self.list_vars();
 
-        let header_block_id = format_ident!("__while_header_block_{}", while_id);
-        let body_block_id = format_ident!("__while_body_block_{}", while_id);
-        let exit_block_id = format_ident!("__while_exit_block_{}", while_id);
-        let parent_predecessor_id = format_ident!("__while_parent_predecessor_{}", while_id);
+        let header_block_id = format_ident!("__while_header_block_{}", id);
+        let body_block_id = format_ident!("__while_body_block_{}", id);
+        let exit_block_id = format_ident!("__while_exit_block_{}", id);
+        let parent_predecessor_id = format_ident!("__while_parent_predecessor_{}", id);
 
         let pre_while_captures = vars.iter().map(|name| {
-            let pre_while_name = format_ident!("__pre_while_{}_{}", name, while_id);
+            let pre_while_name = format_ident!("__pre_while_{}_{}", name, id);
             quote! { let #pre_while_name = #name; }
         });
 
         let phi_node_creations = vars.iter().map(|name| {
-            let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, while_id);
+            let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, id);
             quote! {
                 let #phi_node_id = #builder.arena_mut().new_node(graph::NodeKind::Phi { from: vec![] });
                 #name = graph::TracedValue::new(#phi_node_id);
@@ -402,17 +538,17 @@ impl WorkflowVisitor {
         let body_block = &while_expr.body;
 
         let post_body_captures = vars.iter().map(|name| {
-            let post_body_name = format_ident!("__post_body_{}_{}", name, while_id);
+            let post_body_name = format_ident!("__post_body_{}_{}", name, id);
             quote! { let #post_body_name = #name; }
         });
 
-        let body_predecessor_id = format_ident!("__body_predecessor_id_{}", while_id);
+        let body_predecessor_id = format_ident!("__body_predecessor_id_{}", id);
 
         let mut phi_patchers = proc_macro2::TokenStream::new();
         for var in &vars {
-            let phi_node_id = format_ident!("__{}_phi_node_id_{}", var, while_id);
-            let pre_while_name = format_ident!("__pre_while_{}_{}", var, while_id);
-            let post_body_name = format_ident!("__post_body_{}_{}", var, while_id);
+            let phi_node_id = format_ident!("__{}_phi_node_id_{}", var, id);
+            let pre_while_name = format_ident!("__pre_while_{}_{}", var, id);
+            let post_body_name = format_ident!("__post_body_{}_{}", var, id);
             phi_patchers.extend(quote! {
                 if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. })
                     = #builder.arena_mut().nodes.get_mut(#phi_node_id) {
@@ -425,7 +561,7 @@ impl WorkflowVisitor {
         }
 
         let exit_phis = vars.iter().map(|name| {
-            let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, while_id);
+            let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, id);
             quote! {
                 #name = graph::TracedValue::new(#phi_node_id);
             }

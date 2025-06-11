@@ -1,9 +1,10 @@
+use once_cell::sync::Lazy;
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub use macros::{task, workflow};
 
@@ -11,6 +12,13 @@ pub use macros::{task, workflow};
 
 pub type Value = Arc<dyn Any + Send + Sync>;
 pub type Executable = Arc<dyn Fn(Vec<Value>) -> Value + Send + Sync>;
+pub type TaskFactory = Arc<dyn Fn() -> Executable + Send + Sync>;
+static TASK_REGISTRY: Lazy<Mutex<HashMap<String, TaskFactory>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+pub fn register_task(task_id: String, factory: TaskFactory) {
+    TASK_REGISTRY.lock().unwrap().insert(task_id, factory);
+}
 
 pub type NodeId = usize;
 pub type BlockId = usize;
@@ -45,7 +53,7 @@ impl Arena {
 pub enum NodeKind {
     Call {
         name: &'static str,
-        func: Executable,
+        task_id: String,
         inputs: Vec<NodeId>,
     },
     Literal {
@@ -217,7 +225,14 @@ impl<T: Clone + 'static> Graph<T> {
                 let node = &self.arena.nodes[node_id];
                 let value = match &node.kind {
                     NodeKind::Literal { value, .. } => value.clone(),
-                    NodeKind::Call { func, inputs, .. } => {
+                    NodeKind::Call {
+                        task_id, inputs, ..
+                    } => {
+                        let registry = TASK_REGISTRY.lock().unwrap();
+                        let factory = registry
+                            .get(task_id)
+                            .unwrap_or_else(|| panic!("Task not found in registry: {}", task_id));
+                        let func = factory(); // Create the Executable on-the-fly
                         let input_values = inputs
                             .iter()
                             .map(|&input_id| results[&input_id].clone())

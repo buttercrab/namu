@@ -8,5 +8,5 @@ name = "namu"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.0", features = ["derive"] }
-walkdir = "2.3"
+clap = { version = "4.5", features = ["derive"] }
+walkdir = "2.5"

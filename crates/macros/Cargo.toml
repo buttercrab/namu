@@ -11,4 +11,10 @@ convert_case = "0.8"
 proc-macro2 = "1"
 proc-macro-error = { version = "1", default-features = false }
 quote = "1"
-syn = { version = "2", features = ["full", "visit-mut", "visit"] }
+syn = { version = "2", features = [
+    "full",
+    "visit-mut",
+    "visit",
+    "extra-traits",
+] }
+darling = "0.20.11"

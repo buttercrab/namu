@@ -4,7 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait = "0.1.88"
+futures = { workspace = true }
+kanal = { workspace = true }
 macros = { path = "../macros" }
+once_cell = "1.21.3"
+task = { path = "../task" }
+tokio = { workspace = true }
 
 [dev-dependencies]
 trybuild = "1.0"

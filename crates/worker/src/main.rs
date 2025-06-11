@@ -69,7 +69,7 @@ async fn connect_to_master(
     };
 
     let register_msg = serde_json::to_string(&register_payload)?;
-    write.send(Message::Text(register_msg)).await?;
+    write.send(Message::Text(register_msg.into())).await?;
     info!("Registration message sent");
 
     // Handle incoming messages

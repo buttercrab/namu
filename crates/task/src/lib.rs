@@ -1,30 +1,167 @@
-use kanal::{Receiver, Sender};
-use serde::{Deserialize, Serialize};
+use async_trait::async_trait;
+use futures::{Stream, StreamExt, pin_mut};
+
+pub use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
 
 type ItemId = usize;
 
-pub trait Task<'a> {
-    type Input: Serialize + Deserialize<'a> + Send + Sync + Clone;
-    type Output: Serialize + Deserialize<'a> + Send + Sync + Clone;
+pub trait Task {
+    type Config;
+    type Input: Send + Sync + Clone;
+    type Output: Send + Sync + Clone;
 
-    fn run(
+    fn new(config: Self::Config) -> Self;
+
+    fn prepare(&mut self) {}
+
+    fn run(&mut self, recv: Receiver<(ItemId, Self::Input)>, send: Sender<(ItemId, Self::Output)>);
+}
+
+pub trait SingleTask: Task {
+    fn call(&mut self, input: Self::Input) -> Self::Output;
+
+    fn run(&mut self, recv: Receiver<(ItemId, Self::Input)>, send: Sender<(ItemId, Self::Output)>) {
+        while let Ok((id, x)) = recv.recv() {
+            let y = self.call(x);
+            let _ = send.send((id, y));
+        }
+    }
+}
+
+pub trait BatchedTask: Task {
+    fn batch_size(&self) -> usize;
+
+    fn call(&mut self, input: Vec<Self::Input>) -> Vec<Self::Output>;
+
+    fn run(&mut self, recv: Receiver<(ItemId, Self::Input)>, send: Sender<(ItemId, Self::Output)>) {
+        let batch_size = self.batch_size();
+        let mut ids = Vec::with_capacity(batch_size);
+        let mut buf = Vec::with_capacity(batch_size);
+
+        while let Ok((id, xs)) = recv.recv() {
+            ids.push(id);
+            buf.push(xs);
+
+            if buf.len() >= batch_size {
+                let ys = self.call(buf.drain(..).collect());
+                debug_assert_eq!(ys.len(), batch_size);
+
+                for (i, y) in ys.into_iter().enumerate() {
+                    let _ = send.send((ids[i], y));
+                }
+                ids.clear();
+            }
+        }
+
+        if !buf.is_empty() {
+            let ys = self.call(buf.drain(..).collect());
+            for (i, y) in ys.into_iter().enumerate() {
+                let _ = send.send((ids[i], y));
+            }
+        }
+    }
+}
+
+pub trait StreamTask: Task {
+    fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Self::Output>;
+
+    fn run(&mut self, recv: Receiver<(ItemId, Self::Input)>, send: Sender<(ItemId, Self::Output)>) {
+        while let Ok((id, x)) = recv.recv() {
+            let ys = self.call(x);
+            for y in ys {
+                let _ = send.send((id, y));
+            }
+        }
+    }
+}
+
+#[async_trait]
+pub trait AsyncTask {
+    type Config;
+    type Input: Send + Sync + Clone;
+    type Output: Send + Sync + Clone;
+
+    fn new(config: Self::Config) -> Self;
+
+    async fn prepare(&mut self) {}
+
+    async fn run(
         &mut self,
-        input: Receiver<(ItemId, Self::Input)>,
-        output: Sender<(ItemId, Self::Output)>,
+        recv: AsyncReceiver<(ItemId, Self::Input)>,
+        send: AsyncSender<(ItemId, Self::Output)>,
     );
 }
 
-pub trait SingleTask<'a>: Task<'a> {
-    fn call(&mut self, input: Self::Input) -> Self::Output;
+#[async_trait]
+pub trait AsyncSingleTask: AsyncTask {
+    async fn call(&mut self, input: Self::Input) -> Self::Output;
 
-    fn run(
+    async fn run(
         &mut self,
-        input: Receiver<(ItemId, Self::Input)>,
-        output: Sender<(ItemId, Self::Output)>,
+        recv: AsyncReceiver<(ItemId, Self::Input)>,
+        send: AsyncSender<(ItemId, Self::Output)>,
     ) {
-        while let Ok((id, x)) = input.recv() {
-            let y = self.call(x);
-            let _ = output.send((id, y));
+        while let Ok((id, x)) = recv.recv().await {
+            let y = self.call(x).await;
+            let _ = send.send((id, y)).await;
+        }
+    }
+}
+
+#[async_trait]
+pub trait AsyncBatchedTask: AsyncTask {
+    fn batch_size(&self) -> usize;
+
+    async fn call(&mut self, input: Vec<Self::Input>) -> Vec<Self::Output>;
+
+    async fn run(
+        &mut self,
+        recv: AsyncReceiver<(ItemId, Self::Input)>,
+        send: AsyncSender<(ItemId, Self::Output)>,
+    ) {
+        let batch_size = self.batch_size();
+        let mut ids = Vec::with_capacity(batch_size);
+        let mut buf = Vec::with_capacity(batch_size);
+
+        while let Ok((id, xs)) = recv.recv().await {
+            ids.push(id);
+            buf.push(xs);
+
+            if buf.len() >= batch_size {
+                let ys = self.call(buf.drain(..).collect()).await;
+                debug_assert_eq!(ys.len(), batch_size);
+
+                for (i, y) in ys.into_iter().enumerate() {
+                    let _ = send.send((ids[i], y)).await;
+                }
+                ids.clear();
+            }
+        }
+
+        if !buf.is_empty() {
+            let ys = self.call(buf.drain(..).collect()).await;
+            for (i, y) in ys.into_iter().enumerate() {
+                let _ = send.send((ids[i], y)).await;
+            }
+        }
+    }
+}
+
+#[async_trait]
+pub trait AsyncStreamTask: AsyncTask {
+    fn call(&mut self, input: Self::Input) -> impl Stream<Item = Self::Output> + Send;
+
+    async fn run(
+        &mut self,
+        recv: AsyncReceiver<(ItemId, Self::Input)>,
+        send: AsyncSender<(ItemId, Self::Output)>,
+    ) {
+        while let Ok((id, x)) = recv.recv().await {
+            let ys = self.call(x);
+            pin_mut!(ys);
+            while let Some(y) = ys.next().await {
+                let _ = send.send((id, y)).await;
+            }
         }
     }
 }
