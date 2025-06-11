@@ -9,3 +9,6 @@ members = [
 ]
 resolver = "3"
 exclude = ["tasks/*", "pipelines/*"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
