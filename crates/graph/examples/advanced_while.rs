@@ -118,7 +118,7 @@ fn main() {
     println!("--- Running Nested Loop Test ---");
     let nested_loop_graph = nested_loop_sum();
     println!("Graph: \n{}", nested_loop_graph.graph_string());
-    let nested_loop_result = nested_loop_graph.run();
+    let nested_loop_result = graph::Executor::new().run(&nested_loop_graph);
     println!("Result: {}", nested_loop_result);
     assert_eq!(nested_loop_result, 15);
     println!("✅ Nested loop test passed!");
@@ -126,7 +126,7 @@ fn main() {
     println!("\n--- Running Conditional Loop Test ---");
     let conditional_loop_graph = conditional_loop_collatz();
     println!("Graph: \n{}", conditional_loop_graph.graph_string());
-    let conditional_loop_result = conditional_loop_graph.run();
+    let conditional_loop_result = graph::Executor::new().run(&conditional_loop_graph);
     println!("Result: {}", conditional_loop_result);
     assert_eq!(conditional_loop_result, 8);
     println!("✅ Conditional loop test passed!");
@@ -134,7 +134,7 @@ fn main() {
     println!("\n--- Running Zero Iteration Loop Test ---");
     let zero_iter_graph = zero_iteration_loop();
     println!("Graph: \n{}", zero_iter_graph.graph_string());
-    let zero_iter_result = zero_iter_graph.run();
+    let zero_iter_result = graph::Executor::new().run(&zero_iter_graph);
     println!("Result: {}", zero_iter_result);
     assert_eq!(zero_iter_result, 10);
     println!("✅ Zero iteration loop test passed!");
@@ -142,7 +142,7 @@ fn main() {
     println!("\n--- Running Dangling If Loop Test ---");
     let dangling_if_graph = loop_with_dangling_if();
     println!("Graph: \n{}", dangling_if_graph.graph_string());
-    let dangling_if_result = dangling_if_graph.run();
+    let dangling_if_result = graph::Executor::new().run(&dangling_if_graph);
     println!("Result: {}", dangling_if_result);
     assert_eq!(dangling_if_result, 13);
     println!("✅ Dangling if loop test passed!");
@@ -150,7 +150,7 @@ fn main() {
     println!("\n--- Running Sequential Loops Test ---");
     let sequential_loops_graph = multiple_sequential_loops();
     println!("Graph: \n{}", sequential_loops_graph.graph_string());
-    let sequential_loops_result = sequential_loops_graph.run();
+    let sequential_loops_result = graph::Executor::new().run(&sequential_loops_graph);
     println!("Result: {}", sequential_loops_result);
     assert_eq!(sequential_loops_result, 11);
     println!("✅ Sequential loops test passed!");
@@ -158,7 +158,7 @@ fn main() {
     println!("\n--- Running Loop Feeds Conditional Test ---");
     let loop_feeds_cond_graph = loop_value_feeds_conditional();
     println!("Graph: \n{}", loop_feeds_cond_graph.graph_string());
-    let loop_feeds_cond_result = loop_feeds_cond_graph.run();
+    let loop_feeds_cond_result = graph::Executor::new().run(&loop_feeds_cond_graph);
     println!("Result: {}", loop_feeds_cond_result);
     assert_eq!(loop_feeds_cond_result, 1);
     println!("✅ Loop feeds conditional test passed!");

@@ -40,7 +40,7 @@ fn main() {
     let graph = while_workflow();
     println!("Graph: \n{}", graph.graph_string());
 
-    let result = graph.run();
+    let result = graph::Executor::new().run(&graph);
     println!("Result: {}", result);
 
     assert_eq!(result, 10);
@@ -48,7 +48,7 @@ fn main() {
     let graph = fibonacci();
     println!("Graph: \n{}", graph.graph_string());
 
-    let result = graph.run();
+    let result = graph::Executor::new().run(&graph);
     println!("Result: {}", result);
 
     assert_eq!(result, 89);

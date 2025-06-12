@@ -70,7 +70,7 @@ fn simple_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 3);
+    assert_eq!(graph::Executor::new().run(&graph), 3);
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn reassignment_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 4);
+    assert_eq!(graph::Executor::new().run(&graph), 4);
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn conditional_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 20);
+    assert_eq!(graph::Executor::new().run(&graph), 20);
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn nested_conditional_workflow_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 20);
+    assert_eq!(graph::Executor::new().run(&graph), 20);
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn mutable_var_in_conditional_branch_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 20);
+    assert_eq!(graph::Executor::new().run(&graph), 20);
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn conditional_execution_does_not_execute_un_taken_branch() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 20);
+    assert_eq!(graph::Executor::new().run(&graph), 20);
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn mutable_var_updated_in_conditional_and_used_after() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 40);
+    assert_eq!(graph::Executor::new().run(&graph), 40);
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn while_loop_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 10);
+    assert_eq!(graph::Executor::new().run(&graph), 10);
 }
 
 #[test]
@@ -207,7 +207,7 @@ fn nested_while_loop_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 15);
+    assert_eq!(graph::Executor::new().run(&graph), 15);
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn conditional_in_while_loop_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 8);
+    assert_eq!(graph::Executor::new().run(&graph), 8);
 }
 
 #[test]
@@ -243,7 +243,7 @@ fn zero_iteration_while_loop_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 10);
+    assert_eq!(graph::Executor::new().run(&graph), 10);
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn dangling_if_in_while_loop_run() {
     }
 
     let graph = test_workflow();
-    assert_eq!(graph.run(), 13);
+    assert_eq!(graph::Executor::new().run(&graph), 13);
 }
 
 // --- Graph Structure Tests ---

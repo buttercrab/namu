@@ -1,0 +1,191 @@
+//! The Intermediate Representation (IR) of the computational graph.
+//!
+//! This module defines the core data structures that represent the graph,
+//! such as `Graph`, `Node`, `BasicBlock`, and `Terminator`.
+
+use std::any::Any;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
+// --- Core Data Structures ---
+
+pub type Value = Arc<dyn Any + Send + Sync>;
+pub type NodeId = usize;
+pub type BlockId = usize;
+
+#[derive(Default)]
+pub struct Arena {
+    pub nodes: Vec<Node>,
+}
+
+impl Arena {
+    pub fn new_node(&mut self, kind: NodeKind) -> NodeId {
+        let id = self.nodes.len();
+
+        let inputs = match &kind {
+            NodeKind::Call { inputs, .. } => inputs.clone(),
+            _ => Vec::new(),
+        };
+
+        self.nodes.push(Node {
+            kind,
+            outputs: Vec::new(),
+        });
+
+        for &input_id in &inputs {
+            self.nodes[input_id].outputs.push(id);
+        }
+
+        id
+    }
+}
+
+pub enum NodeKind {
+    Call {
+        name: &'static str,
+        task_id: String,
+        inputs: Vec<NodeId>,
+    },
+    Literal {
+        value: Value,
+        debug_repr: String,
+    },
+    Phi {
+        from: Vec<(BlockId, NodeId)>,
+    },
+}
+
+pub struct Node {
+    pub kind: NodeKind,
+    pub outputs: Vec<NodeId>,
+}
+
+pub enum Terminator {
+    Jump {
+        target: BlockId,
+    },
+    Branch {
+        condition: NodeId,
+        true_target: BlockId,
+        false_target: BlockId,
+    },
+    Return {
+        value: Option<NodeId>,
+    },
+}
+
+impl Terminator {
+    pub fn jump(target: BlockId) -> Self {
+        Self::Jump { target }
+    }
+
+    pub fn branch(condition: NodeId, true_target: BlockId, false_target: BlockId) -> Self {
+        Self::Branch {
+            condition,
+            true_target,
+            false_target,
+        }
+    }
+
+    pub fn return_value(value: NodeId) -> Self {
+        Self::Return { value: Some(value) }
+    }
+
+    pub fn return_unit() -> Self {
+        Self::Return { value: None }
+    }
+}
+
+#[derive(Default)]
+pub struct BasicBlock {
+    pub instructions: Vec<NodeId>,
+    pub terminator: Option<Terminator>,
+}
+
+#[derive(Copy, Clone)]
+pub struct TracedValue<T> {
+    pub id: NodeId,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> TracedValue<T> {
+    pub fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+pub struct Graph<T> {
+    pub arena: Arena,
+    pub blocks: Vec<BasicBlock>,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> Graph<T> {
+    pub fn new(arena: Arena, blocks: Vec<BasicBlock>) -> Self {
+        Self {
+            arena,
+            blocks,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn graph_string(&self) -> String {
+        let mut s = String::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            s.push_str(&format!("Block {}:\n", i));
+            for &node_id in &block.instructions {
+                let node = &self.arena.nodes[node_id];
+                let line = match &node.kind {
+                    NodeKind::Literal { debug_repr, .. } => {
+                        format!("  let var{} = {};\n", node_id, debug_repr)
+                    }
+                    NodeKind::Call { name, inputs, .. } => {
+                        let parent_vars: Vec<String> =
+                            inputs.iter().map(|p| format!("var{}", p)).collect();
+                        format!(
+                            "  let var{} = {}({});\n",
+                            node_id,
+                            name,
+                            parent_vars.join(", ")
+                        )
+                    }
+                    NodeKind::Phi { from } => {
+                        let from_str: Vec<String> = from
+                            .iter()
+                            .map(|(b, v)| format!("[block {}, var{}]", b, v))
+                            .collect();
+                        format!("  let var{} = phi({});\n", node_id, from_str.join(", "))
+                    }
+                };
+                s.push_str(&line);
+            }
+
+            if let Some(terminator) = &block.terminator {
+                let term_str = match terminator {
+                    Terminator::Jump { target } => format!("  jump -> Block {}", target),
+                    Terminator::Branch {
+                        condition,
+                        true_target,
+                        false_target,
+                    } => format!(
+                        "  branch var{} ? Block {} : Block {}",
+                        condition, true_target, false_target
+                    ),
+                    Terminator::Return { value } => {
+                        if let Some(value) = value {
+                            format!("  return var{}", value)
+                        } else {
+                            "  return ()".to_string()
+                        }
+                    }
+                };
+                s.push_str(&term_str);
+                s.push('\n');
+            }
+        }
+        s
+    }
+}
