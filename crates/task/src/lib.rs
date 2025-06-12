@@ -1,7 +1,8 @@
+use anyhow::Result;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt, pin_mut};
 
-pub use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
+pub use kanal::{Receiver, Sender};
 
 type ItemId = usize;
 
@@ -14,13 +15,21 @@ pub trait Task {
 
     fn prepare(&mut self) {}
 
-    fn run(&mut self, recv: Receiver<(ItemId, Self::Input)>, send: Sender<(ItemId, Self::Output)>);
+    fn run(
+        &mut self,
+        recv: Receiver<(ItemId, Self::Input)>,
+        send: Sender<(ItemId, Result<Self::Output>)>,
+    );
 }
 
 pub trait SingleTask: Task {
-    fn call(&mut self, input: Self::Input) -> Self::Output;
+    fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
-    fn run(&mut self, recv: Receiver<(ItemId, Self::Input)>, send: Sender<(ItemId, Self::Output)>) {
+    fn run(
+        &mut self,
+        recv: Receiver<(ItemId, Self::Input)>,
+        send: Sender<(ItemId, Result<Self::Output>)>,
+    ) {
         while let Ok((id, x)) = recv.recv() {
             let y = self.call(x);
             let _ = send.send((id, y));
@@ -31,9 +40,13 @@ pub trait SingleTask: Task {
 pub trait BatchedTask: Task {
     fn batch_size(&self) -> usize;
 
-    fn call(&mut self, input: Vec<Self::Input>) -> Vec<Self::Output>;
+    fn call(&mut self, input: Vec<Self::Input>) -> Vec<Result<Self::Output>>;
 
-    fn run(&mut self, recv: Receiver<(ItemId, Self::Input)>, send: Sender<(ItemId, Self::Output)>) {
+    fn run(
+        &mut self,
+        recv: Receiver<(ItemId, Self::Input)>,
+        send: Sender<(ItemId, Result<Self::Output>)>,
+    ) {
         let batch_size = self.batch_size();
         let mut ids = Vec::with_capacity(batch_size);
         let mut buf = Vec::with_capacity(batch_size);
@@ -63,9 +76,13 @@ pub trait BatchedTask: Task {
 }
 
 pub trait StreamTask: Task {
-    fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Self::Output>;
+    fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Result<Self::Output>>;
 
-    fn run(&mut self, recv: Receiver<(ItemId, Self::Input)>, send: Sender<(ItemId, Self::Output)>) {
+    fn run(
+        &mut self,
+        recv: Receiver<(ItemId, Self::Input)>,
+        send: Sender<(ItemId, Result<Self::Output>)>,
+    ) {
         while let Ok((id, x)) = recv.recv() {
             let ys = self.call(x);
             for y in ys {
@@ -87,20 +104,22 @@ pub trait AsyncTask {
 
     async fn run(
         &mut self,
-        recv: AsyncReceiver<(ItemId, Self::Input)>,
-        send: AsyncSender<(ItemId, Self::Output)>,
+        recv: Receiver<(ItemId, Self::Input)>,
+        send: Sender<(ItemId, Result<Self::Output>)>,
     );
 }
 
 #[async_trait]
 pub trait AsyncSingleTask: AsyncTask {
-    async fn call(&mut self, input: Self::Input) -> Self::Output;
+    async fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
     async fn run(
         &mut self,
-        recv: AsyncReceiver<(ItemId, Self::Input)>,
-        send: AsyncSender<(ItemId, Self::Output)>,
+        recv: Receiver<(ItemId, Self::Input)>,
+        send: Sender<(ItemId, Result<Self::Output>)>,
     ) {
+        let recv = recv.to_async();
+        let send = send.to_async();
         while let Ok((id, x)) = recv.recv().await {
             let y = self.call(x).await;
             let _ = send.send((id, y)).await;
@@ -112,13 +131,15 @@ pub trait AsyncSingleTask: AsyncTask {
 pub trait AsyncBatchedTask: AsyncTask {
     fn batch_size(&self) -> usize;
 
-    async fn call(&mut self, input: Vec<Self::Input>) -> Vec<Self::Output>;
+    async fn call(&mut self, input: Vec<Self::Input>) -> Vec<Result<Self::Output>>;
 
     async fn run(
         &mut self,
-        recv: AsyncReceiver<(ItemId, Self::Input)>,
-        send: AsyncSender<(ItemId, Self::Output)>,
+        recv: Receiver<(ItemId, Self::Input)>,
+        send: Sender<(ItemId, Result<Self::Output>)>,
     ) {
+        let recv = recv.to_async();
+        let send = send.to_async();
         let batch_size = self.batch_size();
         let mut ids = Vec::with_capacity(batch_size);
         let mut buf = Vec::with_capacity(batch_size);
@@ -149,13 +170,15 @@ pub trait AsyncBatchedTask: AsyncTask {
 
 #[async_trait]
 pub trait AsyncStreamTask: AsyncTask {
-    fn call(&mut self, input: Self::Input) -> impl Stream<Item = Self::Output> + Send;
+    fn call(&mut self, input: Self::Input) -> impl Stream<Item = Result<Self::Output>> + Send;
 
     async fn run(
         &mut self,
-        recv: AsyncReceiver<(ItemId, Self::Input)>,
-        send: AsyncSender<(ItemId, Self::Output)>,
+        recv: Receiver<(ItemId, Self::Input)>,
+        send: Sender<(ItemId, Result<Self::Output>)>,
     ) {
+        let recv = recv.to_async();
+        let send = send.to_async();
         while let Ok((id, x)) = recv.recv().await {
             let ys = self.call(x);
             pin_mut!(ys);
