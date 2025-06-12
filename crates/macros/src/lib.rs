@@ -120,6 +120,7 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
                 quote! { let (#(#arg_names),*) = input; }
             };
             quote! {
+                #[allow(non_camel_case_types)]
                 struct #struct_name;
                 impl task::Task for #struct_name {
                     type Config = ();
@@ -246,6 +247,7 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[allow(non_snake_case)]
         pub #constructor_sig {
             // Ensure this task is registered in the global registry, but only once.
+            #[allow(non_upper_case_globals)]
             static #static_registrar_name: std::sync::Once = std::sync::Once::new();
             #static_registrar_name.call_once(|| {
                 graph::register_task(#task_id_str.to_string(), #registrar_name());
