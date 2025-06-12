@@ -1,13 +1,14 @@
+use anyhow::Result;
 use graph::{task, workflow};
 
 #[task]
-fn add(a: i32, b: i32) -> i32 {
-    a + b
+fn add(a: i32, b: i32) -> Result<i32> {
+    Ok(a + b)
 }
 
 #[task]
-fn less_than_10(v: i32) -> bool {
-    v < 10
+fn less_than_10(v: i32) -> Result<bool> {
+    Ok(v < 10)
 }
 
 #[workflow]

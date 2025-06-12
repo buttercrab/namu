@@ -1,23 +1,24 @@
+use anyhow::Result;
 use graph::{task, workflow};
 
 #[task]
-fn is_positive(v: i32) -> bool {
-    v > 0
+fn is_positive(v: i32) -> Result<bool> {
+    Ok(v > 0)
 }
 
 #[task]
-fn double(v: i32) -> i32 {
-    v * 2
+fn double(v: i32) -> Result<i32> {
+    Ok(v * 2)
 }
 
 #[task]
-fn is_negative(v: i32) -> bool {
-    v < 0
+fn is_negative(v: i32) -> Result<bool> {
+    Ok(v < 0)
 }
 
 #[task]
-fn identity(v: i32) -> i32 {
-    v
+fn identity(v: i32) -> Result<i32> {
+    Ok(v)
 }
 
 #[workflow]

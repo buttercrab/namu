@@ -6,7 +6,8 @@ use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
 use syn::visit_mut::{self, VisitMut};
 use syn::{
-    Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input, parse_quote,
+    AngleBracketedGenericArguments, Block, Expr, ExprIf, GenericArgument, Ident, ItemFn, Pat, Path,
+    PathArguments, PathSegment, ReturnType, Stmt, Type, TypePath, parse_macro_input, parse_quote,
 };
 
 #[derive(Debug, FromMeta)]
@@ -74,9 +75,39 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
         (quote! { (#(#arg_types),*) }, quote! { (#(#arg_names),*) })
     };
 
-    let output_type = match &func.sig.output {
-        ReturnType::Type(_, ty) => quote! { #ty },
-        ReturnType::Default => quote! { () },
+    let ReturnType::Type(_, ty) = &func.sig.output else {
+        abort!(func.sig.output, "the function should return `Result`");
+    };
+
+    let Type::Path(TypePath {
+        qself: None,
+        path:
+            Path {
+                leading_colon: None,
+                segments: result_segments,
+            },
+    }) = &**ty
+    else {
+        abort!(func.sig.output, "the function should return `Result`");
+    };
+
+    let PathSegment {
+        ident,
+        arguments:
+            PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+                args: result_args, ..
+            }),
+    } = result_segments.last().unwrap()
+    else {
+        abort!(func.sig.output, "the function should return `Result`");
+    };
+
+    if ident != "Result" {
+        abort!(func.sig.output, "the function should return `Result`");
+    }
+
+    let GenericArgument::Type(output_type) = result_args.first().unwrap() else {
+        abort!(func.sig.output, "the function should return `Result`");
     };
 
     // --- Generate Trait Implementation ---
@@ -95,14 +126,15 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
                     type Input = #input_type;
                     type Output = #output_type;
                     fn new(_config: Self::Config) -> Self { Self }
-                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, Self::Output)>) {
+                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, anyhow::Result<Self::Output>)>) {
                         task::SingleTask::run(self, recv, send);
                     }
                 }
                 impl task::SingleTask for #struct_name {
-                    fn call(&mut self, input: Self::Input) -> Self::Output {
+                    fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
                         #input_destructuring
-                        #task_impl_func_name(#(#arg_names),*)
+                        let result = #task_impl_func_name(#(#arg_names),*)?;
+                        Ok(result)
                     }
                 }
             }
@@ -121,13 +153,13 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
                     type Input = #input_type;
                     type Output = #output_type;
                     fn new(_config: Self::Config) -> Self { Self }
-                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, Self::Output)>) {
+                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, anyhow::Result<Self::Output>)>) {
                         task::BatchedTask::run(self, recv, send);
                     }
                 }
                 impl task::BatchedTask for #struct_name {
                     fn batch_size(&self) -> usize { 16 } // Default, could be an attribute
-                    fn call(&mut self, input: Vec<Self::Input>) -> Vec<Self::Output> {
+                    fn call(&mut self, input: Vec<Self::Input>) -> Vec<anyhow::Result<Self::Output>> {
                         #task_impl_func_name(input)
                     }
                 }
@@ -148,12 +180,12 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
                     type Input = #input_type;
                     type Output = #output_type;
                     fn new(_config: Self::Config) -> Self { Self }
-                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, Self::Output)>) {
+                    fn run(&mut self, recv: task::Receiver<(usize, Self::Input)>, send: task::Sender<(usize, anyhow::Result<Self::Output>)>) {
                         task::StreamTask::run(self, recv, send);
                     }
                 }
                 impl task::StreamTask for #struct_name {
-                    fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Self::Output> {
+                    fn call(&mut self, input: Self::Input) -> impl Iterator<Item = anyhow::Result<Self::Output>> {
                         #task_impl_func_name(input)
                     }
                 }
@@ -187,12 +219,14 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
     let registrar_name = format_ident!("__factory_{}", func_name);
     let static_registrar_name = format_ident!("__REG_ONCE_{}", func_name);
 
+    // todo: change factory logic
     let factory_logic = match args.r#type {
         TaskType::Single => quote! {
             std::sync::Arc::new(|__inputs| {
                 #(#value_downcasts)*
                 let mut task_instance = #struct_name;
-                let result = task::SingleTask::call(&mut task_instance, #input_packing);
+                // todo: change unwrap
+                let result = task::SingleTask::call(&mut task_instance, #input_packing).unwrap();
                 std::sync::Arc::new(result) as graph::Value
             })
         },

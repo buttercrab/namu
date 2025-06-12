@@ -1,59 +1,60 @@
+use anyhow::Result;
 use graph::{task, workflow};
 
 // --- Test Tasks ---
 
 #[task]
-fn add(a: i32, b: i32) -> i32 {
-    a + b
+fn add(a: i32, b: i32) -> Result<i32> {
+    Ok(a + b)
 }
 
 #[task]
-fn is_positive(v: i32) -> bool {
-    v > 0
+fn is_positive(v: i32) -> Result<bool> {
+    Ok(v > 0)
 }
 
 #[task]
-fn double(v: i32) -> i32 {
-    v * 2
+fn double(v: i32) -> Result<i32> {
+    Ok(v * 2)
 }
 
 #[task]
-fn identity(v: i32) -> i32 {
-    v
+fn identity(v: i32) -> Result<i32> {
+    Ok(v)
 }
 
 #[task]
-fn is_negative(v: i32) -> bool {
-    v < 0
+fn is_negative(v: i32) -> Result<bool> {
+    Ok(v < 0)
 }
 
 #[task]
-fn less_than(a: i32, b: i32) -> bool {
-    a < b
+fn less_than(a: i32, b: i32) -> Result<bool> {
+    Ok(a < b)
 }
 
 #[task]
-fn is_even(n: i32) -> bool {
-    n % 2 == 0
+fn is_even(n: i32) -> Result<bool> {
+    Ok(n % 2 == 0)
 }
 
 #[task]
-fn divide_by_2(n: i32) -> i32 {
-    n / 2
+fn divide_by_2(n: i32) -> Result<i32> {
+    Ok(n / 2)
 }
 
 #[task]
-fn multiply_by_3_and_add_1(n: i32) -> i32 {
-    n * 3 + 1
+fn multiply_by_3_and_add_1(n: i32) -> Result<i32> {
+    Ok(n * 3 + 1)
 }
 
 #[task]
-fn not_one(n: i32) -> bool {
-    n != 1
+fn not_one(n: i32) -> Result<bool> {
+    Ok(n != 1)
 }
 
 #[task]
-fn panicker() -> i32 {
+fn panicker() -> Result<i32> {
     panic!("This should not be called!");
 }
 
