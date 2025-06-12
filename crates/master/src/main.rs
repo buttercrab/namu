@@ -1,16 +1,19 @@
 use axum::{
-    extract::{Request, State},
+    extract::{Multipart, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{Json, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
@@ -37,6 +40,7 @@ async fn main() {
         .route("/healthz", get(healthz))
         .route("/workers/ws", get(worker::handle_worker_websocket))
         .route("/workers", get(worker::list_workers))
+        .route("/tasks/upload", post(upload_tasks))
         .layer(middleware::from_fn(logging_middleware))
         .with_state(app_state);
 
@@ -95,4 +99,58 @@ async fn logging_middleware(req: Request, next: Next) -> Response {
     );
 
     response
+}
+
+async fn upload_tasks(mut multipart: Multipart) -> Result<Json<Value>, StatusCode> {
+    let outputs_dir = Path::new("outputs");
+    if !outputs_dir.exists() {
+        fs::create_dir_all(outputs_dir).await.map_err(|e| {
+            error!("Failed to create outputs directory: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    let mut uploaded_files = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
+        let file_name = field
+            .file_name()
+            .ok_or(StatusCode::BAD_REQUEST)?
+            .to_string();
+
+        let data = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+
+        // Create nested directory structure based on file path
+        let file_path = outputs_dir.join(&file_name);
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).await.map_err(|e| {
+                error!("Failed to create directory {}: {}", parent.display(), e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+
+        // Write file
+        let mut file = fs::File::create(&file_path).await.map_err(|e| {
+            error!("Failed to create file {}: {}", file_path.display(), e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        file.write_all(&data).await.map_err(|e| {
+            error!("Failed to write file {}: {}", file_path.display(), e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        uploaded_files.push(file_name);
+        info!("Uploaded file: {}", file_path.display());
+    }
+
+    Ok(Json(json!({
+        "status": "success",
+        "message": "Tasks uploaded successfully",
+        "files": uploaded_files
+    })))
 }
