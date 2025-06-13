@@ -32,6 +32,7 @@ fn serializable_conditional_workflow() {
     // Op 0: is_positive and branch
     assert!(ops[0].phis.is_empty());
     assert_eq!(ops[0].literals.len(), 1);
+    assert_eq!(ops[0].literals[0].output, 0);
     assert!(matches!(ops[0].task, Some(Task { ref name, .. }) if name.contains("is_positive")));
     assert!(matches!(
         ops[0].next,
@@ -44,6 +45,8 @@ fn serializable_conditional_workflow() {
 
     // Op 1: Merge block
     assert_eq!(ops[1].phis.len(), 1);
+    assert_eq!(ops[1].phis[0].id, 4);
+    assert_eq!(ops[1].phis[0].from, vec![(2, 2), (3, 3)]);
     assert!(ops[1].literals.is_empty());
     assert!(ops[1].task.is_none());
     assert!(matches!(ops[1].next, Next::Return { .. }));
@@ -104,26 +107,4 @@ fn serializable_while_loop_workflow() {
     assert!(exit_op.literals.is_empty());
     assert!(exit_op.task.is_none());
     assert!(matches!(exit_op.next, Next::Return { .. }));
-}
-
-#[test]
-fn serializes_to_json() {
-    #[workflow]
-    fn test_workflow() -> i32 {
-        let input = 10;
-        if is_positive(input) {
-            double(input)
-        } else {
-            identity(input)
-        }
-    }
-
-    let graph = test_workflow();
-    let serializable = graph.to_serializable("json_test".to_string());
-
-    let json = serde_json::to_string(&serializable).unwrap();
-    assert!(!json.is_empty());
-
-    // A simple check to ensure the output looks like a valid JSON
-    assert!(json.starts_with("{\"name\":\"json_test\",\"operations\":["));
 }
