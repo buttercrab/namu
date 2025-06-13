@@ -519,13 +519,13 @@ impl WorkflowVisitor {
             {
                 #(#pre_if_captures)*
 
+                let #merge_block_id = #builder.new_block();
                 let #then_block_id = #builder.new_block();
                 #else_block_setup
-                let #merge_block_id = #builder.new_block();
 
                 let __if_condition = #cond;
                 let #parent_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(graph::Terminator::branch(__if_condition.id, #then_block_id, #false_target));
+                #builder.seal_block(graph::Terminator::branch(__if_condition, #then_block_id, #false_target));
 
                 #builder.switch_to_block(#then_block_id);
                 let __then_val = #then_branch_body;
@@ -617,7 +617,7 @@ impl WorkflowVisitor {
                 #builder.switch_to_block(#header_block_id);
                 #(#phi_node_creations)*
                 let __while_cond = #cond;
-                #builder.seal_block(graph::Terminator::branch(__while_cond.id, #body_block_id, #exit_block_id));
+                #builder.seal_block(graph::Terminator::branch(__while_cond, #body_block_id, #exit_block_id));
 
                 #builder.switch_to_block(#body_block_id);
                 #body_block;

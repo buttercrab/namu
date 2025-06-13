@@ -3,9 +3,14 @@
 //! This module defines the core data structures that represent the graph,
 //! such as `Graph`, `Node`, `BasicBlock`, and `Terminator`.
 
-use std::any::Any;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::{any::Any, mem};
+
+use common::{
+    Literal, Next, OpId, Operation, Phi as SerializablePhi, Task, Workflow as SerializableWorkflow,
+};
 
 // --- Core Data Structures ---
 
@@ -37,6 +42,12 @@ impl Arena {
         }
 
         id
+    }
+
+    fn get_node_id(&self, node_ptr: &Node) -> NodeId {
+        let node_addr = node_ptr as *const Node as usize;
+        let start_addr = self.nodes.as_ptr() as usize;
+        (node_addr - start_addr) / std::mem::size_of::<Node>()
     }
 }
 
@@ -79,9 +90,13 @@ impl Terminator {
         Self::Jump { target }
     }
 
-    pub fn branch(condition: NodeId, true_target: BlockId, false_target: BlockId) -> Self {
+    pub fn branch(
+        condition: TracedValue<bool>,
+        true_target: BlockId,
+        false_target: BlockId,
+    ) -> Self {
         Self::Branch {
-            condition,
+            condition: condition.id,
             true_target,
             false_target,
         }
@@ -129,6 +144,105 @@ impl<T> Graph<T> {
             arena,
             blocks,
             _phantom: PhantomData,
+        }
+    }
+
+    pub fn to_serializable(&self, name: String) -> SerializableWorkflow {
+        let mut ops = Vec::new();
+        let mut block_id_to_op_id = HashMap::new();
+
+        // Pass 1: Create one operation per block.
+        for (block_id, block) in self.blocks.iter().enumerate() {
+            block_id_to_op_id.insert(block_id, (ops.len(), ops.len()));
+
+            let mut ops_count = 0;
+            let mut phis = Vec::new();
+            let mut literals = Vec::new();
+
+            for &node_id in &block.instructions {
+                let node = &self.arena.nodes[node_id];
+                match &node.kind {
+                    NodeKind::Phi { from } => {
+                        phis.push(SerializablePhi {
+                            id: node_id,
+                            from: from.clone(),
+                        });
+                    }
+                    NodeKind::Literal { debug_repr, .. } => {
+                        literals.push(Literal {
+                            value: debug_repr.clone(),
+                            output: node_id,
+                        });
+                    }
+                    NodeKind::Call {
+                        task_id, inputs, ..
+                    } => {
+                        let task = Some(Task {
+                            name: task_id.clone(),
+                            inputs: inputs.clone(),
+                            output: node_id,
+                        });
+
+                        ops.push(Operation {
+                            phis: mem::take(&mut phis),
+                            literals: mem::take(&mut literals),
+                            task,
+                            next: Next::Jump { next: ops.len() },
+                        });
+
+                        ops_count += 1;
+                    }
+                }
+            }
+
+            if ops_count == 0 || !phis.is_empty() || !literals.is_empty() {
+                ops.push(Operation {
+                    phis: mem::take(&mut phis),
+                    literals: mem::take(&mut literals),
+                    task: None,
+                    next: Next::Return { var: None }, // Placeholder
+                });
+            }
+
+            block_id_to_op_id.entry(block_id).and_modify(|(_, end)| {
+                *end = ops.len() - 1;
+            });
+        }
+
+        // Pass 2: Link terminators and resolve phi nodes.
+        for (block_id, block) in self.blocks.iter().enumerate() {
+            // Link the terminator.
+            let terminator = block.terminator.as_ref().unwrap();
+            let (start, _) = block_id_to_op_id[&block_id];
+            ops[start].next = match terminator {
+                Terminator::Jump { target } => Next::Jump {
+                    next: block_id_to_op_id[target].0,
+                },
+                Terminator::Branch {
+                    condition,
+                    true_target,
+                    false_target,
+                } => Next::Branch {
+                    var: *condition,
+                    true_next: block_id_to_op_id[true_target].0,
+                    false_next: block_id_to_op_id[false_target].0,
+                },
+                Terminator::Return { value } => Next::Return { var: *value },
+            };
+
+            // Resolve phi node sources.
+            for phi in &mut ops[start].phis {
+                phi.from = phi
+                    .from
+                    .iter()
+                    .map(|(from_b, v)| (block_id_to_op_id[from_b].1, *v))
+                    .collect();
+            }
+        }
+
+        SerializableWorkflow {
+            name,
+            operations: ops,
         }
     }
 

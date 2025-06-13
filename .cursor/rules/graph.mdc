@@ -12,7 +12,7 @@ alwaysApply: true
 
 ## Design
 
-The library transforms standard Rust functions into a static **Control Flow Graph (CFG)**. This approach allows developers to write intuitive, imperative code—including conditionals (`if/else`) and mutable variables—while the macros handle the complex transformation into an executable graph structure.
+The library transforms standard Rust functions into a static **Control Flow Graph (CFG)**. This approach allows developers to write intuitive, imperative code—including conditionals (`if/else`), loops (`while`), and mutable variables—while the macros handle the complex transformation into an executable graph structure.
 
 This design leverages the Rust compiler for type-checking and syntax validation, ensuring that if the workflow code compiles, the resulting graph is sound.
 
@@ -20,12 +20,17 @@ This design leverages the Rust compiler for type-checking and syntax validation,
 
 A `#[task]` is a unit of computation. It is defined as a regular Rust function decorated with the `#[task]` attribute. The macro transforms the function into a "task constructor" that, when called inside a `#[workflow]`, adds a `Call` node to the graph rather than executing immediately.
 
+Tasks can be of three types:
+1. **Single**: Processes one input at a time (default)
+2. **Batch**: Processes multiple inputs in batches
+3. **Stream**: Processes a stream of inputs
+
 **Example:**
 
 ```rust
 #[task]
-fn add(a: i32, b: i32) -> i32 {
-    a + b
+fn add(a: i32, b: i32) -> Result<i32> {
+    Ok(a + b)
 }
 ```
 
@@ -35,14 +40,18 @@ A `#[workflow]` is a function that defines the structure and control flow of the
 
 **Key Transformation Steps:**
 
-1.  **SSA Conversion**: The macro's `SsaBuilder` walks the AST and converts all variable assignments into Static Single Assignment (SSA) form. Each variable is renamed to be unique, ensuring it is only assigned once.
-2.  **Basic Block Creation**: The code is partitioned into `BasicBlock`s. A new block is started for the function entry point, and for the `then` and `else` branches of an `if` statement.
-3.  **Instruction Generation**: Calls to `#[task]` functions and `graph::new_literal` are converted into `Call` and `Literal` nodes within the current basic block.
-4.  **Terminators**: Each basic block is terminated with a control-flow instruction:
-    *   `Return`: Ends the workflow, returning a final value.
-    *   `Jump`: An unconditional jump to another block (used to skip an `else` branch or jump to a merge point).
-    *   `Branch`: A conditional jump based on a boolean `TracedValue`. This is how `if` statements are represented.
-5.  **Phi Nodes**: When control flow paths merge (e.g., after an `if/else` statement), the macro inserts `Phi` nodes. A `Phi` node is a special instruction that selects which value to use based on which block control flowed from, correctly unifying variable states from different branches.
+1. **SSA Conversion**: The macro's `WorkflowVisitor` walks the AST and converts all variable assignments into Static Single Assignment (SSA) form. Each variable is renamed to be unique, ensuring it is only assigned once.
+2. **Basic Block Creation**: The code is partitioned into `BasicBlock`s. A new block is started for:
+   - Function entry point
+   - `then` and `else` branches of an `if` statement
+   - Loop headers and bodies
+   - Loop exit points
+3. **Instruction Generation**: Calls to `#[task]` functions and `graph::new_literal` are converted into `Call` and `Literal` nodes within the current basic block.
+4. **Terminators**: Each basic block is terminated with a control-flow instruction:
+   * `Return`: Ends the workflow, returning a final value
+   * `Jump`: An unconditional jump to another block (used to skip an `else` branch or jump to a merge point)
+   * `Branch`: A conditional jump based on a boolean `TracedValue`. This is how `if` statements and loop conditions are represented.
+5. **Phi Nodes**: When control flow paths merge (e.g., after an `if/else` statement or at loop headers), the macro inserts `Phi` nodes. A `Phi` node is a special instruction that selects which value to use based on which block control flowed from, correctly unifying variable states from different branches.
 
 ### Example: Conditional Workflow
 
@@ -50,7 +59,7 @@ A `#[workflow]` is a function that defines the structure and control flow of the
 // User-written code
 #[workflow]
 fn my_workflow() -> i32 {
-    let input = graph::new_literal(10);
+    let input = 10;
     if is_positive(input) {
         double(input)
     } else {
@@ -80,6 +89,62 @@ Block 3 (Merge):
   return var4
 ```
 
+### Example: While Loop Workflow
+
+```rust
+#[workflow]
+fn while_workflow() -> i32 {
+    let mut i = 0;
+    while less_than(i, 3) {
+        i = add(i, 1);
+    }
+    i
+}
+```
+
+**Conceptual Graph Representation:**
+
+```
+Block 0 (Entry):
+  let var0 = Literal(0);
+  jump -> Block 1
+
+Block 1 (Header):
+  let var1 = phi([Block 0, var0], [Block 2, var5]);
+  let var2 = Literal(3);
+  let var3 = Call(less_than, [var1, var2]);
+  branch var3 ? Block 2 : Block 3
+
+Block 2 (Body):
+  let var4 = Literal(1);
+  let var5 = Call(add, [var1, var4]);
+  jump -> Block 1
+
+Block 3 (Exit):
+  return var1
+```
+
 ### Execution
 
-The `graph.run()` method executes the graph by traversing the CFG. It starts at the entry block (Block 0) and follows the `Terminator` instructions. When it encounters a `Phi` node, it uses the knowledge of the previously executed block to select the correct incoming value. This ensures that even though the graph is static, only the logically required branches are executed at runtime.
+The `Executor` runs the graph by traversing the CFG. It starts at the entry block (Block 0) and follows the `Terminator` instructions. The execution process:
+
+1. **Block Execution**: Each block is executed in two passes:
+   - First pass: Resolve all phi nodes in the block using values from the predecessor block
+   - Second pass: Execute all other instructions (literals and task calls)
+
+2. **Task Execution**: When a task node is encountered:
+   - The task is looked up in the global task registry
+   - Input values are collected from previous nodes
+   - The task is executed with the collected inputs
+   - The result is stored for use by subsequent nodes
+
+3. **Control Flow**: After executing a block's instructions:
+   - For `Jump`: Continue to the target block
+   - For `Branch`: Evaluate the condition and jump to either the true or false target
+   - For `Return`: End execution and return the final value
+
+This execution model ensures that:
+- Only the logically required branches are executed
+- Variable values are correctly unified at merge points
+- Tasks are executed in the correct order with proper dependencies
+- The graph structure is preserved while allowing dynamic execution paths
