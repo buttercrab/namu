@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::{any::Any, mem};
 
 use common::{
-    Literal, Next, OpId, Operation, Phi as SerializablePhi, Task, Workflow as SerializableWorkflow,
+    Literal, Next, Operation, Phi as SerializablePhi, Task, Workflow as SerializableWorkflow,
 };
 
 // --- Core Data Structures ---
@@ -42,12 +42,6 @@ impl Arena {
         }
 
         id
-    }
-
-    fn get_node_id(&self, node_ptr: &Node) -> NodeId {
-        let node_addr = node_ptr as *const Node as usize;
-        let start_addr = self.nodes.as_ptr() as usize;
-        (node_addr - start_addr) / std::mem::size_of::<Node>()
     }
 }
 
