@@ -655,6 +655,7 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = if visitor.last_expr_has_value {
         quote! {
             #[allow(unused_assignments)]
+            #[allow(unused_braces)]
             pub fn #func_name() -> graph::Graph<#return_type> {
                 let #builder_ident = graph::Builder::<#return_type>::new();
 
@@ -667,6 +668,7 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         quote! {
             #[allow(unused_assignments)]
+            #[allow(unused_braces)]
             pub fn #func_name() -> graph::Graph<#return_type> {
                 let #builder_ident = graph::Builder::<#return_type>::new();
 

@@ -27,9 +27,9 @@ fn workflow3() {
     let a = 1;
     let b = 2;
     {
-        let c = add(a, b);
+        let _c = add(a, b);
     }
-    let b = 2;
+    let _b = 2;
 }
 
 fn main() {
