@@ -213,8 +213,8 @@ impl<T> Graph<T> {
         for (block_id, block) in self.blocks.iter().enumerate() {
             // Link the terminator.
             let terminator = block.terminator.as_ref().unwrap();
-            let (start, _) = block_id_to_op_id[&block_id];
-            ops[start].next = match terminator {
+            let (start, end) = block_id_to_op_id[&block_id];
+            ops[end].next = match terminator {
                 Terminator::Jump { target } => Next::Jump {
                     next: block_id_to_op_id[target].0,
                 },
