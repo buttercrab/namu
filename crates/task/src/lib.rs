@@ -1,3 +1,5 @@
+use std::fmt::{Display, Formatter};
+
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt, pin_mut};
@@ -5,6 +7,17 @@ use futures::{Stream, StreamExt, pin_mut};
 pub use kanal::{Receiver, Sender};
 
 type ItemId = usize;
+
+#[derive(Debug, Copy, Clone)]
+pub struct TaskEnd;
+
+impl Display for TaskEnd {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TaskEnd")
+    }
+}
+
+impl std::error::Error for TaskEnd {}
 
 pub trait Task {
     type Config;
@@ -33,6 +46,8 @@ pub trait SingleTask: Task {
         while let Ok((id, x)) = recv.recv() {
             let y = self.call(x);
             let _ = send.send((id, y));
+            // TODO: better way to signal end of task?
+            let _ = send.send((id, Err(anyhow::Error::from(TaskEnd))));
         }
     }
 }
@@ -61,6 +76,7 @@ pub trait BatchedTask: Task {
 
                 for (i, y) in ys.into_iter().enumerate() {
                     let _ = send.send((ids[i], y));
+                    let _ = send.send((ids[i], Err(anyhow::Error::from(TaskEnd))));
                 }
                 ids.clear();
             }
@@ -70,6 +86,7 @@ pub trait BatchedTask: Task {
             let ys = self.call(buf.drain(..).collect());
             for (i, y) in ys.into_iter().enumerate() {
                 let _ = send.send((ids[i], y));
+                let _ = send.send((ids[i], Err(anyhow::Error::from(TaskEnd))));
             }
         }
     }
@@ -88,6 +105,7 @@ pub trait StreamTask: Task {
             for y in ys {
                 let _ = send.send((id, y));
             }
+            let _ = send.send((id, Err(anyhow::Error::from(TaskEnd))));
         }
     }
 }
@@ -123,6 +141,7 @@ pub trait AsyncSingleTask: AsyncTask {
         while let Ok((id, x)) = recv.recv().await {
             let y = self.call(x).await;
             let _ = send.send((id, y)).await;
+            let _ = send.send((id, Err(anyhow::Error::from(TaskEnd)))).await;
         }
     }
 }
@@ -154,6 +173,7 @@ pub trait AsyncBatchedTask: AsyncTask {
 
                 for (i, y) in ys.into_iter().enumerate() {
                     let _ = send.send((ids[i], y)).await;
+                    let _ = send.send((ids[i], Err(anyhow::Error::from(TaskEnd)))).await;
                 }
                 ids.clear();
             }
@@ -163,6 +183,7 @@ pub trait AsyncBatchedTask: AsyncTask {
             let ys = self.call(buf.drain(..).collect()).await;
             for (i, y) in ys.into_iter().enumerate() {
                 let _ = send.send((ids[i], y)).await;
+                let _ = send.send((ids[i], Err(anyhow::Error::from(TaskEnd)))).await;
             }
         }
     }
@@ -185,6 +206,7 @@ pub trait AsyncStreamTask: AsyncTask {
             while let Some(y) = ys.next().await {
                 let _ = send.send((id, y)).await;
             }
+            let _ = send.send((id, Err(anyhow::Error::from(TaskEnd)))).await;
         }
     }
 }
