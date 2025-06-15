@@ -1,27 +1,28 @@
-use std::{any::Any, cell::RefCell, collections::HashMap, sync::Arc};
+use std::{
+    any::Any,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use common::VarId;
+use scc::HashMap;
 
 use crate::context::ContextManager;
 
-struct NaiveContextManagerInner {
+pub struct NaiveContextManager {
     contexts: HashMap<usize, HashMap<VarId, Arc<dyn Any + Send + Sync>>>,
     context_order: HashMap<usize, Vec<usize>>,
-    id_counter: usize,
-}
-
-pub struct NaiveContextManager {
-    inner: RefCell<NaiveContextManagerInner>,
+    id_counter: AtomicUsize,
 }
 
 impl NaiveContextManager {
     pub fn new() -> Self {
         Self {
-            inner: RefCell::new(NaiveContextManagerInner {
-                contexts: HashMap::new(),
-                context_order: HashMap::new(),
-                id_counter: 0,
-            }),
+            contexts: HashMap::new(),
+            context_order: HashMap::new(),
+            id_counter: AtomicUsize::new(0),
         }
     }
 }
@@ -30,19 +31,16 @@ impl ContextManager for NaiveContextManager {
     type ContextId = usize;
 
     fn create_context(&self) -> Self::ContextId {
-        let mut inner = self.inner.borrow_mut();
-        let id = inner.id_counter;
-        inner.id_counter += 1;
-        inner.contexts.insert(id, HashMap::new());
-        inner.context_order.insert(id, vec![id]);
+        let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
+        self.contexts.insert(id, HashMap::new()).unwrap();
+        self.context_order.insert(id, vec![id]).unwrap();
         id
     }
 
     fn compare_context(&self, a: Self::ContextId, b: Self::ContextId) -> std::cmp::Ordering {
-        let inner = self.inner.borrow();
-        let a_order = inner.context_order.get(&a).unwrap();
-        let b_order = inner.context_order.get(&b).unwrap();
-        a_order.cmp(b_order)
+        let a_order = self.context_order.get(&a).unwrap();
+        let b_order = self.context_order.get(&b).unwrap();
+        a_order.cmp(&b_order)
     }
 
     fn add_variable(
@@ -51,17 +49,13 @@ impl ContextManager for NaiveContextManager {
         var_id: common::VarId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Self::ContextId {
-        let inner = self.inner.borrow();
-        let mut context = inner.contexts.get(&context_id).unwrap().clone();
-        let mut context_order = inner.context_order.get(&context_id).unwrap().clone();
-        drop(inner);
-        context.insert(var_id, value);
-        let mut inner = self.inner.borrow_mut();
-        let id = inner.id_counter;
+        let context = self.contexts.get(&context_id).unwrap().clone();
+        let mut context_order = self.context_order.get(&context_id).unwrap().clone();
+        context.insert(var_id, value).unwrap();
+        let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         context_order.push(id);
-        inner.id_counter += 1;
-        inner.contexts.insert(id, context);
-        inner.context_order.insert(id, context_order);
+        self.contexts.insert(id, context).unwrap();
+        self.context_order.insert(id, context_order).unwrap();
         id
     }
 
@@ -70,9 +64,8 @@ impl ContextManager for NaiveContextManager {
         context_id: Self::ContextId,
         var_id: common::VarId,
     ) -> Arc<dyn Any + Send + Sync> {
-        let inner = self.inner.borrow();
-        let context = inner.contexts.get(&context_id).unwrap();
-        context.get(&var_id).unwrap().clone()
+        let context = self.contexts.get(&context_id).unwrap();
+        context.get().get(&var_id).unwrap().clone()
     }
 
     fn get_variables(
@@ -80,18 +73,15 @@ impl ContextManager for NaiveContextManager {
         context_id: Self::ContextId,
         var_ids: &[common::VarId],
     ) -> Vec<Arc<dyn Any + Send + Sync>> {
-        let inner = self.inner.borrow();
-        let context = inner.contexts.get(&context_id).unwrap();
+        let context = self.contexts.get(&context_id).unwrap();
         var_ids
             .iter()
-            .map(|var_id| context.get(var_id).unwrap())
-            .cloned()
+            .map(|var_id| context.get().get(var_id).unwrap().clone())
             .collect()
     }
 
     fn remove_context(&self, context_id: Self::ContextId) {
-        let mut inner = self.inner.borrow_mut();
-        inner.contexts.remove(&context_id);
-        inner.context_order.remove(&context_id);
+        self.contexts.remove(&context_id);
+        self.context_order.remove(&context_id);
     }
 }
