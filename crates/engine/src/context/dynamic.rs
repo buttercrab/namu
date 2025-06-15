@@ -93,13 +93,16 @@ impl DynamicContextManager {
         mut node: OccupiedEntry<'a, usize, ContextTreeNode>,
         depth: usize,
     ) -> (usize, OccupiedEntry<'a, usize, ContextTreeNode>) {
-        let diff = node.depth - depth;
+        let mut diff = node.depth - depth;
+        let mut i = 1;
 
-        for i in (0..node.ancestors.len()).rev() {
-            if (diff >> i) & 1 == 1 {
+        while diff > 0 {
+            if diff & i > 0 {
                 context_id = node.ancestors[i];
                 node = self.nodes.get(&context_id).unwrap();
+                diff ^= i;
             }
+            i <<= 1;
         }
 
         (context_id, node)
