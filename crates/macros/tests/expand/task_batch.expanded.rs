@@ -42,8 +42,8 @@ fn __factory_batch_task() -> graph::TaskFactory {
 #[allow(non_snake_case)]
 pub fn batch_task<G: 'static>(
     builder: &graph::Builder<G>,
-    inputs: graph::TracedValue<Vec<i32>>,
-) -> graph::TracedValue<Vec<i32>> {
+    inputs: graph::TracedValue<i32>,
+) -> graph::TracedValue<i32> {
     #[allow(non_upper_case_globals)]
     static __REG_ONCE_batch_task: std::sync::Once = std::sync::Once::new();
     __REG_ONCE_batch_task

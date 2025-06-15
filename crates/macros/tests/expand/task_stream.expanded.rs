@@ -29,13 +29,14 @@ where
         &mut self,
         input: Self::Input,
     ) -> impl Iterator<Item = anyhow::Result<Self::Output>> {
-        __impl_stream_task(input)
+        let input = input;
+        __impl_stream_task(input).unwrap()
     }
 }
 fn __factory_stream_task() -> graph::TaskFactory {
     std::sync::Arc::new(|| {
         std::sync::Arc::new(|__inputs| {
-            let input = __inputs[0].downcast_ref::<i32>().unwrap().clone();
+            let input = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
             let result_iter = __impl_stream_task(input).unwrap();
             let result_vec: Vec<_> = result_iter.map(|item| item.unwrap()).collect();
             std::sync::Arc::new(result_vec) as graph::Value
@@ -46,7 +47,7 @@ fn __factory_stream_task() -> graph::TaskFactory {
 pub fn stream_task<G: 'static>(
     builder: &graph::Builder<G>,
     input: graph::TracedValue<i32>,
-) -> graph::TracedValue<Vec<i32>> {
+) -> graph::TracedValue<i32> {
     #[allow(non_upper_case_globals)]
     static __REG_ONCE_stream_task: std::sync::Once = std::sync::Once::new();
     __REG_ONCE_stream_task

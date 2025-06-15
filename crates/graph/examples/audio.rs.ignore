@@ -1,4 +1,4 @@
-use graph::{TracedValue, task, workflow};
+use graph::{task, workflow};
 
 #[derive(Debug, Clone)]
 struct Audio {
@@ -6,9 +6,9 @@ struct Audio {
     sample_rate: u32,
 }
 
-#[task]
-fn load_audios() -> Vec<Audio> {
-    vec![
+#[task(stream)]
+fn load_audios() -> anyhow::Result<impl Iterator<Item = anyhow::Result<Audio>>> {
+    Ok(vec![
         Audio {
             data: vec![1.0, 2.0, 3.0, 4.0, 5.0],
             sample_rate: 44100,
@@ -18,51 +18,54 @@ fn load_audios() -> Vec<Audio> {
             sample_rate: 44100,
         },
     ]
+    .into_iter()
+    .map(Ok))
+}
+
+#[task(stream)]
+fn remove_bgm(audio: Audio) -> anyhow::Result<impl Iterator<Item = anyhow::Result<Audio>>> {
+    Ok(vec![audio].into_iter().map(Ok))
+}
+
+#[task(stream)]
+fn detect_vad(audio: Audio) -> anyhow::Result<impl Iterator<Item = anyhow::Result<Audio>>> {
+    Ok(vec![audio].into_iter().map(Ok))
 }
 
 #[task]
-fn remove_bgm(audio: Audio) -> Vec<Audio> {
-    vec![audio]
+fn detect_language(audio: Audio) -> anyhow::Result<String> {
+    Ok("en".to_string())
 }
 
 #[task]
-fn detect_vad(audio: Audio) -> Vec<Audio> {
-    vec![audio]
+fn translate(audio: Audio) -> anyhow::Result<String> {
+    Ok("blah blah".to_string())
 }
 
 #[task]
-fn detect_language(audio: Audio) -> String {
-    "en".to_string()
+fn audio_length(audio: Audio) -> anyhow::Result<f32> {
+    Ok(1.0)
 }
 
 #[task]
-fn translate(audio: Audio) -> String {
-    "blah blah".to_string()
+fn cut_audio(audio: Audio, transcript: String) -> anyhow::Result<(Audio, Audio)> {
+    Ok((audio.clone(), audio))
 }
 
 #[task]
-fn audio_length(audio: Audio) -> f32 {
-    1.0
-}
-
-#[task]
-fn cut_audio(audio: Audio, transcript: String) -> (Audio, Audio) {
-    (audio.clone(), audio)
-}
-
-#[task]
-fn save_audio(audio: Audio) {
+fn save_audio(audio: Audio) -> anyhow::Result<()> {
     println!("Saving audio: {:?}", audio);
+    Ok(())
 }
 
 #[task]
-fn is_not_english(language: String) -> bool {
-    language != "en"
+fn is_not_english(language: String) -> anyhow::Result<bool> {
+    Ok(language != "en")
 }
 
 #[task]
-fn is_long_audio(audio: Audio) -> bool {
-    audio_length(audio) > 10.0
+fn is_long_audio(audio: Audio) -> anyhow::Result<bool> {
+    Ok(1.0 > 10.0)
 }
 
 #[workflow]
@@ -83,4 +86,5 @@ fn workflow() {
     }
     ()
 }
+
 fn main() {}
