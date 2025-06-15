@@ -47,15 +47,29 @@ pub fn double<G: 'static>(
     __REG_ONCE_double
         .call_once(|| {
             graph::register_task(
-                "double::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "double",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_double(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "double",
-        task_id: "double::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "double",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)
@@ -108,15 +122,29 @@ pub fn identity<G: 'static>(
     __REG_ONCE_identity
         .call_once(|| {
             graph::register_task(
-                "identity::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "identity",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_identity(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "identity",
-        task_id: "identity::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "identity",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)

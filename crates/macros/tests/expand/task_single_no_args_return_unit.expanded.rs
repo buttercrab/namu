@@ -43,15 +43,29 @@ pub fn no_args_task<G: 'static>(builder: &graph::Builder<G>) -> graph::TracedVal
     __REG_ONCE_no_args_task
         .call_once(|| {
             graph::register_task(
-                "no_args_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "no_args_task",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_no_args_task(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "no_args_task",
-        task_id: "no_args_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "no_args_task",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
+                ),
+            );
+            res
+        }),
         inputs: ::alloc::vec::Vec::new(),
     };
     builder.add_instruction(kind)

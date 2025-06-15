@@ -49,15 +49,29 @@ pub fn batch_task<G: 'static>(
     __REG_ONCE_batch_task
         .call_once(|| {
             graph::register_task(
-                "batch_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "batch_task",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_batch.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_batch_task(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "batch_task",
-        task_id: "batch_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "batch_task",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_batch.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([inputs.id])),
     };
     builder.add_instruction(kind)

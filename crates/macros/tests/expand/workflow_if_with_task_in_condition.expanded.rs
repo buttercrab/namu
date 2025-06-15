@@ -47,15 +47,29 @@ pub fn is_positive<G: 'static>(
     __REG_ONCE_is_positive
         .call_once(|| {
             graph::register_task(
-                "is_positive::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "is_positive",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_is_positive(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "is_positive",
-        task_id: "is_positive::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "is_positive",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)
@@ -106,15 +120,29 @@ pub fn action_if_true<G: 'static>(
     __REG_ONCE_action_if_true
         .call_once(|| {
             graph::register_task(
-                "action_if_true::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "action_if_true",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_action_if_true(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "action_if_true",
-        task_id: "action_if_true::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "action_if_true",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                ),
+            );
+            res
+        }),
         inputs: ::alloc::vec::Vec::new(),
     };
     builder.add_instruction(kind)

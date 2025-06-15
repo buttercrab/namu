@@ -49,15 +49,29 @@ pub fn less_than<G: 'static>(
     __REG_ONCE_less_than
         .call_once(|| {
             graph::register_task(
-                "less_than::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "less_than",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_less_than(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "less_than",
-        task_id: "less_than::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "less_than",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
     };
     builder.add_instruction(kind)
@@ -110,15 +124,29 @@ pub fn is_even<G: 'static>(
     __REG_ONCE_is_even
         .call_once(|| {
             graph::register_task(
-                "is_even::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "is_even",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_is_even(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "is_even",
-        task_id: "is_even::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "is_even",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)
@@ -171,15 +199,29 @@ pub fn add_one<G: 'static>(
     __REG_ONCE_add_one
         .call_once(|| {
             graph::register_task(
-                "add_one::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "add_one",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_add_one(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "add_one",
-        task_id: "add_one::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "add_one",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)
@@ -232,15 +274,29 @@ pub fn add_two<G: 'static>(
     __REG_ONCE_add_two
         .call_once(|| {
             graph::register_task(
-                "add_two::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "add_two",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_add_two(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "add_two",
-        task_id: "add_two::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "add_two",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)

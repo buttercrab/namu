@@ -47,15 +47,29 @@ pub fn add_one<G: 'static>(
     __REG_ONCE_add_one
         .call_once(|| {
             graph::register_task(
-                "add_one::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "add_one",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_add_one(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "add_one",
-        task_id: "add_one::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "add_one",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)
@@ -108,15 +122,29 @@ pub fn multiply_by_two<G: 'static>(
     __REG_ONCE_multiply_by_two
         .call_once(|| {
             graph::register_task(
-                "multiply_by_two::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "multiply_by_two",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_multiply_by_two(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "multiply_by_two",
-        task_id: "multiply_by_two::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "multiply_by_two",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)

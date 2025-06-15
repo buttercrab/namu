@@ -47,15 +47,29 @@ pub fn do_nothing<G: 'static>(
     __REG_ONCE_do_nothing
         .call_once(|| {
             graph::register_task(
-                "do_nothing::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "do_nothing",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_statement.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_do_nothing(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "do_nothing",
-        task_id: "do_nothing::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "do_nothing",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_statement.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)

@@ -404,7 +404,6 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
         quote! { let #name = __inputs[#i].downcast_ref::<#ty>().unwrap().clone(); }
     });
     let input_ids = arg_names.iter().map(|name| quote! { #name.id });
-    let task_id_str = format!("{}::{}", original_sig.ident, file!());
     let factory_func_name = format_ident!("__factory_{}", func_name);
     let static_registrar_name = format_ident!("__REG_ONCE_{}", func_name);
 
@@ -455,12 +454,15 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
             #[allow(non_upper_case_globals)]
             static #static_registrar_name: std::sync::Once = std::sync::Once::new();
             #static_registrar_name.call_once(|| {
-                graph::register_task(#task_id_str.to_string(), #factory_func_name());
+                graph::register_task(
+                    format!("{}::{}", stringify!(#func_name), file!()),
+                    #factory_func_name(),
+                );
             });
 
             let kind = graph::NodeKind::Call {
                 name: stringify!(#func_name),
-                task_id: #task_id_str.to_string(),
+                task_id: format!("{}::{}", stringify!(#func_name), file!()),
                 inputs: vec![#(#input_ids),*],
             };
             builder.add_instruction(kind)

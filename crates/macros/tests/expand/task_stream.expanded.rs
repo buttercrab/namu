@@ -53,15 +53,29 @@ pub fn stream_task<G: 'static>(
     __REG_ONCE_stream_task
         .call_once(|| {
             graph::register_task(
-                "stream_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "stream_task",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_stream.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_stream_task(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "stream_task",
-        task_id: "stream_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "stream_task",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_stream.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([input.id])),
     };
     builder.add_instruction(kind)

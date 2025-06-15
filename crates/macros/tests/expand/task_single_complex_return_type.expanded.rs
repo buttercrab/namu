@@ -52,15 +52,29 @@ pub fn complex_return_task<G: 'static>(
     __REG_ONCE_complex_return_task
         .call_once(|| {
             graph::register_task(
-                "complex_return_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "complex_return_task",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_complex_return_type.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_complex_return_task(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "complex_return_task",
-        task_id: "complex_return_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "complex_return_task",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_complex_return_type.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)

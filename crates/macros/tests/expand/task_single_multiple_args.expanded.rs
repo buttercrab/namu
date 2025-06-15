@@ -54,15 +54,29 @@ pub fn multiple_args_task<G: 'static>(
     __REG_ONCE_multiple_args_task
         .call_once(|| {
             graph::register_task(
-                "multiple_args_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "multiple_args_task",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_multiple_args.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_multiple_args_task(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "multiple_args_task",
-        task_id: "multiple_args_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "multiple_args_task",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_multiple_args.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
     };
     builder.add_instruction(kind)

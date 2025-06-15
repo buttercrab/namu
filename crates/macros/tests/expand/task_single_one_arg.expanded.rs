@@ -47,15 +47,29 @@ pub fn single_arg_task<G: 'static>(
     __REG_ONCE_single_arg_task
         .call_once(|| {
             graph::register_task(
-                "single_arg_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "single_arg_task",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_one_arg.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_single_arg_task(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "single_arg_task",
-        task_id: "single_arg_task::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "single_arg_task",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_one_arg.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)

@@ -47,15 +47,29 @@ pub fn task_a<G: 'static>(
     __REG_ONCE_task_a
         .call_once(|| {
             graph::register_task(
-                "task_a::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "task_a",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_task_a(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "task_a",
-        task_id: "task_a::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "task_a",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)
@@ -108,15 +122,29 @@ pub fn task_b<G: 'static>(
     __REG_ONCE_task_b
         .call_once(|| {
             graph::register_task(
-                "task_b::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-                    .to_string(),
+                ::alloc::__export::must_use({
+                    let res = ::alloc::fmt::format(
+                        format_args!(
+                            "{0}::{1}", "task_b",
+                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
+                        ),
+                    );
+                    res
+                }),
                 __factory_task_b(),
             );
         });
     let kind = graph::NodeKind::Call {
         name: "task_b",
-        task_id: "task_b::/home/jaeyong/dev/github/namu/crates/macros/src/task.rs"
-            .to_string(),
+        task_id: ::alloc::__export::must_use({
+            let res = ::alloc::fmt::format(
+                format_args!(
+                    "{0}::{1}", "task_b",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
+                ),
+            );
+            res
+        }),
         inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     };
     builder.add_instruction(kind)
