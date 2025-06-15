@@ -9,26 +9,28 @@ fn __impl_multiple_args_task(a: i32, b: String) -> anyhow::Result<String> {
 }
 #[allow(non_camel_case_types)]
 struct __multiple_args_task;
-impl task::Task for __multiple_args_task {
-    type Config = ();
-    type Input = (i32, String);
-    type Output = String;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __multiple_args_task
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __multiple_args_task {
+impl<Id, C> task::SingleTask<Id, C> for __multiple_args_task
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = (i32, String);
+    type Output = String;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let (a, b) = input;
-        let result = __impl_multiple_args_task(a, b)?;
-        Ok(result)
+        __impl_multiple_args_task(a, b)
     }
 }
 fn __factory_multiple_args_task() -> graph::TaskFactory {
@@ -36,15 +38,14 @@ fn __factory_multiple_args_task() -> graph::TaskFactory {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
             let b = __inputs[1usize].downcast_ref::<String>().unwrap().clone();
-            let mut task_instance = __multiple_args_task;
-            let result = task::SingleTask::call(&mut task_instance, (a, b)).unwrap();
+            let result = __impl_multiple_args_task(a, b).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn multiple_args_task<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn multiple_args_task<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
     b: graph::TracedValue<String>,
 ) -> graph::TracedValue<String> {

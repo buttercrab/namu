@@ -4,26 +4,28 @@ fn __impl_less_than(a: i32, b: i32) -> anyhow::Result<bool> {
 }
 #[allow(non_camel_case_types)]
 struct __less_than;
-impl task::Task for __less_than {
-    type Config = ();
-    type Input = (i32, i32);
-    type Output = bool;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __less_than
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __less_than {
+impl<Id, C> task::SingleTask<Id, C> for __less_than
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = (i32, i32);
+    type Output = bool;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let (a, b) = input;
-        let result = __impl_less_than(a, b)?;
-        Ok(result)
+        __impl_less_than(a, b)
     }
 }
 fn __factory_less_than() -> graph::TaskFactory {
@@ -31,15 +33,14 @@ fn __factory_less_than() -> graph::TaskFactory {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
             let b = __inputs[1usize].downcast_ref::<i32>().unwrap().clone();
-            let mut task_instance = __less_than;
-            let result = task::SingleTask::call(&mut task_instance, (a, b)).unwrap();
+            let result = __impl_less_than(a, b).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn less_than<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn less_than<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
     b: graph::TracedValue<i32>,
 ) -> graph::TracedValue<bool> {
@@ -66,26 +67,28 @@ fn __impl_add(a: i32, b: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add;
-impl task::Task for __add {
-    type Config = ();
-    type Input = (i32, i32);
-    type Output = i32;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __add
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __add {
+impl<Id, C> task::SingleTask<Id, C> for __add
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = (i32, i32);
+    type Output = i32;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let (a, b) = input;
-        let result = __impl_add(a, b)?;
-        Ok(result)
+        __impl_add(a, b)
     }
 }
 fn __factory_add() -> graph::TaskFactory {
@@ -93,15 +96,14 @@ fn __factory_add() -> graph::TaskFactory {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
             let b = __inputs[1usize].downcast_ref::<i32>().unwrap().clone();
-            let mut task_instance = __add;
-            let result = task::SingleTask::call(&mut task_instance, (a, b)).unwrap();
+            let result = __impl_add(a, b).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn add<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn add<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
     b: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
@@ -132,8 +134,8 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
         let mut b = graph::new_literal(&__builder, 1);
         let mut i = graph::new_literal(&__builder, 0);
         {
-            let __pre_while_i_0 = i;
             let __pre_while_b_0 = b;
+            let __pre_while_i_0 = i;
             let __pre_while_a_0 = a;
             let __while_header_block_0 = __builder.new_block();
             let __while_body_block_0 = __builder.new_block();
@@ -141,13 +143,6 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
             let __while_parent_predecessor_0 = __builder.current_block_id();
             __builder.seal_block(graph::Terminator::jump(__while_header_block_0));
             __builder.switch_to_block(__while_header_block_0);
-            let __i_phi_node_id_0 = __builder
-                .arena_mut()
-                .new_node(graph::NodeKind::Phi {
-                    from: ::alloc::vec::Vec::new(),
-                });
-            i = graph::TracedValue::new(__i_phi_node_id_0);
-            __builder.add_instruction_to_current_block(__i_phi_node_id_0);
             let __b_phi_node_id_0 = __builder
                 .arena_mut()
                 .new_node(graph::NodeKind::Phi {
@@ -155,6 +150,13 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
                 });
             b = graph::TracedValue::new(__b_phi_node_id_0);
             __builder.add_instruction_to_current_block(__b_phi_node_id_0);
+            let __i_phi_node_id_0 = __builder
+                .arena_mut()
+                .new_node(graph::NodeKind::Phi {
+                    from: ::alloc::vec::Vec::new(),
+                });
+            i = graph::TracedValue::new(__i_phi_node_id_0);
+            __builder.add_instruction_to_current_block(__i_phi_node_id_0);
             let __a_phi_node_id_0 = __builder
                 .arena_mut()
                 .new_node(graph::NodeKind::Phi {
@@ -182,23 +184,11 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
                 b = add(&__builder, temp, b);
                 i = add(&__builder, i, graph::new_literal(&__builder, 1));
             };
-            let __post_body_i_0 = i;
             let __post_body_b_0 = b;
+            let __post_body_i_0 = i;
             let __post_body_a_0 = a;
             let __body_predecessor_id_0 = __builder.current_block_id();
             __builder.seal_block(graph::Terminator::jump(__while_header_block_0));
-            if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. }) = __builder
-                .arena_mut()
-                .nodes
-                .get_mut(__i_phi_node_id_0)
-            {
-                *from = <[_]>::into_vec(
-                    ::alloc::boxed::box_new([
-                        (__while_parent_predecessor_0, __pre_while_i_0.id),
-                        (__body_predecessor_id_0, __post_body_i_0.id),
-                    ]),
-                );
-            }
             if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. }) = __builder
                 .arena_mut()
                 .nodes
@@ -208,6 +198,18 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
                     ::alloc::boxed::box_new([
                         (__while_parent_predecessor_0, __pre_while_b_0.id),
                         (__body_predecessor_id_0, __post_body_b_0.id),
+                    ]),
+                );
+            }
+            if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. }) = __builder
+                .arena_mut()
+                .nodes
+                .get_mut(__i_phi_node_id_0)
+            {
+                *from = <[_]>::into_vec(
+                    ::alloc::boxed::box_new([
+                        (__while_parent_predecessor_0, __pre_while_i_0.id),
+                        (__body_predecessor_id_0, __post_body_i_0.id),
                     ]),
                 );
             }
@@ -224,8 +226,8 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
                 );
             }
             __builder.switch_to_block(__while_exit_block_0);
-            i = graph::TracedValue::new(__i_phi_node_id_0);
             b = graph::TracedValue::new(__b_phi_node_id_0);
+            i = graph::TracedValue::new(__i_phi_node_id_0);
             a = graph::TracedValue::new(__a_phi_node_id_0);
         }
         a

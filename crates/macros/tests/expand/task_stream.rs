@@ -1,6 +1,6 @@
 use macros::task;
 
-#[task(type = "stream")]
-fn stream_task(input: i32) -> impl Iterator<Item = anyhow::Result<i32>> {
-    (0..input).map(Ok)
+#[task(stream)]
+fn stream_task(input: i32) -> anyhow::Result<impl Iterator<Item = anyhow::Result<i32>>> {
+    Ok((0..input).map(Ok))
 }

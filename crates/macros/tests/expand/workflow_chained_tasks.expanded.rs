@@ -4,41 +4,42 @@ fn __impl_add_one(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add_one;
-impl task::Task for __add_one {
-    type Config = ();
-    type Input = i32;
-    type Output = i32;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __add_one
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __add_one {
+impl<Id, C> task::SingleTask<Id, C> for __add_one
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = i32;
+    type Output = i32;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let a = input;
-        let result = __impl_add_one(a)?;
-        Ok(result)
+        __impl_add_one(a)
     }
 }
 fn __factory_add_one() -> graph::TaskFactory {
     std::sync::Arc::new(|| {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let mut task_instance = __add_one;
-            let result = task::SingleTask::call(&mut task_instance, a).unwrap();
+            let result = __impl_add_one(a).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn add_one<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn add_one<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
     #[allow(non_upper_case_globals)]
@@ -64,41 +65,42 @@ fn __impl_multiply_by_two(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __multiply_by_two;
-impl task::Task for __multiply_by_two {
-    type Config = ();
-    type Input = i32;
-    type Output = i32;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __multiply_by_two
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __multiply_by_two {
+impl<Id, C> task::SingleTask<Id, C> for __multiply_by_two
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = i32;
+    type Output = i32;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let a = input;
-        let result = __impl_multiply_by_two(a)?;
-        Ok(result)
+        __impl_multiply_by_two(a)
     }
 }
 fn __factory_multiply_by_two() -> graph::TaskFactory {
     std::sync::Arc::new(|| {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let mut task_instance = __multiply_by_two;
-            let result = task::SingleTask::call(&mut task_instance, a).unwrap();
+            let result = __impl_multiply_by_two(a).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn multiply_by_two<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn multiply_by_two<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
     #[allow(non_upper_case_globals)]

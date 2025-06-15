@@ -4,26 +4,28 @@ fn __impl_less_than(a: i32, b: i32) -> anyhow::Result<bool> {
 }
 #[allow(non_camel_case_types)]
 struct __less_than;
-impl task::Task for __less_than {
-    type Config = ();
-    type Input = (i32, i32);
-    type Output = bool;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __less_than
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __less_than {
+impl<Id, C> task::SingleTask<Id, C> for __less_than
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = (i32, i32);
+    type Output = bool;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let (a, b) = input;
-        let result = __impl_less_than(a, b)?;
-        Ok(result)
+        __impl_less_than(a, b)
     }
 }
 fn __factory_less_than() -> graph::TaskFactory {
@@ -31,15 +33,14 @@ fn __factory_less_than() -> graph::TaskFactory {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
             let b = __inputs[1usize].downcast_ref::<i32>().unwrap().clone();
-            let mut task_instance = __less_than;
-            let result = task::SingleTask::call(&mut task_instance, (a, b)).unwrap();
+            let result = __impl_less_than(a, b).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn less_than<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn less_than<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
     b: graph::TracedValue<i32>,
 ) -> graph::TracedValue<bool> {
@@ -66,41 +67,42 @@ fn __impl_is_even(a: i32) -> anyhow::Result<bool> {
 }
 #[allow(non_camel_case_types)]
 struct __is_even;
-impl task::Task for __is_even {
-    type Config = ();
-    type Input = i32;
-    type Output = bool;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __is_even
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __is_even {
+impl<Id, C> task::SingleTask<Id, C> for __is_even
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = i32;
+    type Output = bool;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let a = input;
-        let result = __impl_is_even(a)?;
-        Ok(result)
+        __impl_is_even(a)
     }
 }
 fn __factory_is_even() -> graph::TaskFactory {
     std::sync::Arc::new(|| {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let mut task_instance = __is_even;
-            let result = task::SingleTask::call(&mut task_instance, a).unwrap();
+            let result = __impl_is_even(a).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn is_even<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn is_even<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<bool> {
     #[allow(non_upper_case_globals)]
@@ -126,41 +128,42 @@ fn __impl_add_one(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add_one;
-impl task::Task for __add_one {
-    type Config = ();
-    type Input = i32;
-    type Output = i32;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __add_one
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __add_one {
+impl<Id, C> task::SingleTask<Id, C> for __add_one
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = i32;
+    type Output = i32;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let a = input;
-        let result = __impl_add_one(a)?;
-        Ok(result)
+        __impl_add_one(a)
     }
 }
 fn __factory_add_one() -> graph::TaskFactory {
     std::sync::Arc::new(|| {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let mut task_instance = __add_one;
-            let result = task::SingleTask::call(&mut task_instance, a).unwrap();
+            let result = __impl_add_one(a).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn add_one<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn add_one<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
     #[allow(non_upper_case_globals)]
@@ -186,41 +189,42 @@ fn __impl_add_two(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add_two;
-impl task::Task for __add_two {
-    type Config = ();
-    type Input = i32;
-    type Output = i32;
-    fn new(_config: Self::Config) -> Self {
-        Self
+impl<Id, C> task::Task<Id, C> for __add_two
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    fn prepare(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
-    fn run(
-        &mut self,
-        recv: task::Receiver<(usize, Self::Input)>,
-        send: task::Sender<(usize, anyhow::Result<Self::Output>)>,
-    ) {
-        task::SingleTask::run(self, recv, send);
+    fn run(&mut self, context: C) -> anyhow::Result<()> {
+        task::SingleTask::run(self, context)
     }
 }
-impl task::SingleTask for __add_two {
+impl<Id, C> task::SingleTask<Id, C> for __add_two
+where
+    Id: Clone,
+    C: task::TaskContext<Id>,
+{
+    type Input = i32;
+    type Output = i32;
     fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
         let a = input;
-        let result = __impl_add_two(a)?;
-        Ok(result)
+        __impl_add_two(a)
     }
 }
 fn __factory_add_two() -> graph::TaskFactory {
     std::sync::Arc::new(|| {
         std::sync::Arc::new(|__inputs| {
             let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let mut task_instance = __add_two;
-            let result = task::SingleTask::call(&mut task_instance, a).unwrap();
+            let result = __impl_add_two(a).unwrap();
             std::sync::Arc::new(result) as graph::Value
         })
     })
 }
 #[allow(non_snake_case)]
-pub fn add_two<T: Clone + 'static>(
-    builder: &graph::Builder<T>,
+pub fn add_two<G: 'static>(
+    builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
     #[allow(non_upper_case_globals)]

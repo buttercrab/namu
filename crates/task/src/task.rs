@@ -22,12 +22,13 @@ where
 
     fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
-    fn run(&mut self, context: C) {
+    fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv() {
             let y = self.call(x);
             let _ = context.send(id.clone(), y);
             let _ = context.send_end(id);
         }
+        Ok(())
     }
 }
 
@@ -43,7 +44,7 @@ where
 
     fn call(&mut self, input: Vec<Self::Input>) -> Vec<Result<Self::Output>>;
 
-    fn run(&mut self, context: C) {
+    fn run(&mut self, context: C) -> Result<()> {
         let batch_size = self.batch_size();
         let mut ids = Vec::with_capacity(batch_size);
         let mut buf = Vec::with_capacity(batch_size);
@@ -71,6 +72,7 @@ where
                 let _ = context.send_end(ids[i].clone());
             }
         }
+        Ok(())
     }
 }
 
@@ -84,7 +86,7 @@ where
 
     fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Result<Self::Output>>;
 
-    fn run(&mut self, context: C) {
+    fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv() {
             let ys = self.call(x);
             for y in ys {
@@ -92,6 +94,7 @@ where
             }
             let _ = context.send_end(id);
         }
+        Ok(())
     }
 }
 
@@ -113,12 +116,13 @@ where
 
     async fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
-    async fn run(&mut self, context: C) {
+    async fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv_async().await {
             let y = self.call(x).await;
             let _ = context.send_async(id.clone(), y).await;
             let _ = context.send_end_async(id).await;
         }
+        Ok(())
     }
 }
 
@@ -135,7 +139,7 @@ where
 
     async fn call(&mut self, input: Vec<Self::Input>) -> Vec<Result<Self::Output>>;
 
-    async fn run(&mut self, context: C) {
+    async fn run(&mut self, context: C) -> Result<()> {
         let batch_size = self.batch_size();
         let mut ids = Vec::with_capacity(batch_size);
         let mut buf = Vec::with_capacity(batch_size);
@@ -163,6 +167,7 @@ where
                 let _ = context.send_end_async(ids[i].clone()).await;
             }
         }
+        Ok(())
     }
 }
 
@@ -177,7 +182,7 @@ where
 
     fn call(&mut self, input: Self::Input) -> impl Stream<Item = Result<Self::Output>> + Send;
 
-    async fn run(&mut self, context: C) {
+    async fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv_async().await {
             let ys = self.call(x);
             pin_mut!(ys);
@@ -186,5 +191,6 @@ where
             }
             let _ = context.send_end_async(id).await;
         }
+        Ok(())
     }
 }
