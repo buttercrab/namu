@@ -6,6 +6,9 @@ use futures::{Stream, StreamExt, pin_mut};
 
 pub use kanal::{Receiver, Sender};
 
+mod context;
+mod task;
+
 type ItemId = usize;
 
 #[derive(Debug, Copy, Clone)]

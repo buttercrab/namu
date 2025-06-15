@@ -239,13 +239,11 @@ impl ContextManager for DynamicContextManager {
             return;
         }
 
-        loop {
-            let parent_id = if let Some(node) = self.nodes.get(&context_id) {
-                node.ancestors.first().copied()
-            } else {
-                break;
-            };
-
+        while let Some(parent_id) = self
+            .nodes
+            .get(&context_id)
+            .map(|node| node.ancestors.first().copied())
+        {
             let was_removed = self
                 .node_state
                 .remove_if(&context_id, |(is_used, children_count)| {
