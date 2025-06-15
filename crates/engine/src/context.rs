@@ -2,8 +2,8 @@ use std::{any::Any, cmp::Ordering, sync::Arc};
 
 use common::VarId;
 
+mod dynamic;
 mod naive;
-mod simple;
 
 pub trait ContextManager {
     type ContextId;
@@ -23,7 +23,7 @@ pub trait ContextManager {
         &self,
         context_id: Self::ContextId,
         var_id: VarId,
-    ) -> Option<Arc<dyn Any + Send + Sync>>;
+    ) -> Arc<dyn Any + Send + Sync>;
 
     fn get_variables(
         &self,

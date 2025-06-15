@@ -69,10 +69,10 @@ impl ContextManager for NaiveContextManager {
         &self,
         context_id: Self::ContextId,
         var_id: common::VarId,
-    ) -> Option<Arc<dyn Any + Send + Sync>> {
+    ) -> Arc<dyn Any + Send + Sync> {
         let inner = self.inner.borrow();
         let context = inner.contexts.get(&context_id).unwrap();
-        context.get(&var_id).cloned()
+        context.get(&var_id).unwrap().clone()
     }
 
     fn get_variables(
