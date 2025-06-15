@@ -17,8 +17,8 @@ where
     Id: Clone,
     C: TaskContext<Id>,
 {
-    type Input: Send + Sync + 'static;
-    type Output: Send + Sync + 'static;
+    type Input: Send + 'static;
+    type Output: Send + 'static;
 
     fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
@@ -37,8 +37,8 @@ where
     Id: Clone,
     C: TaskContext<Id>,
 {
-    type Input: Send + Sync + 'static;
-    type Output: Send + Sync + 'static;
+    type Input: Send + 'static;
+    type Output: Send + 'static;
 
     fn batch_size(&self) -> usize;
 
@@ -81,8 +81,8 @@ where
     Id: Clone,
     C: TaskContext<Id>,
 {
-    type Input: Send + Sync + 'static;
-    type Output: Send + Sync + 'static;
+    type Input: Send + 'static;
+    type Output: Send + 'static;
 
     fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Result<Self::Output>>;
 

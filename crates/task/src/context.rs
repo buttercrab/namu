@@ -177,6 +177,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct DynamicTaskContext<Id> {
     input_ch: Receiver<(Id, Box<dyn Any + Send>)>,
     output_ch: Sender<(Id, Result<Box<dyn Any + Send>>)>,
