@@ -220,19 +220,21 @@ fn generate_single_task_impl(def: &TaskDefinition) -> TokenStream2 {
         #[allow(non_camel_case_types)]
         struct #struct_name;
 
-        impl<Id> task::Task<Id> for #struct_name
+        impl<Id, C> task::Task<Id, C> for #struct_name
         where
             Id: Clone,
+            C: task::TaskContext<Id>,
         {
             fn prepare(&mut self) -> anyhow::Result<()> { Ok(()) }
-            fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
+            fn run(&mut self, context: C) -> anyhow::Result<()> {
                 task::SingleTask::run(self, context)
             }
         }
 
-        impl<Id> task::SingleTask<Id> for #struct_name
+        impl<Id, C> task::SingleTask<Id, C> for #struct_name
         where
             Id: Clone,
+            C: task::TaskContext<Id>,
         {
             type Input = #input_type;
             type Output = #output_type;
@@ -265,19 +267,21 @@ fn generate_batch_task_impl(def: &TaskDefinition) -> TokenStream2 {
         #[allow(non_camel_case_types)]
         struct #struct_name;
 
-        impl<Id> task::Task<Id> for #struct_name
+        impl<Id, C> task::Task<Id, C> for #struct_name
         where
             Id: Clone,
+            C: task::TaskContext<Id>,
         {
             fn prepare(&mut self) -> anyhow::Result<()> { Ok(()) }
-            fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
+            fn run(&mut self, context: C) -> anyhow::Result<()> {
                 task::BatchedTask::run(self, context)
             }
         }
 
-        impl<Id> task::BatchedTask<Id> for #struct_name
+        impl<Id, C> task::BatchedTask<Id, C> for #struct_name
         where
             Id: Clone,
+            C: task::TaskContext<Id>,
         {
             type Input = #input_type;
             type Output = #output_type;
@@ -324,19 +328,21 @@ fn generate_stream_task_impl(def: &TaskDefinition) -> TokenStream2 {
         #[allow(non_camel_case_types)]
         struct #struct_name;
 
-        impl<Id> task::Task<Id> for #struct_name
+        impl<Id, C> task::Task<Id, C> for #struct_name
         where
             Id: Clone,
+            C: task::TaskContext<Id>,
         {
             fn prepare(&mut self) -> anyhow::Result<()> { Ok(()) }
-            fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
+            fn run(&mut self, context: C) -> anyhow::Result<()> {
                 task::StreamTask::run(self, context)
             }
         }
 
-        impl<Id> task::StreamTask<Id> for #struct_name
+        impl<Id, C> task::StreamTask<Id, C> for #struct_name
         where
             Id: Clone,
+            C: task::TaskContext<Id>,
         {
             type Input = #input_type;
             type Output = #output_type;

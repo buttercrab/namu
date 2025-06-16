@@ -2,24 +2,28 @@ use crate::context::TaskContext;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt, pin_mut};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
-pub trait Task<Id> {
+pub trait Task<Id, C>
+where
+    C: TaskContext<Id>,
+{
     fn prepare(&mut self) -> Result<()>;
 
-    fn run<C: TaskContext<Id>>(&mut self, context: C) -> Result<()>;
+    fn run(&mut self, context: C) -> Result<()>;
 }
 
-pub trait SingleTask<Id>: Task<Id>
+pub trait SingleTask<Id, C>: Task<Id, C>
 where
     Id: Clone,
+    C: TaskContext<Id>,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Send + Serialize + 'static;
 
     fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
-    fn run<C: TaskContext<Id>>(&mut self, context: C) -> Result<()> {
+    fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv() {
             let y = self.call(x);
             let _ = context.send(id.clone(), y);
@@ -29,9 +33,10 @@ where
     }
 }
 
-pub trait BatchedTask<Id>: Task<Id>
+pub trait BatchedTask<Id, C>: Task<Id, C>
 where
     Id: Clone,
+    C: TaskContext<Id>,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Send + Serialize + 'static;
@@ -40,7 +45,7 @@ where
 
     fn call(&mut self, input: Vec<Self::Input>) -> Vec<Result<Self::Output>>;
 
-    fn run<C: TaskContext<Id>>(&mut self, context: C) -> Result<()> {
+    fn run(&mut self, context: C) -> Result<()> {
         let batch_size = self.batch_size();
         let mut ids = Vec::with_capacity(batch_size);
         let mut buf = Vec::with_capacity(batch_size);
@@ -72,16 +77,17 @@ where
     }
 }
 
-pub trait StreamTask<Id>: Task<Id>
+pub trait StreamTask<Id, C>: Task<Id, C>
 where
     Id: Clone,
+    C: TaskContext<Id>,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Send + Serialize + 'static;
 
     fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Result<Self::Output>>;
 
-    fn run<C: TaskContext<Id>>(&mut self, context: C) -> Result<()> {
+    fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv() {
             let ys = self.call(x);
             for y in ys {
@@ -94,23 +100,27 @@ where
 }
 
 #[async_trait]
-pub trait AsyncTask<Id> {
+pub trait AsyncTask<Id, C>
+where
+    C: TaskContext<Id> + 'static,
+{
     async fn prepare(&mut self) -> Result<()>;
 
-    async fn run<C: TaskContext<Id>>(&mut self, context: C) -> Result<()>;
+    async fn run(&mut self, context: C) -> Result<()>;
 }
 
 #[async_trait]
-pub trait AsyncSingleTask<Id>: AsyncTask<Id>
+pub trait AsyncSingleTask<Id, C>: AsyncTask<Id, C>
 where
     Id: Clone + Send,
+    C: TaskContext<Id> + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Send + Serialize + 'static;
 
     async fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
-    async fn run<C: TaskContext<Id>>(&mut self, context: C) -> Result<()> {
+    async fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv_async().await {
             let y = self.call(x).await;
             let _ = context.send_async(id.clone(), y).await;
@@ -121,9 +131,10 @@ where
 }
 
 #[async_trait]
-pub trait AsyncBatchedTask<Id>: AsyncTask<Id>
+pub trait AsyncBatchedTask<Id, C>: AsyncTask<Id, C>
 where
     Id: Clone + Send,
+    C: TaskContext<Id> + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Send + Serialize + 'static;
@@ -132,7 +143,7 @@ where
 
     async fn call(&mut self, input: Vec<Self::Input>) -> Vec<Result<Self::Output>>;
 
-    async fn run<C: TaskContext<Id>>(&mut self, context: C) -> Result<()> {
+    async fn run(&mut self, context: C) -> Result<()> {
         let batch_size = self.batch_size();
         let mut ids = Vec::with_capacity(batch_size);
         let mut buf = Vec::with_capacity(batch_size);
@@ -165,16 +176,17 @@ where
 }
 
 #[async_trait]
-pub trait AsyncStreamTask<Id>: AsyncTask<Id>
+pub trait AsyncStreamTask<Id, C>: AsyncTask<Id, C>
 where
     Id: Clone + Send,
+    C: TaskContext<Id> + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Send + Serialize + 'static;
 
     fn call(&mut self, input: Self::Input) -> impl Stream<Item = Result<Self::Output>> + Send;
 
-    async fn run<C: TaskContext<Id>>(&mut self, context: C) -> Result<()> {
+    async fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv_async().await {
             let ys = self.call(x);
             pin_mut!(ys);

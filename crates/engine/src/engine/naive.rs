@@ -11,6 +11,7 @@ pub struct NaiveEngine<C: ContextManager> {
     workflow_counter: AtomicUsize,
     runs: HashMap<usize, usize>,
     run_counter: AtomicUsize,
+    tasks: HashMap<usize, Box<dyn task::Task<C::ContextId, C>>>,
 }
 
 impl<C: ContextManager> NaiveEngine<C> {
@@ -21,6 +22,7 @@ impl<C: ContextManager> NaiveEngine<C> {
             workflow_counter: AtomicUsize::new(0),
             runs: HashMap::new(),
             run_counter: AtomicUsize::new(0),
+            tasks: HashMap::new(),
         }
     }
 }
