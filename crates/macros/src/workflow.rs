@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use proc_macro::TokenStream;
 use proc_macro_error::abort;
@@ -9,7 +9,8 @@ use syn::{
 };
 
 struct WorkflowVisitor {
-    scopes: Vec<HashSet<Ident>>,
+    // We use BTreeSet for deterministic ordering of variables.
+    scopes: Vec<BTreeSet<Ident>>,
     next_control_flow_id: usize,
     builder_ident: Ident,
     last_expr_has_value: bool,

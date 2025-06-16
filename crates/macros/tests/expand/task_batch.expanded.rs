@@ -4,22 +4,20 @@ fn __impl_batch_task(inputs: Vec<i32>) -> Vec<anyhow::Result<i32>> {
 }
 #[allow(non_camel_case_types)]
 struct __batch_task;
-impl<Id, C> task::Task<Id, C> for __batch_task
+impl<Id> task::Task<Id> for __batch_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::BatchedTask::run(self, context)
     }
 }
-impl<Id, C> task::BatchedTask<Id, C> for __batch_task
+impl<Id> task::BatchedTask<Id> for __batch_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -53,7 +51,7 @@ pub fn batch_task<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "batch_task",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_batch.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/task_batch.rs",
                         ),
                     );
                     res
@@ -67,7 +65,7 @@ pub fn batch_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "batch_task",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_batch.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/task_batch.rs",
                 ),
             );
             res

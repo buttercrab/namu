@@ -4,22 +4,20 @@ fn __impl_task_a(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __task_a;
-impl<Id, C> task::Task<Id, C> for __task_a
+impl<Id> task::Task<Id> for __task_a
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __task_a
+impl<Id> task::SingleTask<Id> for __task_a
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -51,7 +49,7 @@ pub fn task_a<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "task_a",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
                         ),
                     );
                     res
@@ -65,7 +63,7 @@ pub fn task_a<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "task_a",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
                 ),
             );
             res
@@ -79,22 +77,20 @@ fn __impl_task_b(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __task_b;
-impl<Id, C> task::Task<Id, C> for __task_b
+impl<Id> task::Task<Id> for __task_b
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __task_b
+impl<Id> task::SingleTask<Id> for __task_b
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -126,7 +122,7 @@ pub fn task_b<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "task_b",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
                         ),
                     );
                     res
@@ -140,7 +136,7 @@ pub fn task_b<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "task_b",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
                 ),
             );
             res

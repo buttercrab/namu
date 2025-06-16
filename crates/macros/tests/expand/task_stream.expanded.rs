@@ -6,22 +6,20 @@ fn __impl_stream_task(
 }
 #[allow(non_camel_case_types)]
 struct __stream_task;
-impl<Id, C> task::Task<Id, C> for __stream_task
+impl<Id> task::Task<Id> for __stream_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::StreamTask::run(self, context)
     }
 }
-impl<Id, C> task::StreamTask<Id, C> for __stream_task
+impl<Id> task::StreamTask<Id> for __stream_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -57,7 +55,7 @@ pub fn stream_task<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "stream_task",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_stream.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/task_stream.rs",
                         ),
                     );
                     res
@@ -71,7 +69,7 @@ pub fn stream_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "stream_task",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_stream.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/task_stream.rs",
                 ),
             );
             res

@@ -4,22 +4,20 @@ fn __impl_single_arg_task(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __single_arg_task;
-impl<Id, C> task::Task<Id, C> for __single_arg_task
+impl<Id> task::Task<Id> for __single_arg_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __single_arg_task
+impl<Id> task::SingleTask<Id> for __single_arg_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -51,7 +49,7 @@ pub fn single_arg_task<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "single_arg_task",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_one_arg.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/task_single_one_arg.rs",
                         ),
                     );
                     res
@@ -65,7 +63,7 @@ pub fn single_arg_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "single_arg_task",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_one_arg.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/task_single_one_arg.rs",
                 ),
             );
             res

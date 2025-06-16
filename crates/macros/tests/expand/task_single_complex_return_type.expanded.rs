@@ -9,22 +9,20 @@ fn __impl_complex_return_task(a: i32) -> anyhow::Result<MyComplexType> {
 }
 #[allow(non_camel_case_types)]
 struct __complex_return_task;
-impl<Id, C> task::Task<Id, C> for __complex_return_task
+impl<Id> task::Task<Id> for __complex_return_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __complex_return_task
+impl<Id> task::SingleTask<Id> for __complex_return_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = MyComplexType;
@@ -56,7 +54,7 @@ pub fn complex_return_task<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "complex_return_task",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_complex_return_type.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/task_single_complex_return_type.rs",
                         ),
                     );
                     res
@@ -70,7 +68,7 @@ pub fn complex_return_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "complex_return_task",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_complex_return_type.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/task_single_complex_return_type.rs",
                 ),
             );
             res

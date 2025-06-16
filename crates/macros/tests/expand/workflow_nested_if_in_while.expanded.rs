@@ -4,22 +4,20 @@ fn __impl_less_than(a: i32, b: i32) -> anyhow::Result<bool> {
 }
 #[allow(non_camel_case_types)]
 struct __less_than;
-impl<Id, C> task::Task<Id, C> for __less_than
+impl<Id> task::Task<Id> for __less_than
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __less_than
+impl<Id> task::SingleTask<Id> for __less_than
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = (i32, i32);
     type Output = bool;
@@ -53,7 +51,7 @@ pub fn less_than<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "less_than",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                         ),
                     );
                     res
@@ -67,7 +65,7 @@ pub fn less_than<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "less_than",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                 ),
             );
             res
@@ -81,22 +79,20 @@ fn __impl_is_even(a: i32) -> anyhow::Result<bool> {
 }
 #[allow(non_camel_case_types)]
 struct __is_even;
-impl<Id, C> task::Task<Id, C> for __is_even
+impl<Id> task::Task<Id> for __is_even
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __is_even
+impl<Id> task::SingleTask<Id> for __is_even
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = bool;
@@ -128,7 +124,7 @@ pub fn is_even<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "is_even",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                         ),
                     );
                     res
@@ -142,7 +138,7 @@ pub fn is_even<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "is_even",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                 ),
             );
             res
@@ -156,22 +152,20 @@ fn __impl_add_one(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add_one;
-impl<Id, C> task::Task<Id, C> for __add_one
+impl<Id> task::Task<Id> for __add_one
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __add_one
+impl<Id> task::SingleTask<Id> for __add_one
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -203,7 +197,7 @@ pub fn add_one<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "add_one",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                         ),
                     );
                     res
@@ -217,7 +211,7 @@ pub fn add_one<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_one",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                 ),
             );
             res
@@ -231,22 +225,20 @@ fn __impl_add_two(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add_two;
-impl<Id, C> task::Task<Id, C> for __add_two
+impl<Id> task::Task<Id> for __add_two
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __add_two
+impl<Id> task::SingleTask<Id> for __add_two
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -278,7 +270,7 @@ pub fn add_two<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "add_two",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                         ),
                     );
                     res
@@ -292,7 +284,7 @@ pub fn add_two<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_two",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                 ),
             );
             res

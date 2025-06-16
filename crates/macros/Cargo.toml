@@ -7,7 +7,6 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-convert_case = "0.8"
 proc-macro2 = "1"
 proc-macro-error = { version = "1", default-features = false }
 quote = "1"
@@ -17,7 +16,6 @@ syn = { version = "2", features = [
     "visit",
     "extra-traits",
 ] }
-darling = "0.20.11"
 
 [dev-dependencies]
 macrotest = "1.1.0"

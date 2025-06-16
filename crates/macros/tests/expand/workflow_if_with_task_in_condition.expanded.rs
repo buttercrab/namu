@@ -4,22 +4,20 @@ fn __impl_is_positive(a: i32) -> anyhow::Result<bool> {
 }
 #[allow(non_camel_case_types)]
 struct __is_positive;
-impl<Id, C> task::Task<Id, C> for __is_positive
+impl<Id> task::Task<Id> for __is_positive
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __is_positive
+impl<Id> task::SingleTask<Id> for __is_positive
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = bool;
@@ -51,7 +49,7 @@ pub fn is_positive<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "is_positive",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
                         ),
                     );
                     res
@@ -65,7 +63,7 @@ pub fn is_positive<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "is_positive",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
                 ),
             );
             res
@@ -79,22 +77,20 @@ fn __impl_action_if_true() -> anyhow::Result<()> {
 }
 #[allow(non_camel_case_types)]
 struct __action_if_true;
-impl<Id, C> task::Task<Id, C> for __action_if_true
+impl<Id> task::Task<Id> for __action_if_true
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __action_if_true
+impl<Id> task::SingleTask<Id> for __action_if_true
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = ();
     type Output = ();
@@ -124,7 +120,7 @@ pub fn action_if_true<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "action_if_true",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
                         ),
                     );
                     res
@@ -138,7 +134,7 @@ pub fn action_if_true<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "action_if_true",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
                 ),
             );
             res

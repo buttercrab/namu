@@ -4,22 +4,20 @@ fn __impl_no_args_task() -> anyhow::Result<()> {
 }
 #[allow(non_camel_case_types)]
 struct __no_args_task;
-impl<Id, C> task::Task<Id, C> for __no_args_task
+impl<Id> task::Task<Id> for __no_args_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __no_args_task
+impl<Id> task::SingleTask<Id> for __no_args_task
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = ();
     type Output = ();
@@ -47,7 +45,7 @@ pub fn no_args_task<G: 'static>(builder: &graph::Builder<G>) -> graph::TracedVal
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "no_args_task",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
                         ),
                     );
                     res
@@ -61,7 +59,7 @@ pub fn no_args_task<G: 'static>(builder: &graph::Builder<G>) -> graph::TracedVal
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "no_args_task",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
                 ),
             );
             res

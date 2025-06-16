@@ -5,16 +5,11 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = "0.1"
 common = { path = "../common" }
-futures = { workspace = true }
-kanal = { workspace = true }
 macros = { path = "../macros" }
 once_cell = "1.21"
-petgraph = "0.8"
 serde = { workspace = true, features = ["derive"] }
 task = { path = "../task" }
-tokio = { workspace = true }
 
 [dev-dependencies]
 trybuild = "1.0"

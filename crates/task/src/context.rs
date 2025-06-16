@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use kanal::{ReceiveError, Receiver, SendError, Sender};
+use serde::{de::DeserializeOwned, Serialize};
 use std::{
     any::{Any, TypeId},
     fmt::{Display, Formatter},
@@ -20,17 +21,17 @@ impl std::error::Error for TaskEnd {}
 
 #[async_trait]
 pub trait TaskContext<Id>: Send {
-    fn recv<T: Send + 'static>(&self) -> Result<(Id, T), ReceiveError>;
+    fn recv<T: Send + DeserializeOwned + 'static>(&self) -> Result<(Id, T), ReceiveError>;
 
-    async fn recv_async<T: Send + 'static>(&self) -> Result<(Id, T), ReceiveError>;
+    async fn recv_async<T: Send + DeserializeOwned + 'static>(&self) -> Result<(Id, T), ReceiveError>;
 
-    fn try_recv<T: Send + 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError>;
+    fn try_recv<T: Send + DeserializeOwned + 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError>;
 
-    async fn try_recv_async<T: Send + 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError>;
+    async fn try_recv_async<T: Send + DeserializeOwned + 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError>;
 
-    fn send<T: Send + 'static>(&self, item_id: Id, data: Result<T>) -> Result<(), SendError>;
+    fn send<T: Send + Serialize + 'static>(&self, item_id: Id, data: Result<T>) -> Result<(), SendError>;
 
-    async fn send_async<T: Send + 'static>(
+    async fn send_async<T: Send + Serialize + 'static>(
         &self,
         item_id: Id,
         data: Result<T>,
@@ -57,7 +58,7 @@ impl<Id, In, Out> StaticTaskContext<Id, In, Out> {
 }
 
 #[async_trait]
-impl<Id, In, Out> TaskContext<Id> for StaticTaskContext<Id, In, Out>
+impl<'de, Id, In, Out> TaskContext<Id> for StaticTaskContext<Id, In, Out>
 where
     Id: Send,
     In: Send + 'static,

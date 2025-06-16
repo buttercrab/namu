@@ -4,22 +4,20 @@ fn __impl_less_than(a: i32, b: i32) -> anyhow::Result<bool> {
 }
 #[allow(non_camel_case_types)]
 struct __less_than;
-impl<Id, C> task::Task<Id, C> for __less_than
+impl<Id> task::Task<Id> for __less_than
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __less_than
+impl<Id> task::SingleTask<Id> for __less_than
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = (i32, i32);
     type Output = bool;
@@ -53,7 +51,7 @@ pub fn less_than<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "less_than",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_while_loop.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_while_loop.rs",
                         ),
                     );
                     res
@@ -67,7 +65,7 @@ pub fn less_than<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "less_than",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_while_loop.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_while_loop.rs",
                 ),
             );
             res
@@ -81,22 +79,20 @@ fn __impl_add_one(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add_one;
-impl<Id, C> task::Task<Id, C> for __add_one
+impl<Id> task::Task<Id> for __add_one
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __add_one
+impl<Id> task::SingleTask<Id> for __add_one
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -128,7 +124,7 @@ pub fn add_one<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "add_one",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_while_loop.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_while_loop.rs",
                         ),
                     );
                     res
@@ -142,7 +138,7 @@ pub fn add_one<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_one",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_while_loop.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_while_loop.rs",
                 ),
             );
             res

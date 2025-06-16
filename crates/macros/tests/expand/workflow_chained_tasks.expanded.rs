@@ -4,22 +4,20 @@ fn __impl_add_one(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add_one;
-impl<Id, C> task::Task<Id, C> for __add_one
+impl<Id> task::Task<Id> for __add_one
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __add_one
+impl<Id> task::SingleTask<Id> for __add_one
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -51,7 +49,7 @@ pub fn add_one<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "add_one",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
                         ),
                     );
                     res
@@ -65,7 +63,7 @@ pub fn add_one<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_one",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
                 ),
             );
             res
@@ -79,22 +77,20 @@ fn __impl_multiply_by_two(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __multiply_by_two;
-impl<Id, C> task::Task<Id, C> for __multiply_by_two
+impl<Id> task::Task<Id> for __multiply_by_two
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __multiply_by_two
+impl<Id> task::SingleTask<Id> for __multiply_by_two
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
@@ -126,7 +122,7 @@ pub fn multiply_by_two<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "multiply_by_two",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
                         ),
                     );
                     res
@@ -140,7 +136,7 @@ pub fn multiply_by_two<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "multiply_by_two",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
                 ),
             );
             res

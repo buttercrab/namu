@@ -4,22 +4,20 @@ fn __impl_less_than(a: i32, b: i32) -> anyhow::Result<bool> {
 }
 #[allow(non_camel_case_types)]
 struct __less_than;
-impl<Id, C> task::Task<Id, C> for __less_than
+impl<Id> task::Task<Id> for __less_than
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __less_than
+impl<Id> task::SingleTask<Id> for __less_than
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = (i32, i32);
     type Output = bool;
@@ -53,7 +51,7 @@ pub fn less_than<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "less_than",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
                         ),
                     );
                     res
@@ -67,7 +65,7 @@ pub fn less_than<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "less_than",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
                 ),
             );
             res
@@ -81,22 +79,20 @@ fn __impl_add(a: i32, b: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __add;
-impl<Id, C> task::Task<Id, C> for __add
+impl<Id> task::Task<Id> for __add
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     fn prepare(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
-    fn run(&mut self, context: C) -> anyhow::Result<()> {
+    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
         task::SingleTask::run(self, context)
     }
 }
-impl<Id, C> task::SingleTask<Id, C> for __add
+impl<Id> task::SingleTask<Id> for __add
 where
     Id: Clone,
-    C: task::TaskContext<Id>,
 {
     type Input = (i32, i32);
     type Output = i32;
@@ -130,7 +126,7 @@ pub fn add<G: 'static>(
                     let res = ::alloc::fmt::format(
                         format_args!(
                             "{0}::{1}", "add",
-                            "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
+                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
                         ),
                     );
                     res
@@ -144,7 +140,7 @@ pub fn add<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
+                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
                 ),
             );
             res
@@ -162,15 +158,22 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
         let mut b = graph::new_literal(&__builder, 1);
         let mut i = graph::new_literal(&__builder, 0);
         {
+            let __pre_while_a_0 = a;
             let __pre_while_b_0 = b;
             let __pre_while_i_0 = i;
-            let __pre_while_a_0 = a;
             let __while_header_block_0 = __builder.new_block();
             let __while_body_block_0 = __builder.new_block();
             let __while_exit_block_0 = __builder.new_block();
             let __while_parent_predecessor_0 = __builder.current_block_id();
             __builder.seal_block(graph::Terminator::jump(__while_header_block_0));
             __builder.switch_to_block(__while_header_block_0);
+            let __a_phi_node_id_0 = __builder
+                .arena_mut()
+                .new_node(graph::NodeKind::Phi {
+                    from: ::alloc::vec::Vec::new(),
+                });
+            a = graph::TracedValue::new(__a_phi_node_id_0);
+            __builder.add_instruction_to_current_block(__a_phi_node_id_0);
             let __b_phi_node_id_0 = __builder
                 .arena_mut()
                 .new_node(graph::NodeKind::Phi {
@@ -185,13 +188,6 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
                 });
             i = graph::TracedValue::new(__i_phi_node_id_0);
             __builder.add_instruction_to_current_block(__i_phi_node_id_0);
-            let __a_phi_node_id_0 = __builder
-                .arena_mut()
-                .new_node(graph::NodeKind::Phi {
-                    from: ::alloc::vec::Vec::new(),
-                });
-            a = graph::TracedValue::new(__a_phi_node_id_0);
-            __builder.add_instruction_to_current_block(__a_phi_node_id_0);
             let __while_cond = less_than(
                 &__builder,
                 i,
@@ -212,11 +208,23 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
                 b = add(&__builder, temp, b);
                 i = add(&__builder, i, graph::new_literal(&__builder, 1));
             };
+            let __post_body_a_0 = a;
             let __post_body_b_0 = b;
             let __post_body_i_0 = i;
-            let __post_body_a_0 = a;
             let __body_predecessor_id_0 = __builder.current_block_id();
             __builder.seal_block(graph::Terminator::jump(__while_header_block_0));
+            if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. }) = __builder
+                .arena_mut()
+                .nodes
+                .get_mut(__a_phi_node_id_0)
+            {
+                *from = <[_]>::into_vec(
+                    ::alloc::boxed::box_new([
+                        (__while_parent_predecessor_0, __pre_while_a_0.id),
+                        (__body_predecessor_id_0, __post_body_a_0.id),
+                    ]),
+                );
+            }
             if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. }) = __builder
                 .arena_mut()
                 .nodes
@@ -241,22 +249,10 @@ pub fn multiple_mutable_vars_workflow() -> graph::Graph<i32> {
                     ]),
                 );
             }
-            if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. }) = __builder
-                .arena_mut()
-                .nodes
-                .get_mut(__a_phi_node_id_0)
-            {
-                *from = <[_]>::into_vec(
-                    ::alloc::boxed::box_new([
-                        (__while_parent_predecessor_0, __pre_while_a_0.id),
-                        (__body_predecessor_id_0, __post_body_a_0.id),
-                    ]),
-                );
-            }
             __builder.switch_to_block(__while_exit_block_0);
+            a = graph::TracedValue::new(__a_phi_node_id_0);
             b = graph::TracedValue::new(__b_phi_node_id_0);
             i = graph::TracedValue::new(__i_phi_node_id_0);
-            a = graph::TracedValue::new(__a_phi_node_id_0);
         }
         a
     };
