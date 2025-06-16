@@ -26,39 +26,12 @@ where
         __impl_less_than(a, b)
     }
 }
-fn __factory_less_than() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let b = __inputs[1usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_less_than(a, b).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn less_than<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
     b: graph::TracedValue<i32>,
 ) -> graph::TracedValue<bool> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_less_than: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_less_than
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "less_than",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_less_than(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "less_than",
         task_id: ::alloc::__export::must_use({
@@ -101,37 +74,11 @@ where
         __impl_is_even(a)
     }
 }
-fn __factory_is_even() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_is_even(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn is_even<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<bool> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_is_even: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_is_even
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "is_even",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_is_even(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "is_even",
         task_id: ::alloc::__export::must_use({
@@ -174,37 +121,11 @@ where
         __impl_add_one(a)
     }
 }
-fn __factory_add_one() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_add_one(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn add_one<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_add_one: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_add_one
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "add_one",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_add_one(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "add_one",
         task_id: ::alloc::__export::must_use({
@@ -247,37 +168,11 @@ where
         __impl_add_two(a)
     }
 }
-fn __factory_add_two() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_add_two(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn add_two<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_add_two: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_add_two
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "add_two",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_add_two(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "add_two",
         task_id: ::alloc::__export::must_use({

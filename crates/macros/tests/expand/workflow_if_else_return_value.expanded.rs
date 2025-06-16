@@ -26,37 +26,11 @@ where
         __impl_double(a)
     }
 }
-fn __factory_double() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_double(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn double<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_double: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_double
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "double",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_double(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "double",
         task_id: ::alloc::__export::must_use({
@@ -99,37 +73,11 @@ where
         __impl_identity(a)
     }
 }
-fn __factory_identity() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_identity(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn identity<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_identity: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_identity
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "identity",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_identity(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "identity",
         task_id: ::alloc::__export::must_use({

@@ -28,37 +28,11 @@ where
         __impl_batch_task(input)
     }
 }
-fn __factory_batch_task() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let inputs = __inputs[0].downcast_ref::<Vec<i32>>().unwrap().clone();
-            let result = __impl_batch_task(inputs).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn batch_task<G: 'static>(
     builder: &graph::Builder<G>,
     inputs: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_batch_task: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_batch_task
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "batch_task",
-                            "/home/coder/project/namu/crates/macros/tests/expand/task_batch.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_batch_task(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "batch_task",
         task_id: ::alloc::__export::must_use({

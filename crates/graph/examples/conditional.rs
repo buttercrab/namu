@@ -71,28 +71,12 @@ fn main() {
     let graph = simple_workflow();
     println!("{}", graph.graph_string());
 
-    let result1 = graph::Executor::new().run(&graph);
-    println!("Result: {}", result1);
-    assert_eq!(result1, 20);
-
     let graph = complex_workflow();
     println!("{}", graph.graph_string());
-
-    let result2 = graph::Executor::new().run(&graph);
-    println!("Result: {}", result2);
-    assert_eq!(result2, 20);
 
     let graph = complex_workflow2();
     println!("{}", graph.graph_string());
 
-    let result3 = graph::Executor::new().run(&graph);
-    println!("Result: {}", result3);
-    assert_eq!(result3, 20);
-
     let graph = complex_workflow3();
     println!("{}", graph.graph_string());
-
-    let result4 = graph::Executor::new().run(&graph);
-    println!("Result: {}", result4);
-    assert_eq!(result4, 40);
 }

@@ -26,37 +26,11 @@ where
         __impl_single_arg_task(a)
     }
 }
-fn __factory_single_arg_task() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_single_arg_task(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn single_arg_task<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_single_arg_task: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_single_arg_task
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "single_arg_task",
-                            "/home/coder/project/namu/crates/macros/tests/expand/task_single_one_arg.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_single_arg_task(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "single_arg_task",
         task_id: ::alloc::__export::must_use({

@@ -26,37 +26,11 @@ where
         __impl_task_a(a)
     }
 }
-fn __factory_task_a() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_task_a(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn task_a<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_task_a: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_task_a
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "task_a",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_task_a(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "task_a",
         task_id: ::alloc::__export::must_use({
@@ -99,37 +73,11 @@ where
         __impl_task_b(a)
     }
 }
-fn __factory_task_b() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_task_b(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn task_b<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_task_b: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_task_b
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "task_b",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_task_b(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "task_b",
         task_id: ::alloc::__export::must_use({

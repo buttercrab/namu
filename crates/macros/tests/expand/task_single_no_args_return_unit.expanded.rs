@@ -26,33 +26,8 @@ where
         __impl_no_args_task()
     }
 }
-fn __factory_no_args_task() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let result = __impl_no_args_task().unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn no_args_task<G: 'static>(builder: &graph::Builder<G>) -> graph::TracedValue<()> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_no_args_task: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_no_args_task
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "no_args_task",
-                            "/home/coder/project/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_no_args_task(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "no_args_task",
         task_id: ::alloc::__export::must_use({

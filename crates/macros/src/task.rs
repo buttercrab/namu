@@ -350,7 +350,6 @@ fn generate_stream_task_impl(def: &TaskDefinition) -> TokenStream2 {
 
 fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> TokenStream2 {
     let func_name = def.func_name;
-    let impl_func_name = def.impl_func_name;
     let arg_names = def.arg_names;
     let arg_types = def.arg_types;
 
@@ -393,67 +392,11 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
 
     constructor_sig.output = parse_quote! { -> graph::TracedValue<#output_type> };
 
-    let value_downcasts = arg_names.iter().enumerate().map(|(i, name)| {
-        let ty = &arg_types[i];
-        quote! { let #name = __inputs[#i].downcast_ref::<#ty>().unwrap().clone(); }
-    });
     let input_ids = arg_names.iter().map(|name| quote! { #name.id });
-    let factory_func_name = format_ident!("__factory_{}", func_name);
-    let static_registrar_name = format_ident!("__REG_ONCE_{}", func_name);
-
-    let factory_logic = match def.args.task_type {
-        TaskType::Single => {
-            let call_args = quote! { #(#arg_names),* };
-            quote! {
-                std::sync::Arc::new(|__inputs| {
-                    #(#value_downcasts)*
-                    let result = #impl_func_name(#call_args).unwrap();
-                    std::sync::Arc::new(result) as graph::Value
-                })
-            }
-        }
-        TaskType::Batch => {
-            let arg_name = &arg_names[0];
-            let arg_ty = &arg_types[0];
-            quote! {
-                std::sync::Arc::new(|__inputs| {
-                    let #arg_name = __inputs[0].downcast_ref::<#arg_ty>().unwrap().clone();
-                    let result = #impl_func_name(#arg_name).unwrap();
-                    std::sync::Arc::new(result) as graph::Value
-                })
-            }
-        }
-        TaskType::Stream => {
-            let call_args = quote! { #(#arg_names),* };
-            quote! {
-                std::sync::Arc::new(|__inputs| {
-                    #(#value_downcasts)*
-                    let result_iter = #impl_func_name(#call_args).unwrap();
-                    let result_vec: Vec<_> = result_iter.map(|item| item.unwrap()).collect();
-                    std::sync::Arc::new(result_vec) as graph::Value
-                })
-            }
-        }
-    };
 
     quote! {
-        fn #factory_func_name() -> graph::TaskFactory {
-            std::sync::Arc::new(|| {
-                #factory_logic
-            })
-        }
-
         #[allow(non_snake_case)]
         pub #constructor_sig {
-            #[allow(non_upper_case_globals)]
-            static #static_registrar_name: std::sync::Once = std::sync::Once::new();
-            #static_registrar_name.call_once(|| {
-                graph::register_task(
-                    format!("{}::{}", stringify!(#func_name), file!()),
-                    #factory_func_name(),
-                );
-            });
-
             let kind = graph::NodeKind::Call {
                 name: stringify!(#func_name),
                 task_id: format!("{}::{}", stringify!(#func_name), file!()),

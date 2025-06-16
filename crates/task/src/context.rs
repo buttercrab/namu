@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use kanal::{ReceiveError, Receiver, SendError, Sender};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::{
     any::{Any, TypeId},
     fmt::{Display, Formatter},
@@ -9,7 +9,7 @@ use std::{
 };
 
 #[derive(Debug, Copy, Clone)]
-pub struct TaskEnd;
+struct TaskEnd;
 
 impl Display for TaskEnd {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -23,13 +23,19 @@ impl std::error::Error for TaskEnd {}
 pub trait TaskContext<Id>: Send {
     fn recv<T: Send + DeserializeOwned + 'static>(&self) -> Result<(Id, T), ReceiveError>;
 
-    async fn recv_async<T: Send + DeserializeOwned + 'static>(&self) -> Result<(Id, T), ReceiveError>;
+    async fn recv_async<T: Send + DeserializeOwned + 'static>(
+        &self,
+    ) -> Result<(Id, T), ReceiveError>;
 
-    fn try_recv<T: Send + DeserializeOwned + 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError>;
+    fn try_recv<T: Send + DeserializeOwned + 'static>(
+        &self,
+    ) -> Result<Option<(Id, T)>, ReceiveError>;
 
-    async fn try_recv_async<T: Send + DeserializeOwned + 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError>;
-
-    fn send<T: Send + Serialize + 'static>(&self, item_id: Id, data: Result<T>) -> Result<(), SendError>;
+    fn send<T: Send + Serialize + 'static>(
+        &self,
+        item_id: Id,
+        data: Result<T>,
+    ) -> Result<(), SendError>;
 
     async fn send_async<T: Send + Serialize + 'static>(
         &self,
@@ -104,23 +110,6 @@ where
         // SAFETY: We know that the type of the data is the same as the type of the input.
         let result = self
             .input_ch
-            .try_recv()?
-            .map(|(id, data)| (id, unsafe { transmute_unchecked(data) }));
-        Ok(result)
-    }
-
-    async fn try_recv_async<T: 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError> {
-        assert_eq!(
-            TypeId::of::<T>(),
-            TypeId::of::<In>(),
-            "StaticTaskContext received a request for the wrong type. Expected {}, got {}.",
-            std::any::type_name::<In>(),
-            std::any::type_name::<T>()
-        );
-
-        let result = self
-            .input_ch
-            .as_async()
             .try_recv()?
             .map(|(id, data)| (id, unsafe { transmute_unchecked(data) }));
         Ok(result)
@@ -214,15 +203,6 @@ where
     fn try_recv<T: 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError> {
         let result = self
             .input_ch
-            .try_recv()?
-            .map(|(id, data)| (id, *data.downcast::<T>().unwrap()));
-        Ok(result)
-    }
-
-    async fn try_recv_async<T: 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError> {
-        let result = self
-            .input_ch
-            .as_async()
             .try_recv()?
             .map(|(id, data)| (id, *data.downcast::<T>().unwrap()));
         Ok(result)

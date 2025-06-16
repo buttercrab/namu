@@ -26,10 +26,4 @@ fn main() {
     let graph = workflow();
     let graph_str = graph.graph_string();
     println!("{}", graph_str);
-    let result = graph::Executor::new().run(&graph);
-    println!("Result: {:?}", result);
-    let expected: Vec<i32> = (0..10)
-        .map(|x| if x % 2 == 0 { x * 2 } else { x })
-        .collect();
-    assert_eq!(result, expected);
 }

@@ -26,37 +26,11 @@ where
         __impl_is_positive(a)
     }
 }
-fn __factory_is_positive() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_is_positive(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn is_positive<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<bool> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_is_positive: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_is_positive
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "is_positive",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_is_positive(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "is_positive",
         task_id: ::alloc::__export::must_use({
@@ -99,35 +73,10 @@ where
         __impl_action_if_true()
     }
 }
-fn __factory_action_if_true() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let result = __impl_action_if_true().unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn action_if_true<G: 'static>(
     builder: &graph::Builder<G>,
 ) -> graph::TracedValue<()> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_action_if_true: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_action_if_true
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "action_if_true",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_action_if_true(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "action_if_true",
         task_id: ::alloc::__export::must_use({

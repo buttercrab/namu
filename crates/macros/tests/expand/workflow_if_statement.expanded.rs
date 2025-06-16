@@ -26,37 +26,11 @@ where
         __impl_do_nothing(a)
     }
 }
-fn __factory_do_nothing() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let a = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result = __impl_do_nothing(a).unwrap();
-            std::sync::Arc::new(result) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn do_nothing<G: 'static>(
     builder: &graph::Builder<G>,
     a: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_do_nothing: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_do_nothing
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "do_nothing",
-                            "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_statement.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_do_nothing(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "do_nothing",
         task_id: ::alloc::__export::must_use({

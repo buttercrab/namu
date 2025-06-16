@@ -31,38 +31,11 @@ where
         __impl_stream_task(input).unwrap()
     }
 }
-fn __factory_stream_task() -> graph::TaskFactory {
-    std::sync::Arc::new(|| {
-        std::sync::Arc::new(|__inputs| {
-            let input = __inputs[0usize].downcast_ref::<i32>().unwrap().clone();
-            let result_iter = __impl_stream_task(input).unwrap();
-            let result_vec: Vec<_> = result_iter.map(|item| item.unwrap()).collect();
-            std::sync::Arc::new(result_vec) as graph::Value
-        })
-    })
-}
 #[allow(non_snake_case)]
 pub fn stream_task<G: 'static>(
     builder: &graph::Builder<G>,
     input: graph::TracedValue<i32>,
 ) -> graph::TracedValue<i32> {
-    #[allow(non_upper_case_globals)]
-    static __REG_ONCE_stream_task: std::sync::Once = std::sync::Once::new();
-    __REG_ONCE_stream_task
-        .call_once(|| {
-            graph::register_task(
-                ::alloc::__export::must_use({
-                    let res = ::alloc::fmt::format(
-                        format_args!(
-                            "{0}::{1}", "stream_task",
-                            "/home/coder/project/namu/crates/macros/tests/expand/task_stream.rs",
-                        ),
-                    );
-                    res
-                }),
-                __factory_stream_task(),
-            );
-        });
     let kind = graph::NodeKind::Call {
         name: "stream_task",
         task_id: ::alloc::__export::must_use({
