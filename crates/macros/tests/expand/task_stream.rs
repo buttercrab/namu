@@ -1,4 +1,4 @@
-use macros::task;
+use namu_macros::task;
 
 #[task(stream)]
 fn stream_task(input: i32) -> anyhow::Result<impl Iterator<Item = anyhow::Result<i32>>> {

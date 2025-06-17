@@ -1,4 +1,4 @@
-use macros::task;
+use namu_macros::task;
 
 pub struct MyComplexType {
     pub value: String,

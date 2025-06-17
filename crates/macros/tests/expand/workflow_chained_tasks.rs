@@ -1,4 +1,4 @@
-use macros::{task, workflow};
+use namu_macros::{task, workflow};
 
 #[task]
 fn add_one(a: i32) -> anyhow::Result<i32> {

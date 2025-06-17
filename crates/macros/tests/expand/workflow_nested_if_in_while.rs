@@ -1,4 +1,4 @@
-use macros::{task, workflow};
+use namu_macros::{task, workflow};
 
 #[task]
 fn less_than(a: i32, b: i32) -> anyhow::Result<bool> {

@@ -1,4 +1,4 @@
-use macros::{task, workflow};
+use namu_macros::{task, workflow};
 
 #[task]
 fn task_a(a: i32) -> anyhow::Result<i32> {

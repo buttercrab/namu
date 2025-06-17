@@ -1,4 +1,4 @@
-use macros::{task, workflow};
+use namu_macros::{task, workflow};
 
 #[task]
 fn is_positive(a: i32) -> anyhow::Result<bool> {

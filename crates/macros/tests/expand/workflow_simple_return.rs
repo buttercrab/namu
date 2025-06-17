@@ -1,4 +1,4 @@
-use macros::workflow;
+use namu_macros::workflow;
 
 #[workflow]
 fn simple_return_workflow() -> i32 {

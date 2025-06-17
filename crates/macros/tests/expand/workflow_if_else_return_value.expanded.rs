@@ -1,43 +1,48 @@
-use macros::{task, workflow};
+use namu_macros::{task, workflow};
 fn __impl_double(a: i32) -> anyhow::Result<i32> {
     Ok(a * 2)
 }
 #[allow(non_camel_case_types)]
 struct __double;
-impl<Id> task::Task<Id> for __double
+impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __double
 where
     Id: Clone,
+    C: ::namu::__macro_exports::TaskContext<Id>,
 {
-    fn prepare(&mut self) -> anyhow::Result<()> {
+    fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
     }
-    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
-        task::SingleTask::run(self, context)
+    fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+        ::namu::__macro_exports::SingleTask::run(self, context)
     }
 }
-impl<Id> task::SingleTask<Id> for __double
+impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for __double
 where
     Id: Clone,
+    C: ::namu::__macro_exports::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
-    fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
+    fn call(
+        &mut self,
+        input: Self::Input,
+    ) -> ::namu::__macro_exports::Result<Self::Output> {
         let a = input;
         __impl_double(a)
     }
 }
 #[allow(non_snake_case)]
 pub fn double<G: 'static>(
-    builder: &graph::Builder<G>,
-    a: graph::TracedValue<i32>,
-) -> graph::TracedValue<i32> {
-    let kind = graph::NodeKind::Call {
-        name: "double",
+    builder: &::namu::__macro_exports::Builder<G>,
+    a: ::namu::__macro_exports::TracedValue<i32>,
+) -> ::namu::__macro_exports::TracedValue<i32> {
+    let kind = ::namu::__macro_exports::NodeKind::Call {
+        task_name: "double",
         task_id: ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "double",
-                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
+                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
                 ),
             );
             res
@@ -51,40 +56,45 @@ fn __impl_identity(a: i32) -> anyhow::Result<i32> {
 }
 #[allow(non_camel_case_types)]
 struct __identity;
-impl<Id> task::Task<Id> for __identity
+impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __identity
 where
     Id: Clone,
+    C: ::namu::__macro_exports::TaskContext<Id>,
 {
-    fn prepare(&mut self) -> anyhow::Result<()> {
+    fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
     }
-    fn run<C: task::TaskContext<Id>>(&mut self, context: C) -> anyhow::Result<()> {
-        task::SingleTask::run(self, context)
+    fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+        ::namu::__macro_exports::SingleTask::run(self, context)
     }
 }
-impl<Id> task::SingleTask<Id> for __identity
+impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for __identity
 where
     Id: Clone,
+    C: ::namu::__macro_exports::TaskContext<Id>,
 {
     type Input = i32;
     type Output = i32;
-    fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
+    fn call(
+        &mut self,
+        input: Self::Input,
+    ) -> ::namu::__macro_exports::Result<Self::Output> {
         let a = input;
         __impl_identity(a)
     }
 }
 #[allow(non_snake_case)]
 pub fn identity<G: 'static>(
-    builder: &graph::Builder<G>,
-    a: graph::TracedValue<i32>,
-) -> graph::TracedValue<i32> {
-    let kind = graph::NodeKind::Call {
-        name: "identity",
+    builder: &::namu::__macro_exports::Builder<G>,
+    a: ::namu::__macro_exports::TracedValue<i32>,
+) -> ::namu::__macro_exports::TracedValue<i32> {
+    let kind = ::namu::__macro_exports::NodeKind::Call {
+        task_name: "identity",
         task_id: ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "identity",
-                    "/home/coder/project/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
+                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
                 ),
             );
             res
@@ -95,19 +105,19 @@ pub fn identity<G: 'static>(
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
-pub fn if_else_return_value_workflow() -> graph::Graph<i32> {
-    let __builder = graph::Builder::<i32>::new();
+pub fn if_else_return_value_workflow() -> ::namu::__macro_exports::Graph<i32> {
+    let __builder = ::namu::__macro_exports::Builder::<i32>::new();
     let __result = {
-        let x = graph::new_literal(&__builder, 10);
+        let x = ::namu::__macro_exports::literal(&__builder, 10);
         {
             let __if_merge_block_0 = __builder.new_block();
             let __if_then_block_0 = __builder.new_block();
             let __if_else_block_0 = __builder.new_block();
-            let __if_condition = x > graph::new_literal(&__builder, 5);
+            let __if_condition = x > ::namu::__macro_exports::literal(&__builder, 5);
             let __if_parent_predecessor_0 = __builder.current_block_id();
             __builder
                 .seal_block(
-                    graph::Terminator::branch(
+                    ::namu::__macro_exports::Terminator::branch(
                         __if_condition,
                         __if_then_block_0,
                         __if_else_block_0,
@@ -116,13 +126,19 @@ pub fn if_else_return_value_workflow() -> graph::Graph<i32> {
             __builder.switch_to_block(__if_then_block_0);
             let __then_val = { double(&__builder, x) };
             let __then_predecessor_id_0 = __builder.current_block_id();
-            __builder.seal_block(graph::Terminator::jump(__if_merge_block_0));
+            __builder
+                .seal_block(
+                    ::namu::__macro_exports::Terminator::jump(__if_merge_block_0),
+                );
             __builder.switch_to_block(__if_else_block_0);
             let __else_val = { { identity(&__builder, x) } };
             let __else_predecessor_id_0 = __builder.current_block_id();
-            __builder.seal_block(graph::Terminator::jump(__if_merge_block_0));
+            __builder
+                .seal_block(
+                    ::namu::__macro_exports::Terminator::jump(__if_merge_block_0),
+                );
             __builder.switch_to_block(__if_merge_block_0);
-            graph::phi(
+            ::namu::__macro_exports::phi(
                 &__builder,
                 <[_]>::into_vec(
                     ::alloc::boxed::box_new([
@@ -133,6 +149,6 @@ pub fn if_else_return_value_workflow() -> graph::Graph<i32> {
             )
         }
     };
-    __builder.seal_block(graph::Terminator::return_value(__result.id));
+    __builder.seal_block(::namu::__macro_exports::Terminator::return_value(__result.id));
     __builder.build()
 }
