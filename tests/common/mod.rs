@@ -1,7 +1,7 @@
 //! Common test utilities, tasks, and setup for graph integration tests.
 
 use anyhow::Result;
-use graph::task;
+use namu::task;
 
 // --- Test Tasks ---
 

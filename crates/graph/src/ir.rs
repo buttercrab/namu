@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{any::Any, mem};
 
-use common::{
+use namu_core::ir::{
     Literal, Next, Operation, Phi as SerializablePhi, Task, Workflow as SerializableWorkflow,
 };
 

@@ -1,13 +1,15 @@
 [workspace]
 members = [
   "crates/cli",
-  "crates/common",
+  "crates/core",
   "crates/engine",
   "crates/graph",
   "crates/macros",
   "crates/master",
-  "crates/task",
   "crates/worker",
+
+  "examples/simple/simple",
+  "examples/simple/tasks/add", "examples/simple/tasks/is_less",
 ]
 resolver = "3"
 exclude = ["tasks/*", "pipelines/*"]
@@ -18,3 +20,14 @@ futures = "0.3"
 kanal = { version = "0.1", features = ["async"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.45", features = ["full"] }
+
+[package]
+name = "namu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+namu-core = { path = "crates/core" }
+namu-graph = { path = "crates/graph" }
+namu-macros = { path = "crates/macros" }

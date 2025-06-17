@@ -220,25 +220,25 @@ fn generate_single_task_impl(def: &TaskDefinition) -> TokenStream2 {
         #[allow(non_camel_case_types)]
         struct #struct_name;
 
-        impl<Id, C> task::Task<Id, C> for #struct_name
+        impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
         where
             Id: Clone,
-            C: task::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext<Id>,
         {
-            fn prepare(&mut self) -> anyhow::Result<()> { Ok(()) }
-            fn run(&mut self, context: C) -> anyhow::Result<()> {
-                task::SingleTask::run(self, context)
+            fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
+            fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+                ::namu::__macro_exports::SingleTask::run(self, context)
             }
         }
 
-        impl<Id, C> task::SingleTask<Id, C> for #struct_name
+        impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for #struct_name
         where
             Id: Clone,
-            C: task::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext<Id>,
         {
             type Input = #input_type;
             type Output = #output_type;
-            fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
+            fn call(&mut self, input: Self::Input) -> ::namu::__macro_exports::Result<Self::Output> {
                 #input_destructuring
                 #impl_func_name(#call_args)
             }
@@ -267,28 +267,28 @@ fn generate_batch_task_impl(def: &TaskDefinition) -> TokenStream2 {
         #[allow(non_camel_case_types)]
         struct #struct_name;
 
-        impl<Id, C> task::Task<Id, C> for #struct_name
+        impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
         where
             Id: Clone,
-            C: task::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext<Id>,
         {
-            fn prepare(&mut self) -> anyhow::Result<()> { Ok(()) }
-            fn run(&mut self, context: C) -> anyhow::Result<()> {
-                task::BatchedTask::run(self, context)
+            fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
+            fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+                ::namu::__macro_exports::BatchedTask::run(self, context)
             }
         }
 
-        impl<Id, C> task::BatchedTask<Id, C> for #struct_name
+        impl<Id, C> ::namu::__macro_exports::BatchedTask<Id, C> for #struct_name
         where
             Id: Clone,
-            C: task::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext<Id>,
         {
             type Input = #input_type;
             type Output = #output_type;
 
             fn batch_size(&self) -> usize { #batch_size }
 
-            fn call(&mut self, input: Vec<Self::Input>) -> Vec<anyhow::Result<Self::Output>> {
+            fn call(&mut self, input: Vec<Self::Input>) -> Vec<::namu::__macro_exports::Result<Self::Output>> {
                 #impl_func_name(input)
             }
         }
@@ -328,25 +328,25 @@ fn generate_stream_task_impl(def: &TaskDefinition) -> TokenStream2 {
         #[allow(non_camel_case_types)]
         struct #struct_name;
 
-        impl<Id, C> task::Task<Id, C> for #struct_name
+        impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
         where
             Id: Clone,
-            C: task::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext<Id>,
         {
-            fn prepare(&mut self) -> anyhow::Result<()> { Ok(()) }
-            fn run(&mut self, context: C) -> anyhow::Result<()> {
-                task::StreamTask::run(self, context)
+            fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
+            fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+                ::namu::__macro_exports::StreamTask::run(self, context)
             }
         }
 
-        impl<Id, C> task::StreamTask<Id, C> for #struct_name
+        impl<Id, C> ::namu::__macro_exports::StreamTask<Id, C> for #struct_name
         where
             Id: Clone,
-            C: task::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext<Id>,
         {
             type Input = #input_type;
             type Output = #output_type;
-            fn call(&mut self, input: Self::Input) -> impl Iterator<Item = anyhow::Result<Self::Output>> {
+            fn call(&mut self, input: Self::Input) -> impl Iterator<Item = ::namu::__macro_exports::Result<Self::Output>> {
                 #input_destructuring
                 #impl_func_name(#call_args).unwrap()
             }
@@ -376,14 +376,14 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
     constructor_sig.inputs.clear();
     constructor_sig
         .inputs
-        .push(parse_quote! { builder: &graph::Builder<G> });
+        .push(parse_quote! { builder: &::namu::__macro_exports::Builder<G> });
 
     match def.args.task_type {
         TaskType::Single | TaskType::Stream => {
             for (name, ty) in arg_names.iter().zip(arg_types.iter()) {
                 constructor_sig
                     .inputs
-                    .push(parse_quote! { #name: graph::TracedValue<#ty> });
+                    .push(parse_quote! { #name: ::namu::__macro_exports::TracedValue<#ty> });
             }
         }
         TaskType::Batch => {
@@ -392,18 +392,18 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
             let inner_ty = extract_vec_inner_type(vec_ty);
             constructor_sig
                 .inputs
-                .push(parse_quote! { #name: graph::TracedValue<#inner_ty> });
+                .push(parse_quote! { #name: ::namu::__macro_exports::TracedValue<#inner_ty> });
         }
     }
 
-    constructor_sig.output = parse_quote! { -> graph::TracedValue<#output_type> };
+    constructor_sig.output = parse_quote! { -> ::namu::__macro_exports::TracedValue<#output_type> };
 
     let input_ids = arg_names.iter().map(|name| quote! { #name.id });
 
     quote! {
         #[allow(non_snake_case)]
         pub #constructor_sig {
-            let kind = graph::NodeKind::Call {
+            let kind = ::namu::__macro_exports::NodeKind::Call {
                 name: stringify!(#func_name),
                 task_id: format!("{}::{}", stringify!(#func_name), file!()),
                 inputs: vec![#(#input_ids),*],

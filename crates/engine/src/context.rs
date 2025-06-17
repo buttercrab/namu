@@ -1,9 +1,10 @@
 use std::{any::Any, cmp::Ordering, sync::Arc};
 
-use common::VarId;
+use namu_core::ir::VarId;
 
-mod dynamic;
-mod naive;
+pub mod dynamic;
+pub mod naive;
+pub mod r#static;
 
 pub trait ContextManager {
     type ContextId;

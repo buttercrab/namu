@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use common::VarId;
+use namu_core::ir::VarId;
 use scc::HashMap;
 
 use crate::context::ContextManager;
@@ -46,7 +46,7 @@ impl ContextManager for NaiveContextManager {
     fn add_variable(
         &self,
         context_id: Self::ContextId,
-        var_id: common::VarId,
+        var_id: VarId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Self::ContextId {
         let context = self.contexts.get(&context_id).unwrap().clone();
@@ -62,7 +62,7 @@ impl ContextManager for NaiveContextManager {
     fn get_variable(
         &self,
         context_id: Self::ContextId,
-        var_id: common::VarId,
+        var_id: VarId,
     ) -> Arc<dyn Any + Send + Sync> {
         let context = self.contexts.get(&context_id).unwrap();
         context.get().get(&var_id).unwrap().clone()
@@ -71,7 +71,7 @@ impl ContextManager for NaiveContextManager {
     fn get_variables(
         &self,
         context_id: Self::ContextId,
-        var_ids: &[common::VarId],
+        var_ids: &[VarId],
     ) -> Vec<Arc<dyn Any + Send + Sync>> {
         let context = self.contexts.get(&context_id).unwrap();
         var_ids

@@ -1,8 +1,8 @@
-use common::Workflow;
+use namu_core::ir::Workflow;
 
 use crate::context::ContextManager;
 
-mod naive;
+pub mod naive;
 
 pub trait Engine<C: ContextManager> {
     type WorkflowId;

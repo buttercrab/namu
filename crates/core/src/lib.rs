@@ -1,4 +1,5 @@
 mod context;
+pub mod ir;
 mod task;
 
 pub use context::{DynamicTaskContext, StaticTaskContext, TaskContext};

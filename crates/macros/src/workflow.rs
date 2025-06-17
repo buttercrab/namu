@@ -97,7 +97,7 @@ impl VisitMut for WorkflowVisitor {
             }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
-                *i = parse_quote! { graph::new_literal(&#builder_ident, #lit) };
+                *i = parse_quote! { ::namu::__macro_exports::new_literal(&#builder_ident, #lit) };
                 self.last_expr_has_value = true;
             }
             _ => visit_mut::visit_expr_mut(self, i),
@@ -204,13 +204,13 @@ impl WorkflowVisitor {
                     };
                     #(#else_post_captures)*
                     let #else_predecessor_id = #builder.current_block_id();
-                    #builder.seal_block(graph::Terminator::jump(#merge_block_id));
+                    #builder.seal_block(::namu::__macro_exports::Terminator::jump(#merge_block_id));
                 };
 
                 let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
                 let phi = if then_has_value && else_has_value {
                     Some(quote! {
-                         graph::phi(
+                         ::namu::__macro_exports::phi(
                             &#builder,
                             vec![
                                 (#then_predecessor_id, __then_val),
@@ -241,7 +241,7 @@ impl WorkflowVisitor {
             };
 
             quote! {
-                #name = graph::phi(&#builder, #phi_inputs);
+                #name = ::namu::__macro_exports::phi(&#builder, #phi_inputs);
             }
         });
 
@@ -257,13 +257,13 @@ impl WorkflowVisitor {
 
                 let __if_condition = #cond;
                 let #parent_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(graph::Terminator::branch(__if_condition, #then_block_id, #false_target));
+                #builder.seal_block(::namu::__macro_exports::Terminator::branch(__if_condition, #then_block_id, #false_target));
 
                 #builder.switch_to_block(#then_block_id);
                 let __then_val = #then_branch_body;
                 #(#then_post_captures)*
                 let #then_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(graph::Terminator::jump(#merge_block_id));
+                #builder.seal_block(::namu::__macro_exports::Terminator::jump(#merge_block_id));
 
                 #else_block_impl
 
@@ -293,8 +293,8 @@ impl WorkflowVisitor {
         let phi_node_creations = vars.iter().map(|name| {
             let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, id);
             quote! {
-                let #phi_node_id = #builder.arena_mut().new_node(graph::NodeKind::Phi { from: vec![] });
-                #name = graph::TracedValue::new(#phi_node_id);
+                let #phi_node_id = #builder.arena_mut().new_node(::namu::__macro_exports::NodeKind::Phi { from: vec![] });
+                #name = ::namu::__macro_exports::TracedValue::new(#phi_node_id);
                 #builder.add_instruction_to_current_block(#phi_node_id);
             }
         });
@@ -318,7 +318,7 @@ impl WorkflowVisitor {
             let pre_while_name = format_ident!("__pre_while_{}_{}", var, id);
             let post_body_name = format_ident!("__post_body_{}_{}", var, id);
             phi_patchers.extend(quote! {
-                if let Some(graph::Node { kind: graph::NodeKind::Phi { from }, .. })
+                if let Some(::namu::__macro_exports::Node { kind: ::namu::__macro_exports::NodeKind::Phi { from }, .. })
                     = #builder.arena_mut().nodes.get_mut(#phi_node_id) {
                     *from = vec![
                         (#parent_predecessor_id, #pre_while_name.id),
@@ -331,7 +331,7 @@ impl WorkflowVisitor {
         let exit_phis = vars.iter().map(|name| {
             let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, id);
             quote! {
-                #name = graph::TracedValue::new(#phi_node_id);
+                #name = ::namu::__macro_exports::TracedValue::new(#phi_node_id);
             }
         });
 
@@ -344,18 +344,18 @@ impl WorkflowVisitor {
                 let #exit_block_id = #builder.new_block();
 
                 let #parent_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(graph::Terminator::jump(#header_block_id));
+                #builder.seal_block(::namu::__macro_exports::Terminator::jump(#header_block_id));
 
                 #builder.switch_to_block(#header_block_id);
                 #(#phi_node_creations)*
                 let __while_cond = #cond;
-                #builder.seal_block(graph::Terminator::branch(__while_cond, #body_block_id, #exit_block_id));
+                #builder.seal_block(::namu::__macro_exports::Terminator::branch(__while_cond, #body_block_id, #exit_block_id));
 
                 #builder.switch_to_block(#body_block_id);
                 #body_block;
                 #(#post_body_captures)*
                 let #body_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(graph::Terminator::jump(#header_block_id));
+                #builder.seal_block(::namu::__macro_exports::Terminator::jump(#header_block_id));
 
                 #phi_patchers
 
@@ -385,20 +385,20 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let body_and_seal = if visitor.last_expr_has_value {
         quote! {
             let __result = #func_body;
-            #builder_ident.seal_block(graph::Terminator::return_value(__result.id));
+            #builder_ident.seal_block(::namu::__macro_exports::Terminator::return_value(__result.id));
         }
     } else {
         quote! {
             #func_body;
-            #builder_ident.seal_block(graph::Terminator::return_unit());
+            #builder_ident.seal_block(::namu::__macro_exports::Terminator::return_unit());
         }
     };
 
     let expanded = quote! {
         #[allow(unused_assignments)]
         #[allow(unused_braces)]
-        pub fn #func_name() -> graph::Graph<#return_type> {
-            let #builder_ident = graph::Builder::<#return_type>::new();
+        pub fn #func_name() -> ::namu::__macro_exports::Graph<#return_type> {
+            let #builder_ident = ::namu::__macro_exports::Builder::<#return_type>::new();
 
             #body_and_seal
 

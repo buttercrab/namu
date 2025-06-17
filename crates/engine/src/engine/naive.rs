@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::Workflow;
+use namu_core::{Task, ir::Workflow};
 use scc::HashMap;
 
 use crate::{context::ContextManager, engine::Engine};
@@ -11,7 +11,7 @@ pub struct NaiveEngine<C: ContextManager> {
     workflow_counter: AtomicUsize,
     runs: HashMap<usize, usize>,
     run_counter: AtomicUsize,
-    tasks: HashMap<usize, Box<dyn task::Task<C::ContextId, C>>>,
+    tasks: HashMap<usize, Box<dyn Task<C::ContextId, C>>>,
 }
 
 impl<C: ContextManager> NaiveEngine<C> {

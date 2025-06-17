@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use common::VarId;
+use namu_core::ir::VarId;
 use scc::{HashIndex, HashMap as SccHashMap, ebr::Guard};
 
 use crate::context::ContextManager;
@@ -330,72 +330,69 @@ impl SegmentTree {
             next_root = Some(Arc::new(new_root_node));
         }
 
-        // After ensuring the range is sufficient, perform the update recursively.
-        let final_root =
-            Self::make_recursive(&next_root, next_range_begin, next_range_end, index, value);
+        // After ensuring the range is sufficient, perform the update using an
+        // iterative path-copy algorithm (non-recursive).
 
-        SegmentTree {
-            root: Some(final_root),
-            range_begin: next_range_begin,
-            range_end: next_range_end,
+        // Each entry in the path keeps the range of the node we descended from,
+        // a reference to the original node (if any), and whether the descent
+        // went to the left child.
+        let mut path: Vec<(usize, usize, Option<Arc<SegmentTreeNode>>, bool)> = Vec::new();
+        let mut cur_begin = next_range_begin;
+        let mut cur_end = next_range_end;
+        let mut current = next_root.clone();
+
+        // Descend to the target leaf, collecting the path along the way.
+        while cur_begin != cur_end {
+            let mid = cur_begin + (cur_end - cur_begin) / 2;
+            if index <= mid {
+                path.push((cur_begin, cur_end, current.clone(), true));
+                current = current.as_ref().and_then(|n| n.left.clone());
+                cur_end = mid;
+            } else {
+                path.push((cur_begin, cur_end, current.clone(), false));
+                current = current.as_ref().and_then(|n| n.right.clone());
+                cur_begin = mid + 1;
+            }
         }
-    }
 
-    fn make_recursive(
-        node: &Option<Arc<SegmentTreeNode>>,
-        range_begin: usize,
-        range_end: usize,
-        index: usize,
-        value: usize,
-    ) -> Arc<SegmentTreeNode> {
-        // Base case: If we've reached the leaf's range, create the leaf node.
-        if range_begin == range_end {
-            return Arc::new(SegmentTreeNode {
-                left: None,
-                right: None,
-                range_begin,
-                range_end,
-                value: Some(value),
+        // Create or override the leaf node with the provided value.
+        let mut new_child = Arc::new(SegmentTreeNode {
+            left: None,
+            right: None,
+            range_begin: cur_begin,
+            range_end: cur_end,
+            value: Some(value),
+        });
+
+        // Re-build the path back up, creating new internal nodes that reference
+        // either the updated child or the reused sibling nodes.
+        for (p_begin, p_end, orig, is_left) in path.into_iter().rev() {
+            let (left_child, right_child) = if is_left {
+                (
+                    Some(new_child.clone()),
+                    orig.as_ref().and_then(|n| n.right.clone()),
+                )
+            } else {
+                (
+                    orig.as_ref().and_then(|n| n.left.clone()),
+                    Some(new_child.clone()),
+                )
+            };
+
+            new_child = Arc::new(SegmentTreeNode {
+                left: left_child,
+                right: right_child,
+                range_begin: p_begin,
+                range_end: p_end,
+                value: None,
             });
         }
 
-        let mid = range_begin + (range_end - range_begin) / 2;
-
-        // Recursively update the appropriate child and reuse the other one.
-        let (new_left, new_right) = if index <= mid {
-            // Recurse left, reusing the right child.
-            (
-                Some(Self::make_recursive(
-                    &node.as_ref().and_then(|n| n.left.clone()),
-                    range_begin,
-                    mid,
-                    index,
-                    value,
-                )),
-                node.as_ref().and_then(|n| n.right.clone()),
-            )
-        } else {
-            // Recurse right, reusing the left child.
-            (
-                node.as_ref().and_then(|n| n.left.clone()),
-                Some(Self::make_recursive(
-                    &node.as_ref().and_then(|n| n.right.clone()),
-                    mid + 1,
-                    range_end,
-                    index,
-                    value,
-                )),
-            )
-        };
-
-        // Create a new internal node pointing to the new/reused children.
-        Arc::new(SegmentTreeNode {
-            left: new_left,
-            right: new_right,
-            range_begin,
-            range_end,
-            value: None,
-        })
+        SegmentTree {
+            root: Some(new_child),
+            range_begin: next_range_begin,
+            range_end: next_range_end,
+        }
     }
 
     fn get(&self, index: usize) -> usize {

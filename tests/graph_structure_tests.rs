@@ -3,7 +3,7 @@
 mod common;
 
 use crate::common::*;
-use graph::workflow;
+use namu::workflow;
 
 #[test]
 fn simple_graph_structure() {

@@ -3,8 +3,8 @@
 mod common;
 
 use crate::common::*;
-use ::common::{Next, Task};
-use graph::workflow;
+use namu::workflow;
+use namu_core::ir::{Next, Task};
 
 #[test]
 fn serializable_conditional_workflow() {

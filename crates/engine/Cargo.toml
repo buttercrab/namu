@@ -1,9 +1,8 @@
 [package]
-name = "engine"
+name = "namu-engine"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-common = { path = "../common" }
-task = { path = "../task" }
+namu-core = { path = "../core" }
 scc = "2.3"

@@ -1,15 +1,14 @@
 [package]
-name = "graph"
+name = "namu-graph"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-common = { path = "../common" }
-macros = { path = "../macros" }
+namu-core = { path = "../core" }
+namu-macros = { path = "../macros" }
 once_cell = "1.21"
 serde = { workspace = true, features = ["derive"] }
-task = { path = "../task" }
 
 [dev-dependencies]
 trybuild = "1.0"
