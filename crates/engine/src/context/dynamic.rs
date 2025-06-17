@@ -8,7 +8,7 @@ use std::{
 };
 
 use common::VarId;
-use scc::{HashIndex, HashMap as SccHashMap, hash_index::OccupiedEntry};
+use scc::{HashIndex, HashMap as SccHashMap, ebr::Guard};
 
 use crate::context::ContextManager;
 
@@ -50,13 +50,13 @@ impl DynamicContextManager {
         });
 
         let (depth, ancestors, segment_tree) = if let Some(parent_id) = parent {
-            let parent_node = self.nodes.get(&parent_id).unwrap();
+            let guard = Guard::new();
             let mut ancestors = vec![parent_id];
             let mut i = 0;
 
             while let Some(p_ancestor) = self
                 .nodes
-                .get(ancestors.last().unwrap())
+                .peek(ancestors.last().unwrap(), &guard)
                 .unwrap()
                 .ancestors
                 .get(i)
@@ -65,6 +65,7 @@ impl DynamicContextManager {
                 i += 1;
             }
 
+            let parent_node = self.nodes.peek(&parent_id, &guard).unwrap();
             let depth = parent_node.depth + 1;
             let segment_tree = parent_node.segment_tree.make(var_id, depth);
 
@@ -90,9 +91,10 @@ impl DynamicContextManager {
     fn go_up_to<'a>(
         &'a self,
         mut context_id: usize,
-        mut node: OccupiedEntry<'a, usize, ContextTreeNode>,
+        mut node: &'a ContextTreeNode,
         depth: usize,
-    ) -> (usize, OccupiedEntry<'a, usize, ContextTreeNode>) {
+        guard: &'a Guard,
+    ) -> (usize, &'a ContextTreeNode) {
         let mut diff = node.depth - depth;
         let mut i = 1;
         let mut j = 0;
@@ -100,7 +102,7 @@ impl DynamicContextManager {
         while diff > 0 {
             if diff & i > 0 {
                 context_id = node.ancestors[j];
-                node = self.nodes.get(&context_id).unwrap();
+                node = self.nodes.peek(&context_id, &guard).unwrap();
                 diff ^= i;
             }
             i <<= 1;
@@ -124,21 +126,25 @@ impl ContextManager for DynamicContextManager {
             return std::cmp::Ordering::Equal;
         }
 
-        let mut node_a = self.nodes.get(&a).unwrap();
-        let mut node_b = self.nodes.get(&b).unwrap();
+        let guard = Guard::new();
+
+        let original_a = self.nodes.peek(&a, &guard).unwrap();
+        let original_b = self.nodes.peek(&b, &guard).unwrap();
+        let mut node_a = original_a;
+        let mut node_b = original_b;
         let mut current_a = a;
         let mut current_b = b;
 
         // Equalize depths using binary lifting
         if node_a.depth > node_b.depth {
-            (current_a, node_a) = self.go_up_to(current_a, node_a, node_b.depth)
+            (current_a, node_a) = self.go_up_to(current_a, node_a, node_b.depth, &guard)
         } else if node_b.depth > node_a.depth {
-            (current_b, node_b) = self.go_up_to(current_b, node_b, node_a.depth)
+            (current_b, node_b) = self.go_up_to(current_b, node_b, node_a.depth, &guard)
         }
 
         if current_a == current_b {
             // One is an ancestor of the other. The original `a` or `b` with greater depth is "larger".
-            return a.cmp(&b).reverse();
+            return original_a.depth.cmp(&original_b.depth);
         }
 
         // Move up together to find children of LCA
@@ -148,8 +154,8 @@ impl ContextManager for DynamicContextManager {
             if ancestor_a != ancestor_b {
                 current_a = *ancestor_a.unwrap();
                 current_b = *ancestor_b.unwrap();
-                node_a = self.nodes.get(&current_a).unwrap();
-                node_b = self.nodes.get(&current_b).unwrap();
+                node_a = self.nodes.peek(&current_a, &guard).unwrap();
+                node_b = self.nodes.peek(&current_b, &guard).unwrap();
             }
         }
 
@@ -171,9 +177,10 @@ impl ContextManager for DynamicContextManager {
         context_id: Self::ContextId,
         var_id: VarId,
     ) -> Arc<dyn Any + Send + Sync> {
-        let node = self.nodes.get(&context_id).unwrap();
+        let guard = Guard::new();
+        let node = self.nodes.peek(&context_id, &guard).unwrap();
         let depth = node.segment_tree.get(var_id);
-        let (_, node) = self.go_up_to(context_id, node, depth);
+        let (_, node) = self.go_up_to(context_id, node, depth, &guard);
         return node.value.clone();
     }
 
@@ -186,7 +193,8 @@ impl ContextManager for DynamicContextManager {
             return vec![];
         }
 
-        let start_node = self.nodes.get(&context_id).unwrap();
+        let guard = Guard::new();
+        let start_node = self.nodes.peek(&context_id, &guard).unwrap();
         let mut found_vars = HashMap::with_capacity(var_ids.len());
 
         // Step 1 & 2: Get target depths and group by depth.
@@ -210,7 +218,7 @@ impl ContextManager for DynamicContextManager {
 
         for depth in sorted_depths {
             // Jump from the current position up to the target depth.
-            let (next_id, next_node) = self.go_up_to(current_id, current_node, depth);
+            let (next_id, next_node) = self.go_up_to(current_id, current_node, depth, &guard);
             current_id = next_id;
             current_node = next_node;
 
@@ -239,9 +247,11 @@ impl ContextManager for DynamicContextManager {
             return;
         }
 
+        let guard = Guard::new();
+
         while let Some(parent_id) = self
             .nodes
-            .get(&context_id)
+            .peek(&context_id, &guard)
             .map(|node| node.ancestors.first().copied())
         {
             let was_removed = self
@@ -412,5 +422,60 @@ impl SegmentTree {
 
         // If a node is not found along the path, the index was never set.
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn segment_tree_basic() {
+        let tree = SegmentTree::new();
+        let tree = tree.make(0, 1);
+        assert_eq!(tree.get(0), 1);
+        // Unset index should return 0
+        assert_eq!(tree.get(1), 0);
+
+        // Update another index, causing range expansion
+        let tree = tree.make(5, 7);
+        assert_eq!(tree.get(5), 7);
+        // Existing value should persist due to persistence
+        assert_eq!(tree.get(0), 1);
+
+        // Update existing index, overriding value
+        let tree2 = tree.make(0, 3);
+        assert_eq!(tree2.get(0), 3);
+        // Original tree remains unchanged
+        assert_eq!(tree.get(0), 1);
+    }
+
+    #[test]
+    fn dynamic_context_manager_vars() {
+        let ctx_mgr = DynamicContextManager::new();
+        let root = ctx_mgr.create_context();
+
+        // Add var 1 to root context
+        let ctx1 = ctx_mgr.add_variable(root, 1, Arc::new(10usize));
+        let val: Arc<usize> = ctx_mgr.get_variable(ctx1, 1).downcast::<usize>().unwrap();
+        assert_eq!(*val, 10);
+
+        // Add another var 2 in new context
+        let ctx2 = ctx_mgr.add_variable(ctx1, 2, Arc::new(20usize));
+        let vals = ctx_mgr.get_variables(ctx2, &[1, 2]);
+        let v1: &usize = vals[0].as_ref().downcast_ref::<usize>().unwrap();
+        let v2: &usize = vals[1].as_ref().downcast_ref::<usize>().unwrap();
+        assert_eq!((*v1, *v2), (10, 20));
+
+        // Compare contexts ordering (root < ctx1 < ctx2)
+        assert_eq!(
+            ctx_mgr.compare_context(root, ctx1),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            ctx_mgr.compare_context(ctx1, ctx2),
+            std::cmp::Ordering::Less
+        );
     }
 }
