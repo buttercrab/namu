@@ -4,7 +4,7 @@ mod common;
 
 use crate::common::*;
 use namu::workflow;
-use namu_core::ir::{Next, Task};
+use namu_core::ir::{Call, Next};
 
 #[test]
 fn serializable_conditional_workflow() {
@@ -33,7 +33,7 @@ fn serializable_conditional_workflow() {
     assert!(ops[0].phis.is_empty());
     assert_eq!(ops[0].literals.len(), 1);
     assert_eq!(ops[0].literals[0].output, 0);
-    assert!(matches!(ops[0].task, Some(Task { ref name, .. }) if name.contains("is_positive")));
+    assert!(matches!(ops[0].task, Some(Call { ref name, .. }) if name.contains("is_positive")));
     assert!(matches!(
         ops[0].next,
         Next::Branch {
@@ -54,13 +54,13 @@ fn serializable_conditional_workflow() {
     // Op 2: double
     assert!(ops[2].phis.is_empty());
     assert!(ops[2].literals.is_empty());
-    assert!(matches!(ops[2].task, Some(Task { ref name, .. }) if name.contains("double")));
+    assert!(matches!(ops[2].task, Some(Call { ref name, .. }) if name.contains("double")));
     assert!(matches!(ops[2].next, Next::Jump { next: 1 }));
 
     // Op 3: identity
     assert!(ops[3].phis.is_empty());
     assert!(ops[3].literals.is_empty());
-    assert!(matches!(ops[3].task, Some(Task { ref name, .. }) if name.contains("identity")));
+    assert!(matches!(ops[3].task, Some(Call { ref name, .. }) if name.contains("identity")));
     assert!(matches!(ops[3].next, Next::Jump { next: 1 }));
 }
 

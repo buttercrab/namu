@@ -1304,7 +1304,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "namu-core",
- "namu-graph",
+ "namu-flow",
  "namu-macros",
 ]
 
@@ -1340,7 +1340,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "namu-graph"
+name = "namu-flow"
 version = "0.1.0"
 dependencies = [
  "anyhow",

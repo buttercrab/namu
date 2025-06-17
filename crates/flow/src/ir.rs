@@ -8,9 +8,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{any::Any, mem};
 
-use namu_core::ir::{
-    Literal, Next, Operation, Phi as SerializablePhi, Task, Workflow as SerializableWorkflow,
-};
+use namu_core::ir::{Call, Literal, Next, Operation, PhiNode, Workflow};
 
 // --- Core Data Structures ---
 
@@ -19,11 +17,11 @@ pub type NodeId = usize;
 pub type BlockId = usize;
 
 #[derive(Default)]
-pub struct Arena {
+pub struct NodeArena {
     pub nodes: Vec<Node>,
 }
 
-impl Arena {
+impl NodeArena {
     pub fn new_node(&mut self, kind: NodeKind) -> NodeId {
         let id = self.nodes.len();
 
@@ -47,7 +45,7 @@ impl Arena {
 
 pub enum NodeKind {
     Call {
-        name: &'static str,
+        task_name: &'static str,
         task_id: String,
         inputs: Vec<NodeId>,
     },
@@ -127,13 +125,13 @@ impl<T> TracedValue<T> {
 }
 
 pub struct Graph<T> {
-    pub arena: Arena,
+    pub arena: NodeArena,
     pub blocks: Vec<BasicBlock>,
     _phantom: PhantomData<T>,
 }
 
 impl<T> Graph<T> {
-    pub fn new(arena: Arena, blocks: Vec<BasicBlock>) -> Self {
+    pub fn new(arena: NodeArena, blocks: Vec<BasicBlock>) -> Self {
         Self {
             arena,
             blocks,
@@ -141,7 +139,7 @@ impl<T> Graph<T> {
         }
     }
 
-    pub fn to_serializable(&self, name: String) -> SerializableWorkflow {
+    pub fn to_serializable(&self, name: String) -> Workflow {
         let mut ops = Vec::new();
         let mut block_id_to_op_id = HashMap::new();
 
@@ -157,7 +155,7 @@ impl<T> Graph<T> {
                 let node = &self.arena.nodes[node_id];
                 match &node.kind {
                     NodeKind::Phi { from } => {
-                        phis.push(SerializablePhi {
+                        phis.push(PhiNode {
                             id: node_id,
                             from: from.clone(),
                         });
@@ -171,7 +169,7 @@ impl<T> Graph<T> {
                     NodeKind::Call {
                         task_id, inputs, ..
                     } => {
-                        let task = Some(Task {
+                        let task = Some(Call {
                             name: task_id.clone(),
                             inputs: inputs.clone(),
                             output: node_id,
@@ -234,7 +232,7 @@ impl<T> Graph<T> {
             }
         }
 
-        SerializableWorkflow {
+        Workflow {
             name,
             operations: ops,
         }
@@ -250,7 +248,11 @@ impl<T> Graph<T> {
                     NodeKind::Literal { debug_repr, .. } => {
                         format!("  let var{} = {};\n", node_id, debug_repr)
                     }
-                    NodeKind::Call { name, inputs, .. } => {
+                    NodeKind::Call {
+                        task_name: name,
+                        inputs,
+                        ..
+                    } => {
                         let parent_vars: Vec<String> =
                             inputs.iter().map(|p| format!("var{}", p)).collect();
                         format!(

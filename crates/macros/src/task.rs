@@ -404,7 +404,7 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
         #[allow(non_snake_case)]
         pub #constructor_sig {
             let kind = ::namu::__macro_exports::NodeKind::Call {
-                name: stringify!(#func_name),
+                task_name: stringify!(#func_name),
                 task_id: format!("{}::{}", stringify!(#func_name), file!()),
                 inputs: vec![#(#input_ids),*],
             };

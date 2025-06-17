@@ -2,7 +2,7 @@ use namu_core::ir::Workflow;
 
 use crate::context::ContextManager;
 
-pub mod naive;
+pub mod naive_engine;
 
 pub trait Engine<C: ContextManager> {
     type WorkflowId;

@@ -8,17 +8,17 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::ir::{Arena, BasicBlock, BlockId, Graph, NodeId, NodeKind, Terminator, TracedValue};
+use crate::ir::{BasicBlock, BlockId, Graph, NodeArena, NodeId, NodeKind, Terminator, TracedValue};
 
 // --- Builder API ---
 
 struct BuilderInner {
-    arena: Arena,
+    arena: NodeArena,
     blocks: Vec<BasicBlock>,
     current_block_id: BlockId,
 }
 
-pub fn new_literal<T: Debug + Send + Sync + 'static, U>(
+pub fn literal<T: Debug + Send + Sync + 'static, U>(
     builder: &Builder<U>,
     value: T,
 ) -> TracedValue<T> {
@@ -70,7 +70,7 @@ impl<T> Builder<T> {
     pub fn new() -> Self {
         Self {
             inner: RefCell::new(BuilderInner {
-                arena: Arena::default(),
+                arena: NodeArena::default(),
                 blocks: vec![BasicBlock::default()],
                 current_block_id: 0,
             }),
@@ -82,11 +82,11 @@ impl<T> Builder<T> {
         self.inner.borrow().current_block_id
     }
 
-    pub fn arena(&self) -> Ref<Arena> {
+    pub fn arena(&self) -> Ref<NodeArena> {
         Ref::map(self.inner.borrow(), |inner| &inner.arena)
     }
 
-    pub fn arena_mut(&self) -> RefMut<Arena> {
+    pub fn arena_mut(&self) -> RefMut<NodeArena> {
         RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.arena)
     }
 

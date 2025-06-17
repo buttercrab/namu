@@ -3,13 +3,14 @@ members = [
   "crates/cli",
   "crates/core",
   "crates/engine",
-  "crates/graph",
+  "crates/flow",
   "crates/macros",
   "crates/master",
   "crates/worker",
 
   "examples/simple/simple",
-  "examples/simple/tasks/add", "examples/simple/tasks/is_less",
+  "examples/simple/tasks/add",
+  "examples/simple/tasks/is_less",
 ]
 resolver = "3"
 exclude = ["tasks/*", "pipelines/*"]
@@ -29,5 +30,5 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 namu-core = { path = "crates/core" }
-namu-graph = { path = "crates/graph" }
+namu-flow = { path = "crates/flow" }
 namu-macros = { path = "crates/macros" }

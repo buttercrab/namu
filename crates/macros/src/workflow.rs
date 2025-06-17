@@ -97,7 +97,7 @@ impl VisitMut for WorkflowVisitor {
             }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
-                *i = parse_quote! { ::namu::__macro_exports::new_literal(&#builder_ident, #lit) };
+                *i = parse_quote! { ::namu::__macro_exports::literal(&#builder_ident, #lit) };
                 self.last_expr_has_value = true;
             }
             _ => visit_mut::visit_expr_mut(self, i),

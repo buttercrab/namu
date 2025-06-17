@@ -1,10 +1,10 @@
 use std::{any::Any, cmp::Ordering, sync::Arc};
 
-use namu_core::ir::VarId;
+use namu_core::ir::ValueId;
 
-pub mod dynamic;
-pub mod naive;
-pub mod r#static;
+pub mod dynamic_context;
+pub mod naive_context;
+pub mod static_context;
 
 pub trait ContextManager {
     type ContextId;
@@ -16,20 +16,20 @@ pub trait ContextManager {
     fn add_variable(
         &self,
         context_id: Self::ContextId,
-        var_id: VarId,
+        var_id: ValueId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Self::ContextId;
 
     fn get_variable(
         &self,
         context_id: Self::ContextId,
-        var_id: VarId,
+        var_id: ValueId,
     ) -> Arc<dyn Any + Send + Sync>;
 
     fn get_variables(
         &self,
         context_id: Self::ContextId,
-        var_ids: &[VarId],
+        var_ids: &[ValueId],
     ) -> Vec<Arc<dyn Any + Send + Sync>>;
 
     fn remove_context(&self, context_id: Self::ContextId);

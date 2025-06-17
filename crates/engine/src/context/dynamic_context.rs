@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use namu_core::ir::VarId;
+use namu_core::ir::ValueId;
 use scc::{HashIndex, HashMap as SccHashMap, ebr::Guard};
 
 use crate::context::ContextManager;
@@ -17,7 +17,7 @@ struct ContextTreeNode {
     ancestors: Vec<usize>,
     depth: usize,
     order: usize,
-    var_id: VarId,
+    var_id: ValueId,
     value: Arc<dyn Any + Send + Sync>,
     segment_tree: SegmentTree,
 }
@@ -40,7 +40,7 @@ impl DynamicContextManager {
     fn new_node(
         &self,
         parent: Option<usize>,
-        var_id: VarId,
+        var_id: ValueId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> usize {
         let order = parent.map_or(0, |parent_id| {
@@ -88,7 +88,7 @@ impl DynamicContextManager {
         id
     }
 
-    fn go_up_to<'a>(
+    fn ascend_to_depth<'a>(
         &'a self,
         mut context_id: usize,
         mut node: &'a ContextTreeNode,
@@ -137,9 +137,9 @@ impl ContextManager for DynamicContextManager {
 
         // Equalize depths using binary lifting
         if node_a.depth > node_b.depth {
-            (current_a, node_a) = self.go_up_to(current_a, node_a, node_b.depth, &guard)
+            (current_a, node_a) = self.ascend_to_depth(current_a, node_a, node_b.depth, &guard)
         } else if node_b.depth > node_a.depth {
-            (current_b, node_b) = self.go_up_to(current_b, node_b, node_a.depth, &guard)
+            (current_b, node_b) = self.ascend_to_depth(current_b, node_b, node_a.depth, &guard)
         }
 
         if current_a == current_b {
@@ -166,7 +166,7 @@ impl ContextManager for DynamicContextManager {
     fn add_variable(
         &self,
         context_id: Self::ContextId,
-        var_id: VarId,
+        var_id: ValueId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Self::ContextId {
         self.new_node(Some(context_id), var_id, value)
@@ -175,19 +175,19 @@ impl ContextManager for DynamicContextManager {
     fn get_variable(
         &self,
         context_id: Self::ContextId,
-        var_id: VarId,
+        var_id: ValueId,
     ) -> Arc<dyn Any + Send + Sync> {
         let guard = Guard::new();
         let node = self.nodes.peek(&context_id, &guard).unwrap();
         let depth = node.segment_tree.get(var_id);
-        let (_, node) = self.go_up_to(context_id, node, depth, &guard);
+        let (_, node) = self.ascend_to_depth(context_id, node, depth, &guard);
         return node.value.clone();
     }
 
     fn get_variables(
         &self,
         context_id: Self::ContextId,
-        var_ids: &[VarId],
+        var_ids: &[ValueId],
     ) -> Vec<Arc<dyn Any + Send + Sync>> {
         if var_ids.is_empty() {
             return vec![];
@@ -198,7 +198,7 @@ impl ContextManager for DynamicContextManager {
         let mut found_vars = HashMap::with_capacity(var_ids.len());
 
         // Step 1 & 2: Get target depths and group by depth.
-        let mut depths_to_visit: HashMap<usize, Vec<VarId>> = HashMap::new();
+        let mut depths_to_visit: HashMap<usize, Vec<ValueId>> = HashMap::new();
         for &var_id in var_ids {
             if found_vars.contains_key(&var_id) {
                 // Handle duplicates in input
@@ -218,7 +218,8 @@ impl ContextManager for DynamicContextManager {
 
         for depth in sorted_depths {
             // Jump from the current position up to the target depth.
-            let (next_id, next_node) = self.go_up_to(current_id, current_node, depth, &guard);
+            let (next_id, next_node) =
+                self.ascend_to_depth(current_id, current_node, depth, &guard);
             current_id = next_id;
             current_node = next_node;
 
