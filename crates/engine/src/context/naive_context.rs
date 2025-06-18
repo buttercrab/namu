@@ -43,15 +43,15 @@ impl ContextManager for NaiveContextManager {
         a_order.cmp(&b_order)
     }
 
-    fn add_variable(
+    fn add_value(
         &self,
         context_id: Self::ContextId,
-        var_id: ValueId,
+        val_id: ValueId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Self::ContextId {
         let context = self.contexts.get(&context_id).unwrap().clone();
         let mut context_order = self.context_order.get(&context_id).unwrap().clone();
-        context.insert(var_id, value).unwrap();
+        context.insert(val_id, value).unwrap();
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         context_order.push(id);
         self.contexts.insert(id, context).unwrap();
@@ -59,24 +59,24 @@ impl ContextManager for NaiveContextManager {
         id
     }
 
-    fn get_variable(
+    fn get_value(
         &self,
         context_id: Self::ContextId,
-        var_id: ValueId,
+        val_id: ValueId,
     ) -> Arc<dyn Any + Send + Sync> {
         let context = self.contexts.get(&context_id).unwrap();
-        context.get().get(&var_id).unwrap().clone()
+        context.get().get(&val_id).unwrap().clone()
     }
 
-    fn get_variables(
+    fn get_values(
         &self,
         context_id: Self::ContextId,
-        var_ids: &[ValueId],
+        val_ids: &[ValueId],
     ) -> Vec<Arc<dyn Any + Send + Sync>> {
         let context = self.contexts.get(&context_id).unwrap();
-        var_ids
+        val_ids
             .iter()
-            .map(|var_id| context.get().get(var_id).unwrap().clone())
+            .map(|val_id| context.get().get(val_id).unwrap().clone())
             .collect()
     }
 

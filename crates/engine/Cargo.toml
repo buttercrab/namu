@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 namu-core = { path = "../core" }
 scc = "2.3"
+kanal = { workspace = true }
+anyhow = { workspace = true }

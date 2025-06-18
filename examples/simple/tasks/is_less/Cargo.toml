@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 namu = { path = "../../../../" }
+
+[features]
+default = []
+worker = []

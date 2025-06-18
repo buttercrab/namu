@@ -9,7 +9,7 @@ use std::{
 };
 
 #[derive(Debug, Copy, Clone)]
-struct TaskEnd;
+pub struct TaskEnd;
 
 impl Display for TaskEnd {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

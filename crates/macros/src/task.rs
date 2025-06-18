@@ -189,6 +189,26 @@ struct TaskDefinition<'a> {
     return_ty: &'a Type,
 }
 
+// Generates the unit-struct plus the blanket `Task` impl that simply forwards to the
+// given specialization trait's `run` method (e.g. `SingleTask`, `BatchedTask`, `StreamTask`).
+fn generate_common_task_prelude(struct_name: &Ident, specialization_trait: &Ident) -> TokenStream2 {
+    quote! {
+        #[allow(non_camel_case_types)]
+        struct #struct_name;
+
+        impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
+        where
+            Id: Clone,
+            C: ::namu::__macro_exports::TaskContext<Id>,
+        {
+            fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
+            fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+                ::namu::__macro_exports::#specialization_trait::run(self, context)
+            }
+        }
+    }
+}
+
 fn generate_single_task_impl(def: &TaskDefinition) -> TokenStream2 {
     let arg_types = def.arg_types;
     let arg_names = def.arg_names;
@@ -216,20 +236,14 @@ fn generate_single_task_impl(def: &TaskDefinition) -> TokenStream2 {
 
     let call_args = quote! { #(#arg_names),* };
 
-    quote! {
-        #[allow(non_camel_case_types)]
-        struct #struct_name;
+    // Generate the common struct + Task impl once
+    let common = {
+        let trait_ident = format_ident!("SingleTask");
+        generate_common_task_prelude(struct_name, &trait_ident)
+    };
 
-        impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
-        where
-            Id: Clone,
-            C: ::namu::__macro_exports::TaskContext<Id>,
-        {
-            fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
-            fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
-                ::namu::__macro_exports::SingleTask::run(self, context)
-            }
-        }
+    quote! {
+        #common
 
         impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for #struct_name
         where
@@ -263,20 +277,14 @@ fn generate_batch_task_impl(def: &TaskDefinition) -> TokenStream2 {
     let output_result_type = extract_vec_inner_type(def.return_ty);
     let output_type = extract_result_type(output_result_type);
 
-    quote! {
-        #[allow(non_camel_case_types)]
-        struct #struct_name;
+    // Common struct + Task impl
+    let common = {
+        let trait_ident = format_ident!("BatchedTask");
+        generate_common_task_prelude(struct_name, &trait_ident)
+    };
 
-        impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
-        where
-            Id: Clone,
-            C: ::namu::__macro_exports::TaskContext<Id>,
-        {
-            fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
-            fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
-                ::namu::__macro_exports::BatchedTask::run(self, context)
-            }
-        }
+    quote! {
+        #common
 
         impl<Id, C> ::namu::__macro_exports::BatchedTask<Id, C> for #struct_name
         where
@@ -324,20 +332,14 @@ fn generate_stream_task_impl(def: &TaskDefinition) -> TokenStream2 {
     let output_iterator_type = extract_result_type(def.return_ty);
     let output_type = extract_result_type(extract_iterator_item_type(output_iterator_type));
 
-    quote! {
-        #[allow(non_camel_case_types)]
-        struct #struct_name;
+    // Common struct + Task impl
+    let common = {
+        let trait_ident = format_ident!("StreamTask");
+        generate_common_task_prelude(struct_name, &trait_ident)
+    };
 
-        impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
-        where
-            Id: Clone,
-            C: ::namu::__macro_exports::TaskContext<Id>,
-        {
-            fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
-            fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
-                ::namu::__macro_exports::StreamTask::run(self, context)
-            }
-        }
+    quote! {
+        #common
 
         impl<Id, C> ::namu::__macro_exports::StreamTask<Id, C> for #struct_name
         where
@@ -359,15 +361,25 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
     let arg_names = def.arg_names;
     let arg_types = def.arg_types;
 
-    let output_type = match def.args.task_type {
-        TaskType::Single => extract_result_type(def.return_ty).clone(),
+    // Determine output element type(s)
+    let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.args.task_type {
+        TaskType::Single => {
+            let ty = extract_result_type(def.return_ty).clone();
+            if let Type::Tuple(tuple) = &ty {
+                (ty.clone(), true, tuple.elems.iter().cloned().collect())
+            } else {
+                (ty.clone(), false, Vec::new())
+            }
+        }
         TaskType::Batch => {
             let output_result_type = extract_vec_inner_type(def.return_ty);
-            extract_result_type(output_result_type).clone()
+            let ty = extract_result_type(output_result_type).clone();
+            (ty.clone(), false, Vec::new())
         }
         TaskType::Stream => {
             let output_iterator_type = extract_result_type(def.return_ty);
-            extract_result_type(extract_iterator_item_type(output_iterator_type)).clone()
+            let ty = extract_result_type(extract_iterator_item_type(output_iterator_type)).clone();
+            (ty.clone(), false, Vec::new())
         }
     };
 
@@ -396,19 +408,60 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
         }
     }
 
-    constructor_sig.output = parse_quote! { -> ::namu::__macro_exports::TracedValue<#output_type> };
+    if is_tuple {
+        if tuple_elems.len() == 2 {
+            let t0 = &tuple_elems[0];
+            let t1 = &tuple_elems[1];
+            constructor_sig.output = parse_quote! { -> ( ::namu::__macro_exports::TracedValue<#t0>, ::namu::__macro_exports::TracedValue<#t1> ) };
+        } else {
+            abort!(
+                def.func_name.span(),
+                "Tuple outputs with arity other than 2 are not yet supported"
+            );
+        }
+    } else {
+        constructor_sig.output =
+            parse_quote! { -> ::namu::__macro_exports::TracedValue<#output_type> };
+    }
 
     let input_ids = arg_names.iter().map(|name| quote! { #name.id });
 
-    quote! {
-        #[allow(non_snake_case)]
-        pub #constructor_sig {
+    let constructor_body = if is_tuple {
+        if tuple_elems.len() == 2 {
+            let t0 = &tuple_elems[0];
+            let t1 = &tuple_elems[1];
+            quote! {
+                let kind = ::namu::__macro_exports::NodeKind::Call {
+                    task_name: stringify!(#func_name),
+                    task_id: format!("{}::{}", stringify!(#func_name), file!()),
+                    inputs: vec![#(#input_ids),*],
+                };
+                let __tuple = builder.add_instruction::<( #t0, #t1 )>(kind);
+                let __el0 = builder.add_instruction::<#t0>(::namu::__macro_exports::NodeKind::Extract{ tuple: __tuple.id, index: 0 });
+                let __el1 = builder.add_instruction::<#t1>(::namu::__macro_exports::NodeKind::Extract{ tuple: __tuple.id, index: 1 });
+                ( __el0, __el1 )
+            }
+        } else {
+            abort!(
+                def.func_name.span(),
+                "Tuple outputs with arity other than 2 are not yet supported"
+            );
+        }
+    } else {
+        quote! {
             let kind = ::namu::__macro_exports::NodeKind::Call {
                 task_name: stringify!(#func_name),
                 task_id: format!("{}::{}", stringify!(#func_name), file!()),
                 inputs: vec![#(#input_ids),*],
             };
             builder.add_instruction(kind)
+        }
+    };
+
+    quote! {
+        #[allow(non_snake_case)]
+        pub #constructor_sig {
+            #constructor_body
         }
     }
 }

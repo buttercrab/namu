@@ -9,35 +9,37 @@ pub struct Workflow {
     pub operations: Vec<Operation>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Literal {
-    pub value: String,
-    pub output: ValueId,
-}
+// --- New SSA-friendly IR ----------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Call {
-    pub name: String,
-    pub inputs: Vec<ValueId>,
-    pub output: ValueId,
+#[derive(Debug, Serialize, Deserialize)]
+pub enum OpKind {
+    /// Compile-time literal constant – produces exactly one value
+    Literal { value: String },
+
+    /// Call to a user-defined task.  `inputs` are ValueIds; the call may
+    /// produce *one or more* SSA results.
+    Call { name: String, inputs: Vec<ValueId> },
+
+    /// Static single-assignment phi node.
+    Phi { from: Vec<(OpId, ValueId)> },
+
+    /// Extract an element from a tuple value produced earlier.
+    Extract { tuple: ValueId, index: usize },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Operation {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub phis: Vec<PhiNode>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub literals: Vec<Literal>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<Call>,
+    /// Operation kind (opcode + attached data)
+    pub kind: OpKind,
+
+    /// SSA value ids produced by this operation (len ≥ 1)
+    pub outputs: Vec<ValueId>,
+
+    /// Control-flow successor
     pub next: Next,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PhiNode {
-    pub id: ValueId,
-    pub from: Vec<(OpId, ValueId)>,
-}
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Next {

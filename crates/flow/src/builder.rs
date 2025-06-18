@@ -55,6 +55,17 @@ pub fn phi<G: 'static, T: Clone + 'static>(
     builder.add_instruction(NodeKind::Phi { from })
 }
 
+pub fn extract<G: 'static, T: 'static>(
+    builder: &Builder<G>,
+    tuple: TracedValue<()>,
+    index: usize,
+) -> TracedValue<T> {
+    builder.add_instruction(NodeKind::Extract {
+        tuple: tuple.id,
+        index,
+    })
+}
+
 pub struct Builder<T> {
     inner: RefCell<BuilderInner>,
     _phantom: PhantomData<T>,

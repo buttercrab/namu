@@ -108,7 +108,34 @@ impl VisitMut for WorkflowVisitor {
         match i {
             Stmt::Local(local) => {
                 let Pat::Ident(pat_ident) = &local.pat else {
-                    abort!(local, "only simple idents are supported in let bindings");
+                    // Support tuple destructuring let (a, b) = expr;
+                    if let Pat::Tuple(pat_tuple) = &local.pat {
+                        let elems = &pat_tuple.elems;
+                        if elems.len() == 2 && local.init.is_some() {
+                            let [pat_a, pat_b]: [_; 2] = [elems[0].clone(), elems[1].clone()];
+                            let expr = &local.init.as_ref().unwrap().expr;
+
+                            let tmp_ident =
+                                format_ident!("__tuple_tmp_{}", self.new_control_flow_id());
+                            let builder_ident = &self.builder_ident;
+
+                            let new_block: Stmt = parse_quote! {
+                                {
+                                    let #tmp_ident = { #expr };
+                                    let #pat_a = ::namu::__macro_exports::extract(&#builder_ident, #tmp_ident, 0);
+                                    let #pat_b = ::namu::__macro_exports::extract(&#builder_ident, #tmp_ident, 1);
+                                }
+                            };
+
+                            *i = new_block;
+                            self.last_expr_has_value = false;
+                            return;
+                        } else {
+                            abort!(local, "Only 2-element tuple destructuring supported in let");
+                        }
+                    } else {
+                        abort!(local, "only simple idents are supported in let bindings");
+                    }
                 };
                 if let Some(init) = &mut local.init {
                     let is_mut = pat_ident.mutability.is_some();

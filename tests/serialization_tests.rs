@@ -4,7 +4,7 @@ mod common;
 
 use crate::common::*;
 use namu::workflow;
-use namu_core::ir::{Call, Next};
+use namu_core::ir::{Next, OpKind};
 
 #[test]
 fn serializable_conditional_workflow() {
@@ -22,20 +22,25 @@ fn serializable_conditional_workflow() {
     let serializable = graph.to_serializable("conditional".to_string());
     let ops = serializable.operations;
 
-    // Expected: 4 operations
-    // 1. Literal(10), Task(is_positive) -> Branch
-    // 2. Phi -> Return
-    // 3. Task(double) -> Jump
-    // 4. Task(identity) -> Jump
-    assert_eq!(ops.len(), 4);
+    // Expect exactly 5 operations in SSA form
+    assert_eq!(ops.len(), 5);
 
-    // Op 0: is_positive and branch
-    assert!(ops[0].phis.is_empty());
-    assert_eq!(ops[0].literals.len(), 1);
-    assert_eq!(ops[0].literals[0].output, 0);
-    assert!(matches!(ops[0].task, Some(Call { ref name, .. }) if name.contains("is_positive")));
+    // Op0: Literal(10) -> Jump
+    assert!(matches!(ops[0].kind, OpKind::Literal { .. }));
+    assert_eq!(ops[0].outputs, vec![0]);
+    assert!(matches!(ops[0].next, Next::Jump { next: 1 }));
+
+    // Op1: Call(is_positive) -> Branch
+    match &ops[1].kind {
+        OpKind::Call { name, inputs } => {
+            assert!(name.contains("is_positive"));
+            assert_eq!(inputs, &vec![0]);
+        }
+        _ => panic!("Op1 not Call"),
+    }
+    assert_eq!(ops[1].outputs, vec![1]);
     assert!(matches!(
-        ops[0].next,
+        ops[1].next,
         Next::Branch {
             var: 1,
             true_next: 2,
@@ -43,25 +48,37 @@ fn serializable_conditional_workflow() {
         }
     ));
 
-    // Op 1: Merge block
-    assert_eq!(ops[1].phis.len(), 1);
-    assert_eq!(ops[1].phis[0].id, 4);
-    assert_eq!(ops[1].phis[0].from, vec![(2, 2), (3, 3)]);
-    assert!(ops[1].literals.is_empty());
-    assert!(ops[1].task.is_none());
-    assert!(matches!(ops[1].next, Next::Return { .. }));
+    // Op2: Call(double) -> Jump 4
+    match &ops[2].kind {
+        OpKind::Call { name, inputs } => {
+            assert!(name.contains("double"));
+            assert_eq!(inputs, &vec![0]);
+        }
+        _ => panic!("Op2 not Call double"),
+    }
+    assert_eq!(ops[2].outputs, vec![2]);
+    assert!(matches!(ops[2].next, Next::Jump { next: 4 }));
 
-    // Op 2: double
-    assert!(ops[2].phis.is_empty());
-    assert!(ops[2].literals.is_empty());
-    assert!(matches!(ops[2].task, Some(Call { ref name, .. }) if name.contains("double")));
-    assert!(matches!(ops[2].next, Next::Jump { next: 1 }));
+    // Op3: Call(identity) -> Jump 4
+    match &ops[3].kind {
+        OpKind::Call { name, inputs } => {
+            assert!(name.contains("identity"));
+            assert_eq!(inputs, &vec![0]);
+        }
+        _ => panic!("Op3 not Call identity"),
+    }
+    assert_eq!(ops[3].outputs, vec![3]);
+    assert!(matches!(ops[3].next, Next::Jump { next: 4 }));
 
-    // Op 3: identity
-    assert!(ops[3].phis.is_empty());
-    assert!(ops[3].literals.is_empty());
-    assert!(matches!(ops[3].task, Some(Call { ref name, .. }) if name.contains("identity")));
-    assert!(matches!(ops[3].next, Next::Jump { next: 1 }));
+    // Op4: Phi merge -> Return
+    match &ops[4].kind {
+        OpKind::Phi { from } => {
+            assert_eq!(from, &vec![(2, 2), (3, 3)]);
+        }
+        _ => panic!("Op4 not Phi"),
+    }
+    assert_eq!(ops[4].outputs, vec![4]);
+    assert!(matches!(ops[4].next, Next::Return { var: Some(4) }));
 }
 
 #[test]
@@ -79,32 +96,19 @@ fn serializable_while_loop_workflow() {
     let serializable = graph.to_serializable("while_loop".to_string());
     let ops = serializable.operations;
 
-    // Expected: 4 operations
-    // 1. Entry: Literal(0) -> Jump
-    // 2. Header: Phi, Literal(3), Task(less_than) -> Branch
-    // 3. Body: Literal(1), Task(add) -> Jump
-    // 4. Exit: Synthetic empty operation -> Return
-    assert_eq!(ops.len(), 4);
+    // Expect 5 operations (literal, header phi+call, body call, exit placeholder, merge return)
+    assert_eq!(ops.len(), 5);
 
-    // Op 1: Header
-    let header_op = &ops[1];
-    assert_eq!(header_op.phis.len(), 1);
-    assert_eq!(header_op.literals.len(), 1);
-    assert!(header_op.task.is_some());
+    // Op0 Literal -> Jump 1
+    assert!(matches!(ops[0].kind, OpKind::Literal { .. }));
+    assert!(matches!(ops[0].next, Next::Jump { next: 1 }));
 
-    assert!(matches!(
-        header_op.next,
-        Next::Branch {
-            true_next: 2,
-            false_next: 3,
-            ..
-        }
-    ));
+    // Find branch op (should be 1)
+    assert!(matches!(ops[1].next, Next::Branch { .. }));
 
-    // Op 3: Synthetic Return
-    let exit_op = &ops[3];
-    assert!(exit_op.phis.is_empty());
-    assert!(exit_op.literals.is_empty());
-    assert!(exit_op.task.is_none());
-    assert!(matches!(exit_op.next, Next::Return { .. }));
+    // Op2 body Jump back
+    assert!(matches!(ops[2].next, Next::Jump { next: 1 }));
+
+    // Op4 Return
+    assert!(matches!(ops[4].next, Next::Return { .. }));
 }

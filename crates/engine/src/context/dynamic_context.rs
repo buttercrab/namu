@@ -17,7 +17,7 @@ struct ContextTreeNode {
     ancestors: Vec<usize>,
     depth: usize,
     order: usize,
-    var_id: ValueId,
+    val_id: ValueId,
     value: Arc<dyn Any + Send + Sync>,
     segment_tree: SegmentTree,
 }
@@ -40,7 +40,7 @@ impl DynamicContextManager {
     fn new_node(
         &self,
         parent: Option<usize>,
-        var_id: ValueId,
+        val_id: ValueId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> usize {
         let order = parent.map_or(0, |parent_id| {
@@ -67,7 +67,7 @@ impl DynamicContextManager {
 
             let parent_node = self.nodes.peek(&parent_id, &guard).unwrap();
             let depth = parent_node.depth + 1;
-            let segment_tree = parent_node.segment_tree.make(var_id, depth);
+            let segment_tree = parent_node.segment_tree.make(val_id, depth);
 
             (depth, ancestors, segment_tree)
         } else {
@@ -78,7 +78,7 @@ impl DynamicContextManager {
             ancestors,
             depth,
             order,
-            var_id,
+            val_id,
             value,
             segment_tree,
         };
@@ -163,49 +163,49 @@ impl ContextManager for DynamicContextManager {
         node_a.order.cmp(&node_b.order)
     }
 
-    fn add_variable(
+    fn add_value(
         &self,
         context_id: Self::ContextId,
-        var_id: ValueId,
+        val_id: ValueId,
         value: Arc<dyn Any + Send + Sync>,
     ) -> Self::ContextId {
-        self.new_node(Some(context_id), var_id, value)
+        self.new_node(Some(context_id), val_id, value)
     }
 
-    fn get_variable(
+    fn get_value(
         &self,
         context_id: Self::ContextId,
-        var_id: ValueId,
+        val_id: ValueId,
     ) -> Arc<dyn Any + Send + Sync> {
         let guard = Guard::new();
         let node = self.nodes.peek(&context_id, &guard).unwrap();
-        let depth = node.segment_tree.get(var_id);
+        let depth = node.segment_tree.get(val_id);
         let (_, node) = self.ascend_to_depth(context_id, node, depth, &guard);
         return node.value.clone();
     }
 
-    fn get_variables(
+    fn get_values(
         &self,
         context_id: Self::ContextId,
-        var_ids: &[ValueId],
+        val_ids: &[ValueId],
     ) -> Vec<Arc<dyn Any + Send + Sync>> {
-        if var_ids.is_empty() {
+        if val_ids.is_empty() {
             return vec![];
         }
 
         let guard = Guard::new();
         let start_node = self.nodes.peek(&context_id, &guard).unwrap();
-        let mut found_vars = HashMap::with_capacity(var_ids.len());
+        let mut found_vals = HashMap::with_capacity(val_ids.len());
 
         // Step 1 & 2: Get target depths and group by depth.
         let mut depths_to_visit: HashMap<usize, Vec<ValueId>> = HashMap::new();
-        for &var_id in var_ids {
-            if found_vars.contains_key(&var_id) {
+        for &val_id in val_ids {
+            if found_vals.contains_key(&val_id) {
                 // Handle duplicates in input
                 continue;
             }
-            let depth = start_node.segment_tree.get(var_id);
-            depths_to_visit.entry(depth).or_default().push(var_id);
+            let depth = start_node.segment_tree.get(val_id);
+            depths_to_visit.entry(depth).or_default().push(val_id);
         }
 
         // Step 3: Sort unique depths in descending order.
@@ -223,19 +223,19 @@ impl ContextManager for DynamicContextManager {
             current_id = next_id;
             current_node = next_node;
 
-            // Now we are at the correct ancestor node. Collect the variable(s) defined here.
-            if let Some(vars_at_this_depth) = depths_to_visit.get(&depth) {
-                // The current node's var_id *should* be one of the ones we're looking for.
-                if vars_at_this_depth.contains(&current_node.var_id) {
-                    found_vars.insert(current_node.var_id, current_node.value.clone());
+            // Now we are at the correct ancestor node. Collect the valiable(s) defined here.
+            if let Some(vals_at_this_depth) = depths_to_visit.get(&depth) {
+                // The current node's val_id *should* be one of the ones we're looking for.
+                if vals_at_this_depth.contains(&current_node.val_id) {
+                    found_vals.insert(current_node.val_id, current_node.value.clone());
                 }
             }
         }
 
         // Step 5: Format output to match original order.
-        var_ids
+        val_ids
             .iter()
-            .map(|var_id| found_vars.get(var_id).unwrap().clone())
+            .map(|val_id| found_vals.get(val_id).unwrap().clone())
             .collect()
     }
 
@@ -450,18 +450,18 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_context_manager_vars() {
+    fn dynamic_context_manager_vals() {
         let ctx_mgr = DynamicContextManager::new();
         let root = ctx_mgr.create_context();
 
-        // Add var 1 to root context
-        let ctx1 = ctx_mgr.add_variable(root, 1, Arc::new(10usize));
-        let val: Arc<usize> = ctx_mgr.get_variable(ctx1, 1).downcast::<usize>().unwrap();
+        // Add val 1 to root context
+        let ctx1 = ctx_mgr.add_value(root, 1, Arc::new(10usize));
+        let val: Arc<usize> = ctx_mgr.get_value(ctx1, 1).downcast::<usize>().unwrap();
         assert_eq!(*val, 10);
 
-        // Add another var 2 in new context
-        let ctx2 = ctx_mgr.add_variable(ctx1, 2, Arc::new(20usize));
-        let vals = ctx_mgr.get_variables(ctx2, &[1, 2]);
+        // Add another val 2 in new context
+        let ctx2 = ctx_mgr.add_value(ctx1, 2, Arc::new(20usize));
+        let vals = ctx_mgr.get_values(ctx2, &[1, 2]);
         let v1: &usize = vals[0].as_ref().downcast_ref::<usize>().unwrap();
         let v2: &usize = vals[1].as_ref().downcast_ref::<usize>().unwrap();
         assert_eq!((*v1, *v2), (10, 20));

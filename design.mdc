@@ -1,0 +1,172 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# NAMU – High-Level Design Overview
+*Composable, AI-first pipeline engine for Rust*
+
+---
+
+## 1  Vision & Guiding Principles
+
+• **AI-first developer experience** – write idiomatic Rust; the compiler + macros do the heavy lifting so humans *and* LLMs receive precise error messages and auto-fix hints.
+
+• **Performance by construction** – ahead-of-time compilation, immutable data snapshots, zero-copy `Arc`s, and `O(log n)` context look-ups keep the runtime lean.
+
+• **Horizontal scalability** – every execution path owns an independent *context*; tasks communicate through channels, letting extra workers scale linearly.
+
+• **Flexibility & future-proofing** – the `Task` trait hierarchy is generic; new execution modes (paged attention, GPU kernels, async streams) slot in without macro changes.
+
+• **Separation of concerns** – *Tasks* encapsulate business logic; *Workflows* describe orchestration; *Engine* executes; *Master / Worker* coordinate distribution.
+
+---
+
+## 2  Big-Picture Architecture
+
+```mermaid
+flowchart LR
+    subgraph Compile-time
+        A[tasks.rs / workflow.rs]
+        A --> B["task & workflow macros"]
+        B --> C["JSON IR"]
+    end
+
+    subgraph Runtime
+        C --> D[namu-engine]
+        D -->|channels| E[Task threads]
+        D -.->|WebSocket| F(namu-worker)
+    end
+
+    subgraph Control-plane
+        G[namu-master] <-->|publish / heartbeat| F
+        G <-->|namu publish| H[namu-cli]
+    end
+```
+
+*Flow*: source code → macros produce a static **Intermediate Representation (IR)** → engine interprets IR, dispatches to task executors, workers scale out under the master's supervision.
+
+---
+
+## 3  Component Inventory (Bird's-eye)
+
+| Crate / Service | Role | Why it matters |
+|-----------------|------|----------------|
+| **namu-core**   | Minimal public API: `Task` traits, `TaskContext`, serialisable IR structs | Stable surface for users & downstream runtimes |
+| **namu-macros** | Implements `#[task]` & `#[workflow]` | Hides graph plumbing, keeps user code idiomatic |
+| **namu-flow**   | Builder used *only* by macros to construct in-memory graphs and emit JSON IR | Clean compile-time/runtime boundary |
+| **namu-engine** | Interprets IR, manages contexts, spawns task threads | Can be replaced by GPU / distributed back-end |
+| **namu-cli**    | `compile`, `login`, `publish` commands | Enforces best practices & painless CI |
+| **namu-master** | HTTP + WebSocket registry; stores source tarballs, tracks workers via SQLite | Single source of truth for tasks |
+| **namu-worker** | Lightweight node that receives tasks and executes them | Scales out horizontally |
+
+### Repository Tree (condensed)
+```
+crates/
+  core/     <- public traits, IR
+  macros/   <- proc macros
+  flow/     <- compile-time graph builder
+  engine/   <- runtime interpreter + context managers
+  cli/      <- developer tooling
+  master/   <- server (registry + worker mgmt)
+  worker/   <- runtime node
+examples/   <- demo tasks & workflows
+```
+
+---
+
+## 4  Key Concepts at a Glance
+
+• **Task** – an isolated compute unit; macro wraps it into Single / Batch / Stream / Async flavours.
+
+• **Workflow** – imperative Rust function that *calls* tasks; compiled into a static SSA graph.
+
+• **Intermediate Representation (IR)** – JSON description of operations & control-flow; language-agnostic and cache-able.
+
+• **Context** – immutable snapshot of variable bindings for one logical path; implemented as a persistent tree for cheap cloning.
+
+• **Engine** – runtime that walks IR, routes data through tasks, merges branches, and garbage-collects completed contexts.
+
+---
+
+## 5  End-to-End Life-Cycle
+
+1. **Authoring**  Developers annotate ordinary functions with `#[task]`; compose them inside a `#[workflow]`.
+2. **Compilation**  Macros run during `cargo build`, emitting IR and registering tasks transparently.
+3. **Validation**  `namu compile` builds every task crate with the `--no-run` feature to guarantee type correctness without heavy runtime deps.
+4. **Publishing**  `namu publish` zips task sources and uploads them to **namu-master**.
+5. **Execution**  Engine loads IR, creates a root context, interprets operations, dispatches calls to task executors, and streams results back.
+6. **Scaling Out**  Additional **namu-worker** processes connect to the master via WebSocket; the engine can route work to any live worker.
+
+---
+
+## 6  Why This Design Works
+
+### Performance
+* Ahead-of-time compilation → zero runtime reflection.
+* `Arc`-shared immutable values → no defensive cloning.
+* Context operations are `O(log depth)` via persistent segment tree (implementation detail hidden from users).
+
+### Scalability
+* Each context is independent; tasks communicate only through channels → embarrassingly parallel.
+* Master/Worker separation lets us add hosts without code changes.
+* Future-proof: per-task thread-pools or GPU kernels can be slotted in by swapping engines.
+
+### Flexibility
+* Generic `Task` trait allows new modalities (e.g. paged attention, CUDA kernels) without macro rewrites.
+* Pluggable `ContextManager` enables experimenting with alternate data-structures (Redis cache, on-disk spill, etc.).
+
+### AI-friendly UX
+* Workflows are short; tasks live in a registry → ideal prompt material for code-gen models.
+* Macros defer all validation to `rustc`, giving high-quality, span-precise error messages.
+* JSON IR is stable and easy for tooling to introspect or visualise.
+
+---
+
+## 7  Developer Quick-Start (Illustrative)
+
+```rust
+#[task]               // reusable unit
+fn add(a: i32, b: i32) -> anyhow::Result<i32> { Ok(a + b) }
+
+#[workflow]           // orchestration
+fn demo() -> i32 {
+    let x = add(1, 2);
+    let y = add(x, 40);
+    y
+}
+```
+
+```bash
+namu compile   # static analysis
+namu publish   # upload to registry
+```
+Workers now pick up `demo`, execute it across data items, and stream results.
+
+---
+
+## 8  Roadmap Highlights
+
+* **Distributed scheduler** with work-stealing among workers.
+* **Cache backend** (Redis / Dragonfly) for cross-run value reuse.
+* **GPU / TPU engine variant** for heavy math tasks.
+* **Visual workflow explorer** that renders IR as interactive graphs.
+* **Public task marketplace** with semantic search & ranking.
+
+---
+
+## 9  Glossary
+
+| Term | Definition |
+|------|------------|
+| **ContextId** | Opaque handle identifying one execution path through a workflow |
+| **ValueId**   | Unique SSA slot in the workflow graph |
+| **Run**       | Concrete instance of a workflow execution |
+| **Worker**    | Process that runs tasks; maintains WebSocket to master |
+| **Master**    | Central service holding task sources and worker heartbeats |
+| **IR**        | Interchange format produced by macros; consumed by engine |
+
+---
+
+*This document captures the strategic view; see `namu.mdc` for deep-dive algorithmic details and code citations.*
+

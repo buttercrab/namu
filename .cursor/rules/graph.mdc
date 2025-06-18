@@ -124,27 +124,3 @@ Block 3 (Exit):
   return var1
 ```
 
-### Execution
-
-The `Executor` runs the graph by traversing the CFG. It starts at the entry block (Block 0) and follows the `Terminator` instructions. The execution process:
-
-1. **Block Execution**: Each block is executed in two passes:
-   - First pass: Resolve all phi nodes in the block using values from the predecessor block
-   - Second pass: Execute all other instructions (literals and task calls)
-
-2. **Task Execution**: When a task node is encountered:
-   - The task is looked up in the global task registry
-   - Input values are collected from previous nodes
-   - The task is executed with the collected inputs
-   - The result is stored for use by subsequent nodes
-
-3. **Control Flow**: After executing a block's instructions:
-   - For `Jump`: Continue to the target block
-   - For `Branch`: Evaluate the condition and jump to either the true or false target
-   - For `Return`: End execution and return the final value
-
-This execution model ensures that:
-- Only the logically required branches are executed
-- Variable values are correctly unified at merge points
-- Tasks are executed in the correct order with proper dependencies
-- The graph structure is preserved while allowing dynamic execution paths

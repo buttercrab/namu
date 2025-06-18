@@ -1,0 +1,227 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# NAMU – Implementation Guide (Low-level)
+This document explains **how** the core of NAMU works: what code is generated at compile-time, what data structures live in memory at runtime, and how values move from one task to another.  It complements `design.mdc`, which focuses on architecture and motivations.
+
+---
+
+## 0  Preface
+• All module and function names refer to files under the `crates/` directory; exact line numbers are intentionally omitted because the code evolves quickly.  Use your editor’s *Go-to-definition* to jump to the cited symbols.
+
+• Mermaid diagrams appear throughout for control-flow and data-flow visualisation.  They use only stable syntax so online renderers succeed.
+
+---
+
+## 1  Compile-Time Layer
+
+### 1.1  End-to-end macro pipeline
+Rust source files pass through the procedural-macro crate **`namu-macros`**.  Two macro attributes drive everything:
+
+1.  `#[task]` applied to a function turns that function into a *re-usable compute unit* and injects a *graph-constructor* with the same name.
+2.  `#[workflow]` applied to a function walks its syntax tree, transforms the imperative code into a **static single-assignment (SSA) control-flow graph**, and finally serialises the graph to a JSON Intermediate Representation (**IR**).
+
+The helper crate **`namu-flow`** hosts the in-memory builder used by the macros, while **`namu-core`** provides the serialisable IR structs.
+
+A simplified sequence:
+```
+foo.rs            ──► namu-macros              ──► in-memory Graph<T>
+  #[task]               (expansion)                    │
+  #[workflow]                                          ▼
+                  namu-flow::Graph::to_serializable ──► namu-core::Workflow (JSON)
+```
+
+### 1.2  `#[task]` macro internals
+`#[task]` supports four execution styles:
+
+| Attribute | Macro flag | Generated trait impl |
+|-----------|------------|----------------------|
+| _(none)_  | `single`   | `SingleTask`         |
+| `batch`   | `batch`    | `BatchedTask`        |
+| `stream`  | `stream`   | `StreamTask`         |
+| *(any of the above with async fn body)* | _same_ | async counterparts (`Async*Task`) |
+
+For every annotated function the macro emits:
+
+1. `__impl_<name>` – the original body, renamed, so it can be called inside the generated trait implementation.
+2. `__<name>` – a zero-sized *marker struct* that becomes the concrete task type.
+3. A blanket implementation of the base `Task` trait that simply forwards `prepare` and `run` to the specialisation trait’s default implementation.
+4. An implementation of the specialisation trait (`SingleTask`, etc.) that delegates the core logic to `__impl_<name>`.
+5. A public **graph-constructor function** (same identifier as the original) that, when invoked inside a workflow, appends a `NodeKind::Call` to the builder instead of executing immediately.
+
+Feature flag **`no-run`**: if a task is compiled with the `no-run` feature enabled, the macro stubs out the original body so that heavy runtime dependencies are not pulled into the build that only wants type information.
+
+Current limitations:
+* Tuple outputs are supported only up to arity 2.  Extending this is straightforward but not yet implemented.
+* `#[task(batch)]` expects exactly one argument of type `Vec<…>` and returns `Vec<Result<…>>`.
+
+### 1.3  `#[workflow]` macro internals
+The macro performs several passes over the user’s function body:
+
+1. **SSA conversion** – every mutable variable is renamed on assignment so that it has only one *definition site*.  At join points the macro creates *φ-nodes* to merge versions.
+2. **Basic-block partitioning** – a new block is started for function entry, each `then`/`else` branch, loop headers and exits.
+3. **Instruction emission** – tasks and literals become builder calls (`NodeKind::Call`, `NodeKind::Literal`).  Tuple destructuring uses `NodeKind::Extract`.
+4. **Terminator assignment** – each block ends with `Jump`, `Branch`, or `Return` via `namu-flow::Terminator` helpers.
+
+Supported control-flow:
+* `if`, `if/else` (nested arbitrarily)
+* `while` loops
+
+Not yet supported:
+* `for`, `match`, `break`, `continue` (on the roadmap)
+* Tuple destructuring wider than 2 elements.
+
+The macro produces a `Graph<T>` that is later serialised—no code runs during macro expansion, guaranteeing zero side-effects at compile time.
+
+### 1.4  Graph builder and serialisation
+`namu-flow::Builder` owns a `NodeArena` plus a `Vec<BasicBlock>`.  Each builder call returns a `TracedValue<T>` that simply wraps the node’s numeric id.  When `Graph::to_serializable` is invoked the following happens:
+
+1. Nodes are walked in block order; each becomes an `Operation`.  Value ids are assigned sequentially.
+2. Control-flow edges stored as `BlockId`s are patched into absolute `OpId`s so the runtime can jump directly.
+3. Φ-node inputs are updated in the same way.
+4. The result is a JSON-friendly `namu-core::Workflow` struct.
+
+---
+
+## 2  Intermediate Representation (IR)
+The IR is deliberately small:
+
+* **Operation.kind** – one of `Literal`, `Call`, `Phi`, `Extract`.
+* **Operation.outputs** – every op may produce one or more SSA values; the vec length encodes arity.
+* **Operation.next** – a control-flow terminator: `Jump`, `Branch`, or `Return`.
+
+Example fragment (pseudo-JSON):
+```json
+{
+  "kind": { "Call": { "name": "add", "inputs": [0,1] } },
+  "outputs": [2],
+  "next": { "Jump": { "next": 5 } }
+}
+```
+
+Properties:
+* Exactly one producer per `ValueId`.
+* Deterministic ordering (defined by macro, not hasher iteration).
+* Serialisable with `serde`; no macros needed on the consumer side.
+
+---
+
+## 3  Task Trait Hierarchy
+The base synchronous trait is minimal:
+```text
+trait Task {
+    fn prepare(&mut self) -> Result<()>; // one-time setup
+    fn run(&mut self, ctx: C) -> Result<()>; // blocking loop
+}
+```
+
+Specialisation traits (`SingleTask`, `BatchedTask`, `StreamTask`) provide:
+* Associated types `Input` and `Output` (both `serde`-friendly).  
+* A purely functional `call` method.  
+* A default `run` implementation that handles channel plumbing, back-pressure, and `TaskEnd` signalling.
+
+The async counterparts mirror this with `async fn`s and use `recv_async` / `send_async` on the context.
+
+Error propagation: all user code returns `anyhow::Result<T>`; engines treat any non-`TaskEnd` error as terminal and log it.
+
+---
+
+## 4  TaskContext Implementations
+The trait exposed to tasks resembles a synchronous or asynchronous iterator over `(Id, Value)` pairs, with a symmetric send side.  Two concrete types exist:
+
+### 4.1  StaticTaskContext
+* Generic over concrete `In` and `Out` types; no runtime casts.
+* Ideal for unit tests and benchmarks inside one crate.
+
+### 4.2  DynamicTaskContext
+* Type-erased channels (`Box<dyn Any + Send>`).
+* Used by the engine so that one generic thread can run tasks of different signatures.
+* Slight overhead from `Any` down-casting but avoids monomorphisation explosion.
+
+Both rely on **`kanal`** channels which expose sync and async APIs behind the same type, simplifying dual implementations.
+
+Special marker **`TaskEnd`** is sent as an `anyhow::Error`; engines look for that concrete type to know a context is finished with a given task.
+
+---
+
+## 5  Context Managers
+`ContextManager` abstracts the storage and retrieval of immutable value snapshots.
+
+### 5.1  Naive Context Manager
+* Clones the entire `HashMap<ValueId, Arc<…>>` on every `add_value` call.  
+* Simpler than the dynamic version but quadratic memory in deep loops.
+
+### 5.2  Dynamic Context Manager (default)
+* Represents contexts as nodes in a **persistent tree**; each node stores: the new `ValueId`, an `Arc<dyn Any>` for the value, and metadata (`depth`, `ancestors`, `order`).
+* **Binary-lifting** vector (`ancestors`) lets `compare_context` compute ordering in logarithmic hops.
+* A **persistent segment tree** maps `ValueId → depth`, yielding `O(log depth)` lookup without scanning ancestors one-by-one.
+
+Complexity summary:
+| Operation | Dynamic manager | Naive manager |
+|-----------|-----------------|---------------|
+| `add_value` | amortised O(1) | O(n) memory copy |
+| `get_value` | O(log depth) | O(1) |
+| `compare_context` | O(log depth) | O(1) |
+
+The dynamic version trades marginal lookup overhead for dramatic memory savings in large, branching workflows.
+
+---
+
+## 6  Engine Internals
+The prototype engine (`namu-engine::simple_engine`) is single-process and thread-per-task but already demonstrates full graph semantics.
+
+1. **Registry structures** keep `Arc<Workflow>`s, run-id mappings, and task implementations.
+2. **start_run** creates channels for each task, spawns:
+   * a *worker thread* that pulls inputs and executes the task’s `run` loop,
+   * a *dispatcher thread* that listens to outputs, inserts them into the context, and resumes graph interpretation.
+3. **Interpreter** (`execute_from_op`) walks operations, updating the context manager or sending inputs to tasks when it encounters a `Call`.  Execution pauses at that point and will resume in the dispatcher once task results arrive.
+4. **Concurrency**: contexts are immutable; only the context manager mutates shared state under internal locking.  Channel sends/receives act as natural back-pressure.
+5. **Error handling**: any panic or error inside a task thread is logged; the context is dropped and upstream tasks continue unaffected.
+
+The engine trait (`namu-engine::Engine`) abstracts over `ContextManager`, so alternative engines (GPU, distributed) can plug in by implementing the same methods.
+
+---
+
+## 7  CLI & Crate Conventions
+* **Task crates** declare two features – `default` and `no-run`.  The default feature compiles full implementations; `no-run` compiles only signatures so that workflows can depend on many tasks without pulling heavy deps.
+* `namu compile` walks `./tasks/**/Cargo.toml` and runs `cargo check --no-run` on each to guarantee they build in minimal mode.
+* `namu publish` creates a multipart HTTP request containing only `src/`, `Cargo.toml`, and `Cargo.lock` files so the master can rebuild tasks later.
+
+Workflows depend on tasks **with** the `no-run` feature enabled.
+
+---
+
+## 8  Master / Worker Protocol
+* **Registration**: workers open a WebSocket to `/workers/ws` and send a JSON `{ worker_id, address, port }` payload.
+* **Heartbeat**: the master pings every 30 seconds; workers reply with `Pong`.  Failure to respond marks the worker inactive in SQLite.
+* **Task upload**: `POST /tasks/upload` accepts a multipart form and writes files under `outputs/` for future compilation.
+* **Future work**: distribute compiled IR and task binaries to workers and let them host task threads locally.
+
+---
+
+## 9  Testing & Verification Suite
+* **Macro expansion tests** under `crates/macros/tests/expand` track generated code for regressions.
+* **Compile-fail tests** in `tests/compile-fail` ensure the workflow macro rejects invalid Rust patterns.
+* **Unit tests** exercise `DynamicContextManager` correctness and segment tree persistence.
+* **Serialization tests** round-trip a compiled workflow through JSON to verify schema stability.
+
+---
+
+## 10  Extensibility Guide
+* **Adding a new task flavour**: implement a new specialisation trait (e.g., `GpuKernelTask`), extend `#[task]` parser to recognise the attribute, and generate the matching impl.
+* **Custom context manager**: implement the trait from `namu-engine::context`, register via generic parameter on your engine.
+* **Alternative engine**: implement `namu-engine::Engine` for your type; reuse existing task registry and context manager or supply new ones.
+
+---
+
+## 11  Appendix
+* **Workflow JSON Schema** – annotated example with every `OpKind` variant.  
+* **Glossary** – precise definitions of ContextId, ValueId, Phi, BasicBlock, Run, Worker, Master, etc.  
+* **References & Further Reading** – Static Single Assignment, persistent data structures, actor-model runtimes, Airflow / Ray / Prefect comparisons.
+
+---
+
+**End of document.**
+

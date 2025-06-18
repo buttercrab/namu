@@ -1335,6 +1335,8 @@ dependencies = [
 name = "namu-engine"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "kanal",
  "namu-core",
  "scc",
 ]
