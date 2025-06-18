@@ -37,9 +37,10 @@ pub fn less_than<G: 'static>(
     a: ::namu::__macro_exports::TracedValue<i32>,
     b: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<bool> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "less_than",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "less_than",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "less_than",
@@ -48,9 +49,8 @@ pub fn less_than<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
+    )
 }
 fn __impl_add_one(a: i32) -> anyhow::Result<i32> {
     Ok(a + 1)
@@ -89,9 +89,10 @@ pub fn add_one<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "add_one",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "add_one",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_one",
@@ -100,9 +101,8 @@ pub fn add_one<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
@@ -116,10 +116,7 @@ pub fn while_loop_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __while_body_block_0 = __builder.new_block();
             let __while_exit_block_0 = __builder.new_block();
             let __while_parent_predecessor_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::jump(__while_header_block_0),
-                );
+            ::namu::__macro_exports::seal_block_jump(&__builder, __while_header_block_0);
             __builder.switch_to_block(__while_header_block_0);
             let __i_phi_node_id_0 = __builder
                 .arena_mut()
@@ -133,24 +130,19 @@ pub fn while_loop_workflow() -> ::namu::__macro_exports::Graph<i32> {
                 i,
                 ::namu::__macro_exports::literal(&__builder, 5),
             );
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::branch(
-                        __while_cond,
-                        __while_body_block_0,
-                        __while_exit_block_0,
-                    ),
-                );
+            ::namu::__macro_exports::seal_block_branch(
+                &__builder,
+                __while_cond,
+                __while_body_block_0,
+                __while_exit_block_0,
+            );
             __builder.switch_to_block(__while_body_block_0);
             {
                 i = add_one(&__builder, i);
             };
             let __post_body_i_0 = i;
             let __body_predecessor_id_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::jump(__while_header_block_0),
-                );
+            ::namu::__macro_exports::seal_block_jump(&__builder, __while_header_block_0);
             if let Some(
                 ::namu::__macro_exports::Node {
                     kind: ::namu::__macro_exports::NodeKind::Phi { from },
@@ -170,6 +162,6 @@ pub fn while_loop_workflow() -> ::namu::__macro_exports::Graph<i32> {
         }
         i
     };
-    __builder.seal_block(::namu::__macro_exports::Terminator::return_value(__result.id));
+    ::namu::__macro_exports::seal_block_return_value(&__builder, __result);
     __builder.build()
 }

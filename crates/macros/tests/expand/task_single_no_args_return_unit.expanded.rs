@@ -35,9 +35,10 @@ where
 pub fn no_args_task<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
 ) -> ::namu::__macro_exports::TracedValue<()> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "no_args_task",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "no_args_task",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "no_args_task",
@@ -46,7 +47,6 @@ pub fn no_args_task<G: 'static>(
             );
             res
         }),
-        inputs: ::alloc::vec::Vec::new(),
-    };
-    builder.add_instruction(kind)
+        ::alloc::vec::Vec::new(),
+    )
 }

@@ -36,9 +36,10 @@ pub fn is_positive<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<bool> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "is_positive",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "is_positive",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "is_positive",
@@ -47,9 +48,8 @@ pub fn is_positive<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }
 fn __impl_action_if_true() -> anyhow::Result<()> {
     Ok(())
@@ -87,9 +87,10 @@ where
 pub fn action_if_true<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
 ) -> ::namu::__macro_exports::TracedValue<()> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "action_if_true",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "action_if_true",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "action_if_true",
@@ -98,9 +99,8 @@ pub fn action_if_true<G: 'static>(
             );
             res
         }),
-        inputs: ::alloc::vec::Vec::new(),
-    };
-    builder.add_instruction(kind)
+        ::alloc::vec::Vec::new(),
+    )
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
@@ -113,26 +113,21 @@ pub fn if_with_task_in_condition_workflow() -> ::namu::__macro_exports::Graph<()
             let __if_then_block_0 = __builder.new_block();
             let __if_condition = is_positive(&__builder, x);
             let __if_parent_predecessor_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::branch(
-                        __if_condition,
-                        __if_then_block_0,
-                        __if_merge_block_0,
-                    ),
-                );
+            ::namu::__macro_exports::seal_block_branch(
+                &__builder,
+                __if_condition,
+                __if_then_block_0,
+                __if_merge_block_0,
+            );
             __builder.switch_to_block(__if_then_block_0);
             let __then_val = {
                 action_if_true(&__builder);
             };
             let __then_predecessor_id_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::jump(__if_merge_block_0),
-                );
+            ::namu::__macro_exports::seal_block_jump(&__builder, __if_merge_block_0);
             __builder.switch_to_block(__if_merge_block_0);
         }
     };
-    __builder.seal_block(::namu::__macro_exports::Terminator::return_unit());
+    ::namu::__macro_exports::seal_block_return_unit(&__builder);
     __builder.build()
 }

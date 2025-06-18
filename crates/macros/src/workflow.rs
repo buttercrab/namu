@@ -111,19 +111,27 @@ impl VisitMut for WorkflowVisitor {
                     // Support tuple destructuring let (a, b) = expr;
                     if let Pat::Tuple(pat_tuple) = &local.pat {
                         let elems = &pat_tuple.elems;
-                        if elems.len() == 2 && local.init.is_some() {
-                            let [pat_a, pat_b]: [_; 2] = [elems[0].clone(), elems[1].clone()];
+                        if !elems.is_empty() && local.init.is_some() {
                             let expr = &local.init.as_ref().unwrap().expr;
 
                             let tmp_ident =
                                 format_ident!("__tuple_tmp_{}", self.new_control_flow_id());
                             let builder_ident = &self.builder_ident;
 
+                            // Generate extraction statements for each element
+                            let mut extraction_stmts = Vec::<Stmt>::new();
+                            for (idx, pat_elem) in elems.iter().enumerate() {
+                                let idx_lit = syn::Index::from(idx);
+                                let stmt: Stmt = parse_quote! {
+                                    let #pat_elem = ::namu::__macro_exports::extract(&#builder_ident, #tmp_ident, #idx_lit);
+                                };
+                                extraction_stmts.push(stmt);
+                            }
+
                             let new_block: Stmt = parse_quote! {
                                 {
                                     let #tmp_ident = { #expr };
-                                    let #pat_a = ::namu::__macro_exports::extract(&#builder_ident, #tmp_ident, 0);
-                                    let #pat_b = ::namu::__macro_exports::extract(&#builder_ident, #tmp_ident, 1);
+                                    #(#extraction_stmts)*
                                 }
                             };
 
@@ -131,7 +139,7 @@ impl VisitMut for WorkflowVisitor {
                             self.last_expr_has_value = false;
                             return;
                         } else {
-                            abort!(local, "Only 2-element tuple destructuring supported in let");
+                            abort!(local, "Tuple destructuring requires at least one element");
                         }
                     } else {
                         abort!(local, "only simple idents are supported in let bindings");
@@ -231,7 +239,7 @@ impl WorkflowVisitor {
                     };
                     #(#else_post_captures)*
                     let #else_predecessor_id = #builder.current_block_id();
-                    #builder.seal_block(::namu::__macro_exports::Terminator::jump(#merge_block_id));
+                    ::namu::__macro_exports::seal_block_jump(&#builder, #merge_block_id);
                 };
 
                 let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
@@ -284,13 +292,13 @@ impl WorkflowVisitor {
 
                 let __if_condition = #cond;
                 let #parent_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(::namu::__macro_exports::Terminator::branch(__if_condition, #then_block_id, #false_target));
+                ::namu::__macro_exports::seal_block_branch(&#builder, __if_condition, #then_block_id, #false_target);
 
                 #builder.switch_to_block(#then_block_id);
                 let __then_val = #then_branch_body;
                 #(#then_post_captures)*
                 let #then_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(::namu::__macro_exports::Terminator::jump(#merge_block_id));
+                ::namu::__macro_exports::seal_block_jump(&#builder, #merge_block_id);
 
                 #else_block_impl
 
@@ -371,18 +379,18 @@ impl WorkflowVisitor {
                 let #exit_block_id = #builder.new_block();
 
                 let #parent_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(::namu::__macro_exports::Terminator::jump(#header_block_id));
+                ::namu::__macro_exports::seal_block_jump(&#builder, #header_block_id);
 
                 #builder.switch_to_block(#header_block_id);
                 #(#phi_node_creations)*
                 let __while_cond = #cond;
-                #builder.seal_block(::namu::__macro_exports::Terminator::branch(__while_cond, #body_block_id, #exit_block_id));
+                ::namu::__macro_exports::seal_block_branch(&#builder, __while_cond, #body_block_id, #exit_block_id);
 
                 #builder.switch_to_block(#body_block_id);
                 #body_block;
                 #(#post_body_captures)*
                 let #body_predecessor_id = #builder.current_block_id();
-                #builder.seal_block(::namu::__macro_exports::Terminator::jump(#header_block_id));
+                ::namu::__macro_exports::seal_block_jump(&#builder, #header_block_id);
 
                 #phi_patchers
 
@@ -412,12 +420,12 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let body_and_seal = if visitor.last_expr_has_value {
         quote! {
             let __result = #func_body;
-            #builder_ident.seal_block(::namu::__macro_exports::Terminator::return_value(__result.id));
+            ::namu::__macro_exports::seal_block_return_value(&#builder_ident, __result);
         }
     } else {
         quote! {
             #func_body;
-            #builder_ident.seal_block(::namu::__macro_exports::Terminator::return_unit());
+            ::namu::__macro_exports::seal_block_return_unit(&#builder_ident);
         }
     };
 

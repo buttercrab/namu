@@ -36,9 +36,10 @@ pub fn double<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "double",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "double",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "double",
@@ -47,9 +48,8 @@ pub fn double<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }
 fn __impl_identity(a: i32) -> anyhow::Result<i32> {
     Ok(a)
@@ -88,9 +88,10 @@ pub fn identity<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "identity",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "identity",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "identity",
@@ -99,9 +100,8 @@ pub fn identity<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
@@ -115,28 +115,20 @@ pub fn if_else_return_value_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __if_else_block_0 = __builder.new_block();
             let __if_condition = x > ::namu::__macro_exports::literal(&__builder, 5);
             let __if_parent_predecessor_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::branch(
-                        __if_condition,
-                        __if_then_block_0,
-                        __if_else_block_0,
-                    ),
-                );
+            ::namu::__macro_exports::seal_block_branch(
+                &__builder,
+                __if_condition,
+                __if_then_block_0,
+                __if_else_block_0,
+            );
             __builder.switch_to_block(__if_then_block_0);
             let __then_val = { double(&__builder, x) };
             let __then_predecessor_id_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::jump(__if_merge_block_0),
-                );
+            ::namu::__macro_exports::seal_block_jump(&__builder, __if_merge_block_0);
             __builder.switch_to_block(__if_else_block_0);
             let __else_val = { { identity(&__builder, x) } };
             let __else_predecessor_id_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::jump(__if_merge_block_0),
-                );
+            ::namu::__macro_exports::seal_block_jump(&__builder, __if_merge_block_0);
             __builder.switch_to_block(__if_merge_block_0);
             ::namu::__macro_exports::phi(
                 &__builder,
@@ -149,6 +141,6 @@ pub fn if_else_return_value_workflow() -> ::namu::__macro_exports::Graph<i32> {
             )
         }
     };
-    __builder.seal_block(::namu::__macro_exports::Terminator::return_value(__result.id));
+    ::namu::__macro_exports::seal_block_return_value(&__builder, __result);
     __builder.build()
 }

@@ -36,9 +36,10 @@ pub fn task_a<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "task_a",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "task_a",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "task_a",
@@ -47,9 +48,8 @@ pub fn task_a<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }
 fn __impl_task_b(a: i32) -> anyhow::Result<i32> {
     Ok(a)
@@ -88,9 +88,10 @@ pub fn task_b<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "task_b",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "task_b",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "task_b",
@@ -99,9 +100,8 @@ pub fn task_b<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
@@ -115,23 +115,18 @@ pub fn if_else_statement_workflow() -> ::namu::__macro_exports::Graph<()> {
             let __if_else_block_0 = __builder.new_block();
             let __if_condition = x > ::namu::__macro_exports::literal(&__builder, 20);
             let __if_parent_predecessor_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::branch(
-                        __if_condition,
-                        __if_then_block_0,
-                        __if_else_block_0,
-                    ),
-                );
+            ::namu::__macro_exports::seal_block_branch(
+                &__builder,
+                __if_condition,
+                __if_then_block_0,
+                __if_else_block_0,
+            );
             __builder.switch_to_block(__if_then_block_0);
             let __then_val = {
                 task_a(&__builder, x);
             };
             let __then_predecessor_id_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::jump(__if_merge_block_0),
-                );
+            ::namu::__macro_exports::seal_block_jump(&__builder, __if_merge_block_0);
             __builder.switch_to_block(__if_else_block_0);
             let __else_val = {
                 {
@@ -139,13 +134,10 @@ pub fn if_else_statement_workflow() -> ::namu::__macro_exports::Graph<()> {
                 }
             };
             let __else_predecessor_id_0 = __builder.current_block_id();
-            __builder
-                .seal_block(
-                    ::namu::__macro_exports::Terminator::jump(__if_merge_block_0),
-                );
+            ::namu::__macro_exports::seal_block_jump(&__builder, __if_merge_block_0);
             __builder.switch_to_block(__if_merge_block_0);
         }
     };
-    __builder.seal_block(::namu::__macro_exports::Terminator::return_unit());
+    ::namu::__macro_exports::seal_block_return_unit(&__builder);
     __builder.build()
 }

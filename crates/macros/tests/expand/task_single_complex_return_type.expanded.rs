@@ -41,9 +41,10 @@ pub fn complex_return_task<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<MyComplexType> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "complex_return_task",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "complex_return_task",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "complex_return_task",
@@ -52,7 +53,6 @@ pub fn complex_return_task<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }

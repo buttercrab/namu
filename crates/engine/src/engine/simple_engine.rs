@@ -305,7 +305,6 @@ fn execute_from_op<C>(
                 let out_id = op.outputs[0];
                 current_ctx_id = context_manager.add_value(current_ctx_id.clone(), out_id, element);
             }
-            _ => {}
         }
 
         // Follow control-flow terminator for non-Call operations.

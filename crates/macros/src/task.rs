@@ -365,8 +365,13 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
     let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.args.task_type {
         TaskType::Single => {
             let ty = extract_result_type(def.return_ty).clone();
+            // Treat `()` as non-tuple scalar; any tuple with at least 1 element is handled as tuple
             if let Type::Tuple(tuple) = &ty {
-                (ty.clone(), true, tuple.elems.iter().cloned().collect())
+                if tuple.elems.is_empty() {
+                    (ty.clone(), false, Vec::new())
+                } else {
+                    (ty.clone(), true, tuple.elems.iter().cloned().collect())
+                }
             } else {
                 (ty.clone(), false, Vec::new())
             }
@@ -409,16 +414,8 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
     }
 
     if is_tuple {
-        if tuple_elems.len() == 2 {
-            let t0 = &tuple_elems[0];
-            let t1 = &tuple_elems[1];
-            constructor_sig.output = parse_quote! { -> ( ::namu::__macro_exports::TracedValue<#t0>, ::namu::__macro_exports::TracedValue<#t1> ) };
-        } else {
-            abort!(
-                def.func_name.span(),
-                "Tuple outputs with arity other than 2 are not yet supported"
-            );
-        }
+        constructor_sig.output =
+            parse_quote! { -> ( #( ::namu::__macro_exports::TracedValue<#tuple_elems> ),* ) };
     } else {
         constructor_sig.output =
             parse_quote! { -> ::namu::__macro_exports::TracedValue<#output_type> };
@@ -427,34 +424,30 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
     let input_ids = arg_names.iter().map(|name| quote! { #name.id });
 
     let constructor_body = if is_tuple {
-        if tuple_elems.len() == 2 {
-            let t0 = &tuple_elems[0];
-            let t1 = &tuple_elems[1];
-            quote! {
-                let kind = ::namu::__macro_exports::NodeKind::Call {
-                    task_name: stringify!(#func_name),
-                    task_id: format!("{}::{}", stringify!(#func_name), file!()),
-                    inputs: vec![#(#input_ids),*],
-                };
-                let __tuple = builder.add_instruction::<( #t0, #t1 )>(kind);
-                let __el0 = builder.add_instruction::<#t0>(::namu::__macro_exports::NodeKind::Extract{ tuple: __tuple.id, index: 0 });
-                let __el1 = builder.add_instruction::<#t1>(::namu::__macro_exports::NodeKind::Extract{ tuple: __tuple.id, index: 1 });
-                ( __el0, __el1 )
+        {
+            // Build extraction statements and identifiers
+            let mut extract_stmts = Vec::<TokenStream2>::new();
+            let mut ret_idents = Vec::<Ident>::new();
+            for (idx, _) in tuple_elems.iter().enumerate() {
+                let idx_lit = syn::Index::from(idx);
+                let el_ident = format_ident!("__el{}", idx);
+                extract_stmts.push(quote! {
+                    let #el_ident = ::namu::__macro_exports::extract(&builder, __tuple, #idx_lit);
+                });
+                ret_idents.push(el_ident);
             }
-        } else {
-            abort!(
-                def.func_name.span(),
-                "Tuple outputs with arity other than 2 are not yet supported"
-            );
+
+            let ret_tuple = quote! { ( #(#ret_idents),* ) };
+
+            quote! {
+                let __tuple = ::namu::__macro_exports::call(&builder, stringify!(#func_name), format!("{}::{}", stringify!(#func_name), file!()), vec![#(#input_ids),*]);
+                #(#extract_stmts)*
+                #ret_tuple
+            }
         }
     } else {
         quote! {
-            let kind = ::namu::__macro_exports::NodeKind::Call {
-                task_name: stringify!(#func_name),
-                task_id: format!("{}::{}", stringify!(#func_name), file!()),
-                inputs: vec![#(#input_ids),*],
-            };
-            builder.add_instruction(kind)
+            ::namu::__macro_exports::call(&builder, stringify!(#func_name), format!("{}::{}", stringify!(#func_name), file!()), vec![#(#input_ids),*])
         }
     };
 

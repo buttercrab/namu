@@ -1,10 +1,10 @@
 use namu_macros::task;
-fn __impl_single_arg_task(a: i32) -> anyhow::Result<i32> {
-    Ok(a)
+fn __impl_triple(a: i32) -> anyhow::Result<(i32, bool, String)> {
+    Ok((a, a > 0, a.to_string()))
 }
 #[allow(non_camel_case_types)]
-struct __single_arg_task;
-impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __single_arg_task
+struct __triple;
+impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __triple
 where
     Id: Clone,
     C: ::namu::__macro_exports::TaskContext<Id>,
@@ -16,38 +16,46 @@ where
         ::namu::__macro_exports::SingleTask::run(self, context)
     }
 }
-impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for __single_arg_task
+impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for __triple
 where
     Id: Clone,
     C: ::namu::__macro_exports::TaskContext<Id>,
 {
     type Input = i32;
-    type Output = i32;
+    type Output = (i32, bool, String);
     fn call(
         &mut self,
         input: Self::Input,
     ) -> ::namu::__macro_exports::Result<Self::Output> {
         let a = input;
-        __impl_single_arg_task(a)
+        __impl_triple(a)
     }
 }
 #[allow(non_snake_case)]
-pub fn single_arg_task<G: 'static>(
+pub fn triple<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
-) -> ::namu::__macro_exports::TracedValue<i32> {
-    ::namu::__macro_exports::call(
+) -> (
+    ::namu::__macro_exports::TracedValue<i32>,
+    ::namu::__macro_exports::TracedValue<bool>,
+    ::namu::__macro_exports::TracedValue<String>,
+) {
+    let __tuple = ::namu::__macro_exports::call(
         &builder,
-        "single_arg_task",
+        "triple",
         ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
-                    "{0}::{1}", "single_arg_task",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/task_single_one_arg.rs",
+                    "{0}::{1}", "triple",
+                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/task_single_tuple_three_elems.rs",
                 ),
             );
             res
         }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    )
+    );
+    let __el0 = ::namu::__macro_exports::extract(&builder, __tuple, 0);
+    let __el1 = ::namu::__macro_exports::extract(&builder, __tuple, 1);
+    let __el2 = ::namu::__macro_exports::extract(&builder, __tuple, 2);
+    (__el0, __el1, __el2)
 }

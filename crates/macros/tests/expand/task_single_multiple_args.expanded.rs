@@ -42,9 +42,10 @@ pub fn multiple_args_task<G: 'static>(
     a: ::namu::__macro_exports::TracedValue<i32>,
     b: ::namu::__macro_exports::TracedValue<String>,
 ) -> ::namu::__macro_exports::TracedValue<String> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "multiple_args_task",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "multiple_args_task",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "multiple_args_task",
@@ -53,7 +54,6 @@ pub fn multiple_args_task<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
+    )
 }

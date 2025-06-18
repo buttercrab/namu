@@ -38,9 +38,10 @@ pub fn stream_task<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     input: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "stream_task",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "stream_task",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "stream_task",
@@ -49,7 +50,6 @@ pub fn stream_task<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([input.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([input.id])),
+    )
 }

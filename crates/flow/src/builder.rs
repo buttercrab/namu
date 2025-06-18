@@ -55,9 +55,10 @@ pub fn phi<G: 'static, T: Clone + 'static>(
     builder.add_instruction(NodeKind::Phi { from })
 }
 
-pub fn extract<G: 'static, T: 'static>(
+// Generic Extract helper – works with any tuple value type
+pub fn extract<G: 'static, In: 'static, T: 'static>(
     builder: &Builder<G>,
-    tuple: TracedValue<()>,
+    tuple: TracedValue<In>,
     index: usize,
 ) -> TracedValue<T> {
     builder.add_instruction(NodeKind::Extract {
@@ -139,4 +140,44 @@ impl<T> Builder<T> {
         let inner = self.inner.into_inner();
         Graph::new(inner.arena, inner.blocks)
     }
+}
+
+// --- Higher-level helpers (used by proc-macros) ---
+
+/// Emit a `Call` node and return its output as a `TracedValue`.
+pub fn call<G: 'static, R: 'static>(
+    builder: &Builder<G>,
+    task_name: &'static str,
+    task_id: String,
+    inputs: Vec<NodeId>,
+) -> TracedValue<R> {
+    let kind = NodeKind::Call {
+        task_name,
+        task_id,
+        inputs,
+    };
+    builder.add_instruction::<R>(kind)
+}
+
+/// Convenience wrappers around `Builder::seal_block` so generated code doesn't
+/// need to mention `Terminator` directly.
+pub fn seal_block_jump<G>(builder: &Builder<G>, target: BlockId) {
+    builder.seal_block(Terminator::jump(target));
+}
+
+pub fn seal_block_branch<G>(
+    builder: &Builder<G>,
+    condition: TracedValue<bool>,
+    true_target: BlockId,
+    false_target: BlockId,
+) {
+    builder.seal_block(Terminator::branch(condition, true_target, false_target));
+}
+
+pub fn seal_block_return_value<G, T>(builder: &Builder<G>, value: TracedValue<T>) {
+    builder.seal_block(Terminator::return_value(value.id));
+}
+
+pub fn seal_block_return_unit<G>(builder: &Builder<G>) {
+    builder.seal_block(Terminator::return_unit());
 }

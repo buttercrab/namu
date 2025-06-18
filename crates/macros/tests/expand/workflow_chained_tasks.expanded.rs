@@ -36,9 +36,10 @@ pub fn add_one<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "add_one",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "add_one",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_one",
@@ -47,9 +48,8 @@ pub fn add_one<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }
 fn __impl_multiply_by_two(a: i32) -> anyhow::Result<i32> {
     Ok(a * 2)
@@ -88,9 +88,10 @@ pub fn multiply_by_two<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
     a: ::namu::__macro_exports::TracedValue<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    let kind = ::namu::__macro_exports::NodeKind::Call {
-        task_name: "multiply_by_two",
-        task_id: ::alloc::__export::must_use({
+    ::namu::__macro_exports::call(
+        &builder,
+        "multiply_by_two",
+        ::alloc::__export::must_use({
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "multiply_by_two",
@@ -99,9 +100,8 @@ pub fn multiply_by_two<G: 'static>(
             );
             res
         }),
-        inputs: <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    };
-    builder.add_instruction(kind)
+        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
+    )
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
@@ -112,6 +112,6 @@ pub fn chained_tasks_workflow() -> ::namu::__macro_exports::Graph<i32> {
         let added = add_one(&__builder, initial);
         multiply_by_two(&__builder, added)
     };
-    __builder.seal_block(::namu::__macro_exports::Terminator::return_value(__result.id));
+    ::namu::__macro_exports::seal_block_return_value(&__builder, __result);
     __builder.build()
 }
