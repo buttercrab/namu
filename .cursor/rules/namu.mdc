@@ -1,7 +1,7 @@
 ---
 description: 
 globs: 
-alwaysApply: false
+alwaysApply: true
 ---
 # NAMU – Implementation Guide (Low-level)
 This document explains **how** the core of NAMU works: what code is generated at compile-time, what data structures live in memory at runtime, and how values move from one task to another.  It complements `design.mdc`, which focuses on architecture and motivations.

@@ -1,7 +1,7 @@
 ---
 description: 
 globs: 
-alwaysApply: false
+alwaysApply: true
 ---
 # NAMU – High-Level Design Overview
 *Composable, AI-first pipeline engine for Rust*
