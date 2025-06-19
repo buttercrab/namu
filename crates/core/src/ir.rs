@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 pub type ValueId = usize;
 pub type OpId = usize;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Workflow {
     pub name: String,
     pub operations: Vec<Operation>,
@@ -17,27 +17,27 @@ impl Workflow {
 
 // --- New grouped IR representation -----------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Literal {
     pub output: ValueId,
     pub value: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Phi {
     pub output: ValueId,
     /// Pairs of (predecessor Operation id, ValueId coming from that op)
     pub from: Vec<(OpId, ValueId)>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Call {
     pub task_id: String,
     pub inputs: Vec<ValueId>,
     pub outputs: Vec<ValueId>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Operation {
     /// Zero or more literal constants produced *before* any phi or call.
     pub literals: Vec<Literal>,
@@ -66,7 +66,7 @@ impl Operation {
 
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub enum Next {
     Jump {
         next: OpId,

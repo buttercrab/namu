@@ -4,7 +4,8 @@ mod common;
 
 use crate::common::*;
 use namu::workflow;
-use namu_core::ir::Next;
+use namu_core::ir::Workflow;
+use serde_json;
 
 #[test]
 fn serializable_conditional_workflow() {
@@ -20,72 +21,53 @@ fn serializable_conditional_workflow() {
 
     let graph = test_workflow();
     let serializable = graph.to_serializable("conditional".to_string());
-    let ops = serializable.operations;
 
-    // Expect exactly 4 grouped operations in SSA form
-    assert_eq!(ops.len(), 4);
-
-    // Op0: Literal(10) + is_positive call -> Branch
-    assert_eq!(ops[0].literals.len(), 1);
-    assert_eq!(ops[0].literals[0].output, 0);
-    assert_eq!(ops[0].literals[0].value, "10");
-    assert!(matches!(ops[0].next, Next::Branch { .. }));
-
-    // Find operations with double and identity calls irrespective of exact indices.
-    let mut double_op_idx = None;
-    let mut identity_op_idx = None;
-    for (idx, op) in ops.iter().enumerate() {
-        if let Some(call) = &op.call {
-            if call.task_id.contains("double") {
-                double_op_idx = Some(idx);
-                assert_eq!(call.inputs, vec![0]);
-                assert_eq!(call.outputs, vec![2]);
-            } else if call.task_id.contains("identity") {
-                identity_op_idx = Some(idx);
-                assert_eq!(call.inputs, vec![0]);
-                assert_eq!(call.outputs, vec![3]);
-            }
-        }
-    }
-    let double_idx = double_op_idx.expect("double call op not found");
-    let identity_idx = identity_op_idx.expect("identity call op not found");
-
-    // Both should jump to the merge operation (last index)
-    let merge_idx = ops.len() - 1;
-    assert!(matches!(ops[double_idx].next, Next::Jump { next } if next == merge_idx));
-    assert!(matches!(ops[identity_idx].next, Next::Jump { next } if next == merge_idx));
-
-    // Op3: Phi merge -> Return
+    let expected = r#"{
+  "name": "conditional",
+  "operations": [
     {
-        assert!(ops[3].phis.len() == 1);
-        let phi = &ops[3].phis[0];
-        assert_eq!(phi.from, vec![(1, 2), (2, 3)]);
-        assert_eq!(phi.output, 4);
+      "literals": [ { "output": 0, "value": "10" } ],
+      "phis": [],
+      "call": {
+        "task_id": "is_positive",
+        "inputs": [0],
+        "outputs": [1]
+      },
+      "next": {
+        "Branch": { "var": 1, "true_next": 2, "false_next": 3 }
+      }
+    },
+    {
+      "literals": [],
+      "phis": [ { "output": 4, "from": [[2, 2], [3, 3]] } ],
+      "call": null,
+      "next": { "Return": { "var": 4 } }
+    },
+    {
+      "literals": [],
+      "phis": [],
+      "call": {
+        "task_id": "double",
+        "inputs": [0],
+        "outputs": [2]
+      },
+      "next": { "Jump": { "next": 1 } }
+    },
+    {
+      "literals": [],
+      "phis": [],
+      "call": {
+        "task_id": "identity",
+        "inputs": [0],
+        "outputs": [3]
+      },
+      "next": { "Jump": { "next": 1 } }
     }
-    assert!(matches!(ops[3].next, Next::Return { var: Some(4) }));
+  ]
+}"#;
 
-    println!("OPS LEN: {}", ops.len());
-    for (idx, op) in ops.iter().enumerate() {
-        println!(
-            "op {idx}: literals={} phis={} call={} next={:?}",
-            op.literals.len(),
-            op.phis.len(),
-            op.call.is_some(),
-            op.next
-        );
-        if let Some(call) = &op.call {
-            println!(
-                "    call task: {} inputs={:?} outputs={:?}",
-                call.task_id, call.inputs, call.outputs
-            );
-        }
-        for lit in &op.literals {
-            println!("    lit {} = {}", lit.output, lit.value);
-        }
-        for phi in &op.phis {
-            println!("    phi {} from {:?}", phi.output, phi.from);
-        }
-    }
+    let expected: Workflow = serde_json::from_str(expected).unwrap();
+    assert_eq!(serializable, expected);
 }
 
 #[test]
@@ -101,21 +83,45 @@ fn serializable_while_loop_workflow() {
 
     let graph = test_workflow();
     let serializable = graph.to_serializable("while_loop".to_string());
-    let ops = serializable.operations;
 
-    // Expect 4 or 5 operations depending on whether an empty exit placeholder is created.
-    assert!(ops.len() >= 4);
+    let expected = r#"{
+  "name": "while_loop",
+  "operations": [
+    {
+      "literals": [ { "output": 0, "value": "0" } ],
+      "phis": [],
+      "call": null,
+      "next": { "Jump": { "next": 1 } }
+    },
+    {
+      "literals": [ { "output": 2, "value": "3" } ],
+      "phis": [ { "output": 1, "from": [[0,0],[2,5]] } ],
+      "call": {
+        "task_id": "less_than",
+        "inputs": [1,2],
+        "outputs": [3]
+      },
+      "next": { "Branch": { "var": 3, "true_next": 2, "false_next": 3 } }
+    },
+    {
+      "literals": [ { "output": 4, "value": "1" } ],
+      "phis": [],
+      "call": {
+        "task_id": "add",
+        "inputs": [1,4],
+        "outputs": [5]
+      },
+      "next": { "Jump": { "next": 1 } }
+    },
+    {
+      "literals": [ { "output": 6, "value": "()" } ],
+      "phis": [],
+      "call": null,
+      "next": { "Return": { "var": 1 } }
+    }
+  ]
+}"#;
 
-    // Op0 Literal -> Jump 1
-    assert!(!ops[0].literals.is_empty());
-    assert!(matches!(ops[0].next, Next::Jump { next: 1 }));
-
-    // Find branch op (should be 1)
-    assert!(matches!(ops[1].next, Next::Branch { .. }));
-
-    // Op2 body Jump back
-    assert!(matches!(ops[2].next, Next::Jump { .. }));
-
-    // Op3 Return
-    assert!(matches!(ops.last().unwrap().next, Next::Return { .. }));
+    let expected: Workflow = serde_json::from_str(expected).unwrap();
+    assert_eq!(serializable, expected);
 }

@@ -123,22 +123,43 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __while_parent_predecessor_0 = __builder.current_block_id();
             ::namu::__macro_exports::jump(&__builder, __while_header_block_0);
             __builder.switch_to_block(__while_header_block_0);
-            let __a_phi_val_0 = ::namu::__macro_exports::phi(
-                &__builder,
-                ::alloc::vec::Vec::new(),
-            );
+            let __a_phi_val_0 = {
+                let __phi_id = __builder
+                    .phi(
+                        <[_]>::into_vec(
+                            ::alloc::boxed::box_new([
+                                (__while_parent_predecessor_0, __pre_while_a_0.id),
+                            ]),
+                        ),
+                    );
+                ::namu::__macro_exports::TracedValue::new(__phi_id)
+            };
             a = __a_phi_val_0;
             let __a_phi_node_id_0 = __builder.arena().nodes.len() - 1;
-            let __b_phi_val_0 = ::namu::__macro_exports::phi(
-                &__builder,
-                ::alloc::vec::Vec::new(),
-            );
+            let __b_phi_val_0 = {
+                let __phi_id = __builder
+                    .phi(
+                        <[_]>::into_vec(
+                            ::alloc::boxed::box_new([
+                                (__while_parent_predecessor_0, __pre_while_b_0.id),
+                            ]),
+                        ),
+                    );
+                ::namu::__macro_exports::TracedValue::new(__phi_id)
+            };
             b = __b_phi_val_0;
             let __b_phi_node_id_0 = __builder.arena().nodes.len() - 1;
-            let __i_phi_val_0 = ::namu::__macro_exports::phi(
-                &__builder,
-                ::alloc::vec::Vec::new(),
-            );
+            let __i_phi_val_0 = {
+                let __phi_id = __builder
+                    .phi(
+                        <[_]>::into_vec(
+                            ::alloc::boxed::box_new([
+                                (__while_parent_predecessor_0, __pre_while_i_0.id),
+                            ]),
+                        ),
+                    );
+                ::namu::__macro_exports::TracedValue::new(__phi_id)
+            };
             i = __i_phi_val_0;
             let __i_phi_node_id_0 = __builder.arena().nodes.len() - 1;
             let __while_cond = less_than(

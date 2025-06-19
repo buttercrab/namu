@@ -1306,6 +1306,7 @@ dependencies = [
  "namu-core",
  "namu-flow",
  "namu-macros",
+ "serde_json",
 ]
 
 [[package]]
