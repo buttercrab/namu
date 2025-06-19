@@ -113,7 +113,7 @@ pub fn if_with_task_in_condition_workflow() -> ::namu::__macro_exports::Graph<()
             let __if_then_block_0 = __builder.new_block();
             let __if_condition = is_positive(&__builder, x);
             let __if_parent_predecessor_0 = __builder.current_block_id();
-            ::namu::__macro_exports::seal_block_branch(
+            ::namu::__macro_exports::branch(
                 &__builder,
                 __if_condition,
                 __if_then_block_0,
@@ -124,10 +124,10 @@ pub fn if_with_task_in_condition_workflow() -> ::namu::__macro_exports::Graph<()
                 action_if_true(&__builder);
             };
             let __then_predecessor_id_0 = __builder.current_block_id();
-            ::namu::__macro_exports::seal_block_jump(&__builder, __if_merge_block_0);
+            ::namu::__macro_exports::jump(&__builder, __if_merge_block_0);
             __builder.switch_to_block(__if_merge_block_0);
         }
     };
-    ::namu::__macro_exports::seal_block_return_unit(&__builder);
+    ::namu::__macro_exports::return_unit(&__builder);
     __builder.build()
 }

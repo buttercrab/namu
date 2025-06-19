@@ -423,32 +423,15 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
 
     let input_ids = arg_names.iter().map(|name| quote! { #name.id });
 
-    let constructor_body = if is_tuple {
-        {
-            // Build extraction statements and identifiers
-            let mut extract_stmts = Vec::<TokenStream2>::new();
-            let mut ret_idents = Vec::<Ident>::new();
-            for (idx, _) in tuple_elems.iter().enumerate() {
-                let idx_lit = syn::Index::from(idx);
-                let el_ident = format_ident!("__el{}", idx);
-                extract_stmts.push(quote! {
-                    let #el_ident = ::namu::__macro_exports::extract(&builder, __tuple, #idx_lit);
-                });
-                ret_idents.push(el_ident);
-            }
-
-            let ret_tuple = quote! { ( #(#ret_idents),* ) };
-
-            quote! {
-                let __tuple = ::namu::__macro_exports::call(&builder, stringify!(#func_name), format!("{}::{}", stringify!(#func_name), file!()), vec![#(#input_ids),*]);
-                #(#extract_stmts)*
-                #ret_tuple
-            }
-        }
+    let call_fn_ident = if is_tuple {
+        let arity = tuple_elems.len();
+        format_ident!("call{}", arity)
     } else {
-        quote! {
-            ::namu::__macro_exports::call(&builder, stringify!(#func_name), format!("{}::{}", stringify!(#func_name), file!()), vec![#(#input_ids),*])
-        }
+        format_ident!("call")
+    };
+
+    let constructor_body = quote! {
+        ::namu::__macro_exports::#call_fn_ident(&builder, stringify!(#func_name), format!("{}::{}", stringify!(#func_name), file!()), vec![#(#input_ids),*])
     };
 
     quote! {

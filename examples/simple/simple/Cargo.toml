@@ -7,3 +7,4 @@ edition = "2024"
 namu = { path = "../../../" }
 add = { path = "../tasks/add" }
 is_less = { path = "../tasks/is_less" }
+serde_json = "1.0"

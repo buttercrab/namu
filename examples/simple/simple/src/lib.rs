@@ -3,7 +3,7 @@ use is_less::is_less;
 use namu::prelude::*;
 
 #[workflow]
-pub fn simple() {
+pub fn simple() -> i32 {
     let mut a = 0;
     let mut b = 1;
 

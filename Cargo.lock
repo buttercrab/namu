@@ -2117,6 +2117,7 @@ dependencies = [
  "add",
  "is_less",
  "namu",
+ "serde_json",
 ]
 
 [[package]]

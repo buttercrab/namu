@@ -231,80 +231,65 @@ fn execute_from_op<C>(
 
         let op = &workflow.operations[current_op_id];
 
-        // Handle operation based on its kind.
-        match &op.kind {
-            namu_core::ir::OpKind::Phi { from } => {
-                // Pick incoming value.
-                let chosen_val_id =
-                    if let Some(pred_op) = ctx_origin.get(&current_ctx_id).map(|e| *e) {
-                        from.iter()
-                            .find(|(pred, _)| *pred == pred_op)
-                            .map(|(_, v)| *v)
-                            .or_else(|| from.first().map(|(_, v)| *v))
-                            .unwrap()
-                    } else {
-                        from.first().map(|(_, v)| *v).unwrap()
-                    };
+        // 1. Process literals
+        for lit in &op.literals {
+            let lit_arc: Arc<dyn Any + Send + Sync> = if let Ok(i) = lit.value.parse::<i64>() {
+                Arc::new(i)
+            } else if let Ok(f) = lit.value.parse::<f64>() {
+                Arc::new(f)
+            } else if let Ok(b) = lit.value.parse::<bool>() {
+                Arc::new(b)
+            } else {
+                Arc::new(lit.value.clone())
+            };
 
-                let value = context_manager.get_value(current_ctx_id.clone(), chosen_val_id);
-                let out_id = op.outputs[0];
-                current_ctx_id = context_manager.add_value(current_ctx_id.clone(), out_id, value);
-            }
-            namu_core::ir::OpKind::Literal { value } => {
-                let lit_arc: Arc<dyn Any + Send + Sync> = if let Ok(i) = value.parse::<i64>() {
-                    Arc::new(i)
-                } else if let Ok(f) = value.parse::<f64>() {
-                    Arc::new(f)
-                } else if let Ok(b) = value.parse::<bool>() {
-                    Arc::new(b)
-                } else {
-                    Arc::new(value.clone())
-                };
+            current_ctx_id = context_manager.add_value(current_ctx_id.clone(), lit.output, lit_arc);
+        }
 
-                let out_id = op.outputs[0];
-                current_ctx_id = context_manager.add_value(current_ctx_id.clone(), out_id, lit_arc);
-            }
-            namu_core::ir::OpKind::Call { name, inputs } => {
-                // Gather input values.
-                let vals = context_manager.get_values(current_ctx_id.clone(), inputs);
+        // 2. Process phi nodes
+        for phi in &op.phis {
+            let chosen_val_id = if let Some(pred_op) = ctx_origin.get(&current_ctx_id).map(|e| *e) {
+                phi.from
+                    .iter()
+                    .find(|(pred, _)| *pred == pred_op)
+                    .map(|(_, v)| *v)
+                    .or_else(|| phi.from.first().map(|(_, v)| *v))
+                    .unwrap()
+            } else {
+                phi.from.first().map(|(_, v)| *v).unwrap()
+            };
 
-                let sender_opt = task_senders.lock().unwrap().get(name).cloned();
+            let value = context_manager.get_value(current_ctx_id.clone(), chosen_val_id);
+            current_ctx_id = context_manager.add_value(current_ctx_id.clone(), phi.output, value);
+        }
 
-                match sender_opt {
-                    Some(sender) => {
-                        let boxed_inputs: BoxedAnySend = Box::new(vals);
+        // 3. Optional call handling
+        if let Some(call) = &op.call {
+            // Gather input values.
+            let vals = context_manager.get_values(current_ctx_id.clone(), &call.inputs);
 
-                        let _ = ctx_origin.insert(current_ctx_id.clone(), current_op_id);
+            let sender_opt = task_senders.lock().unwrap().get(&call.task_id).cloned();
 
-                        if let Err(e) = sender.send((current_ctx_id.clone(), boxed_inputs)) {
-                            eprintln!("[engine] Failed to send inputs to task {}: {}", name, e);
-                        }
-                    }
-                    None => {
-                        eprintln!("[engine] No registered sender for task {}", name);
+            match sender_opt {
+                Some(sender) => {
+                    let boxed_inputs: BoxedAnySend = Box::new(vals);
+
+                    let _ = ctx_origin.insert(current_ctx_id.clone(), current_op_id);
+
+                    if let Err(e) = sender.send((current_ctx_id.clone(), boxed_inputs)) {
+                        eprintln!(
+                            "[engine] Failed to send inputs to task {}: {}",
+                            call.task_id, e
+                        );
                     }
                 }
+                None => {
+                    eprintln!("[engine] No registered sender for task {}", call.task_id);
+                }
+            }
 
-                // Stop execution until task completes.
-                break;
-            }
-            namu_core::ir::OpKind::Extract { tuple, index } => {
-                let tuple_any = context_manager.get_value(current_ctx_id.clone(), *tuple);
-                // Attempt to downcast to tuple of up to 8 items via macro? we only support 2 elements for now.
-                let element: Arc<dyn Any + Send + Sync> = if let Some(t2) = tuple_any
-                    .downcast_ref::<(Arc<dyn Any + Send + Sync>, Arc<dyn Any + Send + Sync>)>()
-                {
-                    if *index == 0 {
-                        t2.0.clone()
-                    } else {
-                        t2.1.clone()
-                    }
-                } else {
-                    Arc::new(())
-                };
-                let out_id = op.outputs[0];
-                current_ctx_id = context_manager.add_value(current_ctx_id.clone(), out_id, element);
-            }
+            // Call suspends execution until task completes.
+            break;
         }
 
         // Follow control-flow terminator for non-Call operations.

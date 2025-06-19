@@ -112,6 +112,6 @@ pub fn chained_tasks_workflow() -> ::namu::__macro_exports::Graph<i32> {
         let added = add_one(&__builder, initial);
         multiply_by_two(&__builder, added)
     };
-    ::namu::__macro_exports::seal_block_return_value(&__builder, __result);
+    ::namu::__macro_exports::return_value(&__builder, __result);
     __builder.build()
 }

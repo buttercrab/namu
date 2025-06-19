@@ -220,21 +220,20 @@ pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __while_body_block_0 = __builder.new_block();
             let __while_exit_block_0 = __builder.new_block();
             let __while_parent_predecessor_0 = __builder.current_block_id();
-            ::namu::__macro_exports::seal_block_jump(&__builder, __while_header_block_0);
+            ::namu::__macro_exports::jump(&__builder, __while_header_block_0);
             __builder.switch_to_block(__while_header_block_0);
-            let __i_phi_node_id_0 = __builder
-                .arena_mut()
-                .new_node(::namu::__macro_exports::NodeKind::Phi {
-                    from: ::alloc::vec::Vec::new(),
-                });
-            i = ::namu::__macro_exports::TracedValue::new(__i_phi_node_id_0);
-            __builder.add_instruction_to_current_block(__i_phi_node_id_0);
+            let __i_phi_val_0 = ::namu::__macro_exports::phi(
+                &__builder,
+                ::alloc::vec::Vec::new(),
+            );
+            i = __i_phi_val_0;
+            let __i_phi_node_id_0 = __builder.arena().nodes.len() - 1;
             let __while_cond = less_than(
                 &__builder,
                 i,
                 ::namu::__macro_exports::literal(&__builder, 10),
             );
-            ::namu::__macro_exports::seal_block_branch(
+            ::namu::__macro_exports::branch(
                 &__builder,
                 __while_cond,
                 __while_body_block_0,
@@ -249,7 +248,7 @@ pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
                     let __if_else_block_1 = __builder.new_block();
                     let __if_condition = is_even(&__builder, i);
                     let __if_parent_predecessor_1 = __builder.current_block_id();
-                    ::namu::__macro_exports::seal_block_branch(
+                    ::namu::__macro_exports::branch(
                         &__builder,
                         __if_condition,
                         __if_then_block_1,
@@ -261,10 +260,7 @@ pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
                     };
                     let __post_then_i_1 = i;
                     let __then_predecessor_id_1 = __builder.current_block_id();
-                    ::namu::__macro_exports::seal_block_jump(
-                        &__builder,
-                        __if_merge_block_1,
-                    );
+                    ::namu::__macro_exports::jump(&__builder, __if_merge_block_1);
                     __builder.switch_to_block(__if_else_block_1);
                     let __else_val = {
                         i = __pre_if_i_1;
@@ -274,10 +270,7 @@ pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
                     };
                     let __post_else_i_1 = i;
                     let __else_predecessor_id_1 = __builder.current_block_id();
-                    ::namu::__macro_exports::seal_block_jump(
-                        &__builder,
-                        __if_merge_block_1,
-                    );
+                    ::namu::__macro_exports::jump(&__builder, __if_merge_block_1);
                     __builder.switch_to_block(__if_merge_block_1);
                     i = ::namu::__macro_exports::phi(
                         &__builder,
@@ -292,7 +285,7 @@ pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
             };
             let __post_body_i_0 = i;
             let __body_predecessor_id_0 = __builder.current_block_id();
-            ::namu::__macro_exports::seal_block_jump(&__builder, __while_header_block_0);
+            ::namu::__macro_exports::jump(&__builder, __while_header_block_0);
             if let Some(
                 ::namu::__macro_exports::Node {
                     kind: ::namu::__macro_exports::NodeKind::Phi { from },
@@ -312,6 +305,6 @@ pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
         }
         i
     };
-    ::namu::__macro_exports::seal_block_return_value(&__builder, __result);
+    ::namu::__macro_exports::return_value(&__builder, __result);
     __builder.build()
 }

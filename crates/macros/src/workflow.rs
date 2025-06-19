@@ -107,52 +107,46 @@ impl VisitMut for WorkflowVisitor {
     fn visit_stmt_mut(&mut self, i: &mut Stmt) {
         match i {
             Stmt::Local(local) => {
-                let Pat::Ident(pat_ident) = &local.pat else {
-                    // Support tuple destructuring let (a, b) = expr;
-                    if let Pat::Tuple(pat_tuple) = &local.pat {
-                        let elems = &pat_tuple.elems;
-                        if !elems.is_empty() && local.init.is_some() {
-                            let expr = &local.init.as_ref().unwrap().expr;
-
-                            let tmp_ident =
-                                format_ident!("__tuple_tmp_{}", self.new_control_flow_id());
-                            let builder_ident = &self.builder_ident;
-
-                            // Generate extraction statements for each element
-                            let mut extraction_stmts = Vec::<Stmt>::new();
-                            for (idx, pat_elem) in elems.iter().enumerate() {
-                                let idx_lit = syn::Index::from(idx);
-                                let stmt: Stmt = parse_quote! {
-                                    let #pat_elem = ::namu::__macro_exports::extract(&#builder_ident, #tmp_ident, #idx_lit);
-                                };
-                                extraction_stmts.push(stmt);
+                match &mut local.pat {
+                    Pat::Ident(pat_ident) => {
+                        if let Some(init) = &mut local.init {
+                            let is_mut = pat_ident.mutability.is_some();
+                            self.visit_expr_mut(&mut init.expr);
+                            if is_mut {
+                                self.insert_var(pat_ident.ident.clone());
                             }
-
-                            let new_block: Stmt = parse_quote! {
-                                {
-                                    let #tmp_ident = { #expr };
-                                    #(#extraction_stmts)*
-                                }
-                            };
-
-                            *i = new_block;
-                            self.last_expr_has_value = false;
-                            return;
                         } else {
+                            abort!(local, "let bindings must be initialized");
+                        }
+                    }
+                    Pat::Tuple(pat_tuple) => {
+                        if pat_tuple.elems.is_empty() {
                             abort!(local, "Tuple destructuring requires at least one element");
                         }
-                    } else {
-                        abort!(local, "only simple idents are supported in let bindings");
+                        if let Some(init) = &mut local.init {
+                            self.visit_expr_mut(&mut init.expr);
+                        } else {
+                            abort!(local, "Tuple destructuring requires initializer");
+                        }
+
+                        // Track mut variables inside tuple pattern
+                        for elem in pat_tuple.elems.iter() {
+                            if let Pat::Ident(pat_ident) = elem {
+                                if pat_ident.mutability.is_some() {
+                                    self.insert_var(pat_ident.ident.clone());
+                                }
+                            } else {
+                                abort!(
+                                    elem,
+                                    "Only simple idents are supported in tuple destructuring"
+                                );
+                            }
+                        }
                     }
-                };
-                if let Some(init) = &mut local.init {
-                    let is_mut = pat_ident.mutability.is_some();
-                    self.visit_expr_mut(&mut init.expr);
-                    if is_mut {
-                        self.insert_var(pat_ident.ident.clone());
-                    }
-                } else {
-                    abort!(local, "let bindings must be initialized");
+                    _ => abort!(
+                        local,
+                        "only simple idents or tuple patterns are supported in let bindings"
+                    ),
                 }
 
                 self.last_expr_has_value = false;
@@ -239,7 +233,7 @@ impl WorkflowVisitor {
                     };
                     #(#else_post_captures)*
                     let #else_predecessor_id = #builder.current_block_id();
-                    ::namu::__macro_exports::seal_block_jump(&#builder, #merge_block_id);
+                    ::namu::__macro_exports::jump(&#builder, #merge_block_id);
                 };
 
                 let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
@@ -292,13 +286,13 @@ impl WorkflowVisitor {
 
                 let __if_condition = #cond;
                 let #parent_predecessor_id = #builder.current_block_id();
-                ::namu::__macro_exports::seal_block_branch(&#builder, __if_condition, #then_block_id, #false_target);
+                ::namu::__macro_exports::branch(&#builder, __if_condition, #then_block_id, #false_target);
 
                 #builder.switch_to_block(#then_block_id);
                 let __then_val = #then_branch_body;
                 #(#then_post_captures)*
                 let #then_predecessor_id = #builder.current_block_id();
-                ::namu::__macro_exports::seal_block_jump(&#builder, #merge_block_id);
+                ::namu::__macro_exports::jump(&#builder, #merge_block_id);
 
                 #else_block_impl
 
@@ -327,10 +321,15 @@ impl WorkflowVisitor {
 
         let phi_node_creations = vars.iter().map(|name| {
             let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, id);
+            let phi_val_ident = format_ident!("__{}_phi_val_{}", name, id);
+            let pre_while_name = format_ident!("__pre_while_{}_{}", name, id);
             quote! {
-                let #phi_node_id = #builder.arena_mut().new_node(::namu::__macro_exports::NodeKind::Phi { from: vec![] });
-                #name = ::namu::__macro_exports::TracedValue::new(#phi_node_id);
-                #builder.add_instruction_to_current_block(#phi_node_id);
+                let #phi_val_ident = {
+                    let __phi_id = #builder.phi(vec![(#parent_predecessor_id, #pre_while_name.id)]);
+                    ::namu::__macro_exports::TracedValue::new(__phi_id)
+                };
+                #name = #phi_val_ident;
+                let #phi_node_id = #builder.arena().nodes.len() - 1;
             }
         });
 
@@ -379,18 +378,18 @@ impl WorkflowVisitor {
                 let #exit_block_id = #builder.new_block();
 
                 let #parent_predecessor_id = #builder.current_block_id();
-                ::namu::__macro_exports::seal_block_jump(&#builder, #header_block_id);
+                ::namu::__macro_exports::jump(&#builder, #header_block_id);
 
                 #builder.switch_to_block(#header_block_id);
                 #(#phi_node_creations)*
                 let __while_cond = #cond;
-                ::namu::__macro_exports::seal_block_branch(&#builder, __while_cond, #body_block_id, #exit_block_id);
+                ::namu::__macro_exports::branch(&#builder, __while_cond, #body_block_id, #exit_block_id);
 
                 #builder.switch_to_block(#body_block_id);
                 #body_block;
                 #(#post_body_captures)*
                 let #body_predecessor_id = #builder.current_block_id();
-                ::namu::__macro_exports::seal_block_jump(&#builder, #header_block_id);
+                ::namu::__macro_exports::jump(&#builder, #header_block_id);
 
                 #phi_patchers
 
@@ -420,12 +419,12 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let body_and_seal = if visitor.last_expr_has_value {
         quote! {
             let __result = #func_body;
-            ::namu::__macro_exports::seal_block_return_value(&#builder_ident, __result);
+            ::namu::__macro_exports::return_value(&#builder_ident, __result);
         }
     } else {
         quote! {
             #func_body;
-            ::namu::__macro_exports::seal_block_return_unit(&#builder_ident);
+            ::namu::__macro_exports::return_unit(&#builder_ident);
         }
     };
 

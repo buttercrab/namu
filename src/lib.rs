@@ -8,8 +8,9 @@ pub mod __macro_exports {
     pub use anyhow::Result;
     pub use namu_core::{BatchedTask, SingleTask, StreamTask, Task, TaskContext};
     pub use namu_flow::{
-        Builder, Graph, Node, NodeKind, Terminator, TracedValue, call, extract, literal, phi,
-        seal_block_branch, seal_block_jump, seal_block_return_unit, seal_block_return_value,
+        Builder, Graph, Node, NodeKind, Terminator, TracedValue, branch, call, call0, call1, call2,
+        call3, call4, call5, call6, call7, call8, call9, jump, literal, phi, return_unit,
+        return_value,
     };
 }
 

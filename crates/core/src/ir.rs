@@ -9,34 +9,59 @@ pub struct Workflow {
     pub operations: Vec<Operation>,
 }
 
-// --- New SSA-friendly IR ----------------------------------------------------
+impl Workflow {
+    pub fn new(name: String, operations: Vec<Operation>) -> Self {
+        Self { name, operations }
+    }
+}
+
+// --- New grouped IR representation -----------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum OpKind {
-    /// Compile-time literal constant – produces exactly one value
-    Literal { value: String },
+pub struct Literal {
+    pub output: ValueId,
+    pub value: String,
+}
 
-    /// Call to a user-defined task.  `inputs` are ValueIds; the call may
-    /// produce *one or more* SSA results.
-    Call { name: String, inputs: Vec<ValueId> },
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Phi {
+    pub output: ValueId,
+    /// Pairs of (predecessor Operation id, ValueId coming from that op)
+    pub from: Vec<(OpId, ValueId)>,
+}
 
-    /// Static single-assignment phi node.
-    Phi { from: Vec<(OpId, ValueId)> },
-
-    /// Extract an element from a tuple value produced earlier.
-    Extract { tuple: ValueId, index: usize },
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Call {
+    pub task_id: String,
+    pub inputs: Vec<ValueId>,
+    pub outputs: Vec<ValueId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Operation {
-    /// Operation kind (opcode + attached data)
-    pub kind: OpKind,
+    /// Zero or more literal constants produced *before* any phi or call.
+    pub literals: Vec<Literal>,
 
-    /// SSA value ids produced by this operation (len ≥ 1)
-    pub outputs: Vec<ValueId>,
+    /// Zero or more phi nodes evaluated after literals and before call.
+    pub phis: Vec<Phi>,
 
-    /// Control-flow successor
+    /// Optional task invocation.  When `None`, this operation represents a
+    /// basic-block that ends with only literals/phis.
+    pub call: Option<Call>,
+
+    /// Control-flow successor metadata.
     pub next: Next,
+}
+
+impl Operation {
+    pub fn new(literals: Vec<Literal>, phis: Vec<Phi>, call: Option<Call>, next: Next) -> Self {
+        Self {
+            literals,
+            phis,
+            call,
+            next,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -54,4 +79,26 @@ pub enum Next {
     Return {
         var: Option<ValueId>,
     },
+}
+
+impl Next {
+    pub fn jump(next: OpId) -> Self {
+        Self::Jump { next }
+    }
+
+    pub fn branch(var: ValueId, true_next: OpId, false_next: OpId) -> Self {
+        Self::Branch {
+            var,
+            true_next,
+            false_next,
+        }
+    }
+
+    pub fn return_value(var: ValueId) -> Self {
+        Self::Return { var: Some(var) }
+    }
+
+    pub fn return_unit() -> Self {
+        Self::Return { var: None }
+    }
 }

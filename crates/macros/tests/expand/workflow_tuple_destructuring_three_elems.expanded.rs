@@ -40,7 +40,7 @@ pub fn triple<G: 'static>(
     ::namu::__macro_exports::TracedValue<bool>,
     ::namu::__macro_exports::TracedValue<String>,
 ) {
-    let __tuple = ::namu::__macro_exports::call(
+    ::namu::__macro_exports::call3(
         &builder,
         "triple",
         ::alloc::__export::must_use({
@@ -53,9 +53,5 @@ pub fn triple<G: 'static>(
             res
         }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    );
-    let __el0 = ::namu::__macro_exports::extract(&builder, __tuple, 0);
-    let __el1 = ::namu::__macro_exports::extract(&builder, __tuple, 1);
-    let __el2 = ::namu::__macro_exports::extract(&builder, __tuple, 2);
-    (__el0, __el1, __el2)
+    )
 }
