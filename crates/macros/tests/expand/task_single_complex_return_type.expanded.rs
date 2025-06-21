@@ -8,7 +8,18 @@ fn __impl_complex_return_task(a: i32) -> anyhow::Result<MyComplexType> {
     })
 }
 #[allow(non_camel_case_types)]
-struct __complex_return_task;
+pub struct __complex_return_task;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __complex_return_task {
+    #[inline]
+    fn clone(&self) -> __complex_return_task {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __complex_return_task {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __complex_return_task
 where
     Id: Clone,
@@ -16,6 +27,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -48,7 +64,7 @@ pub fn complex_return_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "complex_return_task",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/task_single_complex_return_type.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_complex_return_type.rs",
                 ),
             );
             res

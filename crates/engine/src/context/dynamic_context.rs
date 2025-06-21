@@ -33,11 +33,28 @@ impl DynamicContextManager {
     }
 
     fn new_node(&self, parent: Option<usize>, val_id: ValueId, value: Value) -> usize {
-        let order = parent.map_or(0, |parent_id| {
-            self.node_state
-                .update(&parent_id, |_, (_, children)| *children + 1)
-                .unwrap()
-        });
+        let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
+
+        // Increment the parent's `children_count` *if* the parent is still alive.
+        // It is possible that the parent was concurrently cleaned-up by another
+        // thread between the time it was used and this call. In that scenario
+        // simply skip the update – the parent node has already been reclaimed
+        // and thus will not observe new children.
+        if let Some(parent_id) = parent {
+            // We intentionally ignore the return value here because the parent
+            // entry may have been removed by a concurrent `remove_context`
+            // sweep. Failing to find the parent is not fatal for correctness –
+            // the only consequence is that the eventual clean-up of the parent
+            // will not wait for this (already reclaimed) child.
+            let _ = self.node_state.update(&parent_id, |_, (_, children)| {
+                *children += 1;
+            });
+        }
+
+        // Use the monotonically increasing `id` as the ordering key among
+        // siblings. This is simpler than maintaining a separate per-parent
+        // counter and is immune to concurrent removals.
+        let order = id;
 
         let (depth, ancestors, segment_tree) = if let Some(parent_id) = parent {
             let guard = Guard::new();
@@ -72,7 +89,8 @@ impl DynamicContextManager {
             value,
             segment_tree,
         };
-        let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: the `id` is unique across the lifetime of the process
+        // because it comes from a single atomic counter.
         self.nodes.insert(id, node).unwrap();
         self.node_state.insert(id, (true, 0)).unwrap();
         id
@@ -210,7 +228,7 @@ impl ContextManager for DynamicContextManager {
             if let Some(vals_at_this_depth) = depths_to_visit.get(&depth) {
                 // The current node's val_id *should* be one of the ones we're looking for.
                 if vals_at_this_depth.contains(&current_node.val_id) {
-                    found_vals.insert(current_node.val_id, current_node.value.clone());
+                    found_vals.insert(current_node.val_id, &current_node.value);
                 }
             }
         }
@@ -218,7 +236,7 @@ impl ContextManager for DynamicContextManager {
         // Step 5: Format output to match original order.
         val_ids
             .iter()
-            .map(|val_id| found_vals.get(val_id).unwrap().clone())
+            .map(|val_id| (*found_vals.get(val_id).unwrap()).clone())
             .collect()
     }
 

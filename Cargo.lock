@@ -2144,6 +2144,8 @@ dependencies = [
  "add",
  "is_less",
  "namu",
+ "namu-core",
+ "namu-engine",
  "serde_json",
 ]
 

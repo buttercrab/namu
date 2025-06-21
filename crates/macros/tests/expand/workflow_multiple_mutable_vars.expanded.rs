@@ -3,7 +3,18 @@ fn __impl_less_than(a: i32, b: i32) -> anyhow::Result<bool> {
     Ok(a < b)
 }
 #[allow(non_camel_case_types)]
-struct __less_than;
+pub struct __less_than;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __less_than {
+    #[inline]
+    fn clone(&self) -> __less_than {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __less_than {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __less_than
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -44,7 +60,7 @@ pub fn less_than<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "less_than",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
                 ),
             );
             res
@@ -56,7 +72,18 @@ fn __impl_add(a: i32, b: i32) -> anyhow::Result<i32> {
     Ok(a + b)
 }
 #[allow(non_camel_case_types)]
-struct __add;
+pub struct __add;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __add {
+    #[inline]
+    fn clone(&self) -> __add {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __add {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __add
 where
     Id: Clone,
@@ -64,6 +91,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -97,7 +129,7 @@ pub fn add<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_multiple_mutable_vars.rs",
                 ),
             );
             res

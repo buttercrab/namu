@@ -3,7 +3,18 @@ fn __impl_add_one(a: i32) -> anyhow::Result<i32> {
     Ok(a + 1)
 }
 #[allow(non_camel_case_types)]
-struct __add_one;
+pub struct __add_one;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __add_one {
+    #[inline]
+    fn clone(&self) -> __add_one {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __add_one {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __add_one
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -43,7 +59,7 @@ pub fn add_one<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_one",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
                 ),
             );
             res
@@ -55,7 +71,18 @@ fn __impl_multiply_by_two(a: i32) -> anyhow::Result<i32> {
     Ok(a * 2)
 }
 #[allow(non_camel_case_types)]
-struct __multiply_by_two;
+pub struct __multiply_by_two;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __multiply_by_two {
+    #[inline]
+    fn clone(&self) -> __multiply_by_two {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __multiply_by_two {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __multiply_by_two
 where
     Id: Clone,
@@ -63,6 +90,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -95,7 +127,7 @@ pub fn multiply_by_two<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "multiply_by_two",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
                 ),
             );
             res

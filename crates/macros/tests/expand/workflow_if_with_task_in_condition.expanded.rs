@@ -3,7 +3,18 @@ fn __impl_is_positive(a: i32) -> anyhow::Result<bool> {
     Ok(a > 0)
 }
 #[allow(non_camel_case_types)]
-struct __is_positive;
+pub struct __is_positive;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __is_positive {
+    #[inline]
+    fn clone(&self) -> __is_positive {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __is_positive {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __is_positive
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -43,7 +59,7 @@ pub fn is_positive<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "is_positive",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
                 ),
             );
             res
@@ -55,7 +71,18 @@ fn __impl_action_if_true() -> anyhow::Result<()> {
     Ok(())
 }
 #[allow(non_camel_case_types)]
-struct __action_if_true;
+pub struct __action_if_true;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __action_if_true {
+    #[inline]
+    fn clone(&self) -> __action_if_true {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __action_if_true {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __action_if_true
 where
     Id: Clone,
@@ -63,6 +90,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -94,7 +126,7 @@ pub fn action_if_true<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "action_if_true",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
                 ),
             );
             res

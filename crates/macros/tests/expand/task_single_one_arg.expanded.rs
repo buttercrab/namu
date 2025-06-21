@@ -3,7 +3,18 @@ fn __impl_single_arg_task(a: i32) -> anyhow::Result<i32> {
     Ok(a)
 }
 #[allow(non_camel_case_types)]
-struct __single_arg_task;
+pub struct __single_arg_task;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __single_arg_task {
+    #[inline]
+    fn clone(&self) -> __single_arg_task {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __single_arg_task {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __single_arg_task
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -43,7 +59,7 @@ pub fn single_arg_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "single_arg_task",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/task_single_one_arg.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_one_arg.rs",
                 ),
             );
             res

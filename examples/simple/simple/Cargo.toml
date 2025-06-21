@@ -8,3 +8,5 @@ namu = { path = "../../../" }
 add = { path = "../tasks/add" }
 is_less = { path = "../tasks/is_less" }
 serde_json = "1.0"
+namu-engine = { path = "../../../crates/engine" }
+namu-core = { path = "../../../crates/core" }

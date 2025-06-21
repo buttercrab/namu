@@ -3,7 +3,18 @@ fn __impl_less_than(a: i32, b: i32) -> anyhow::Result<bool> {
     Ok(a < b)
 }
 #[allow(non_camel_case_types)]
-struct __less_than;
+pub struct __less_than;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __less_than {
+    #[inline]
+    fn clone(&self) -> __less_than {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __less_than {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __less_than
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -44,7 +60,7 @@ pub fn less_than<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "less_than",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                 ),
             );
             res
@@ -56,7 +72,18 @@ fn __impl_is_even(a: i32) -> anyhow::Result<bool> {
     Ok(a % 2 == 0)
 }
 #[allow(non_camel_case_types)]
-struct __is_even;
+pub struct __is_even;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __is_even {
+    #[inline]
+    fn clone(&self) -> __is_even {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __is_even {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __is_even
 where
     Id: Clone,
@@ -64,6 +91,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -96,7 +128,7 @@ pub fn is_even<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "is_even",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                 ),
             );
             res
@@ -108,7 +140,18 @@ fn __impl_add_one(a: i32) -> anyhow::Result<i32> {
     Ok(a + 1)
 }
 #[allow(non_camel_case_types)]
-struct __add_one;
+pub struct __add_one;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __add_one {
+    #[inline]
+    fn clone(&self) -> __add_one {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __add_one {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __add_one
 where
     Id: Clone,
@@ -116,6 +159,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -148,7 +196,7 @@ pub fn add_one<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_one",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                 ),
             );
             res
@@ -160,7 +208,18 @@ fn __impl_add_two(a: i32) -> anyhow::Result<i32> {
     Ok(a + 2)
 }
 #[allow(non_camel_case_types)]
-struct __add_two;
+pub struct __add_two;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __add_two {
+    #[inline]
+    fn clone(&self) -> __add_two {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __add_two {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __add_two
 where
     Id: Clone,
@@ -168,6 +227,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -200,7 +264,7 @@ pub fn add_two<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "add_two",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_nested_if_in_while.rs",
                 ),
             );
             res

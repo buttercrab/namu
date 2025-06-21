@@ -192,7 +192,7 @@ fn generate_common_task_prelude(struct_name: &Ident, specialization_trait: &Iden
     quote! {
         #[allow(non_camel_case_types)]
         #[derive(Clone, Copy)]
-        struct #struct_name;
+        pub struct #struct_name;
 
         impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
         where
@@ -201,7 +201,7 @@ fn generate_common_task_prelude(struct_name: &Ident, specialization_trait: &Iden
         {
             fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
 
-            fn clone_box(&self) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+            fn clone_boxed(&self) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
                 Box::new(*self)
             }
 

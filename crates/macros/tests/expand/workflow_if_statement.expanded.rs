@@ -3,7 +3,18 @@ fn __impl_do_nothing(a: i32) -> anyhow::Result<i32> {
     Ok(a)
 }
 #[allow(non_camel_case_types)]
-struct __do_nothing;
+pub struct __do_nothing;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __do_nothing {
+    #[inline]
+    fn clone(&self) -> __do_nothing {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __do_nothing {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __do_nothing
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -43,7 +59,7 @@ pub fn do_nothing<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "do_nothing",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_if_statement.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_statement.rs",
                 ),
             );
             res

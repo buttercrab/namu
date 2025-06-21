@@ -3,7 +3,18 @@ fn __impl_batch_task(inputs: Vec<i32>) -> Vec<anyhow::Result<i32>> {
     inputs.into_iter().map(|i| Ok(i * 2)).collect()
 }
 #[allow(non_camel_case_types)]
-struct __batch_task;
+pub struct __batch_task;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __batch_task {
+    #[inline]
+    fn clone(&self) -> __batch_task {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __batch_task {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __batch_task
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::BatchedTask::run(self, context)
@@ -45,7 +61,7 @@ pub fn batch_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "batch_task",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/task_batch.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_batch.rs",
                 ),
             );
             res

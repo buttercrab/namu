@@ -5,7 +5,18 @@ fn __impl_stream_task(
     Ok((0..input).map(Ok))
 }
 #[allow(non_camel_case_types)]
-struct __stream_task;
+pub struct __stream_task;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __stream_task {
+    #[inline]
+    fn clone(&self) -> __stream_task {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __stream_task {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __stream_task
 where
     Id: Clone,
@@ -13,6 +24,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::StreamTask::run(self, context)
@@ -45,7 +61,7 @@ pub fn stream_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "stream_task",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/task_stream.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_stream.rs",
                 ),
             );
             res

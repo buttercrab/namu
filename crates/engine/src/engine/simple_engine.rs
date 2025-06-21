@@ -5,7 +5,8 @@ use std::thread;
 
 use anyhow::Result;
 use itertools::Itertools;
-use kanal::{Receiver, Sender, unbounded};
+use kanal::Sender as OneShotSender;
+use kanal::{Receiver, Sender, bounded, unbounded};
 use namu_core::ir::{Next, Workflow};
 use namu_core::{DynamicTaskContext, Value, ValueId};
 use scc::HashIndex;
@@ -13,6 +14,32 @@ use scc::ebr::Guard;
 
 use crate::context::ContextManager;
 use crate::engine::{Engine, PackFn, TaskImpl, UnpackFn};
+
+struct RunContext<'a, C: ContextManager> {
+    context_manager: &'a C,
+    workflow: &'a Workflow,
+    ctx_origin: &'a HashIndex<C::ContextId, usize>,
+    result_tx: &'a Sender<Value>,
+    active_ctxs: &'a AtomicUsize,
+    finish_tx: &'a OneShotSender<()>,
+    task_senders: &'a HashIndex<String, Sender<(C::ContextId, Value)>>,
+    pack_map: &'a HashIndex<String, PackFn>,
+}
+
+impl<'a, C: ContextManager> Clone for RunContext<'a, C> {
+    fn clone(&self) -> Self {
+        RunContext {
+            context_manager: self.context_manager,
+            workflow: self.workflow,
+            ctx_origin: self.ctx_origin,
+            result_tx: self.result_tx,
+            active_ctxs: self.active_ctxs,
+            finish_tx: self.finish_tx,
+            task_senders: self.task_senders,
+            pack_map: self.pack_map,
+        }
+    }
+}
 
 pub struct SimpleEngineInner<C: ContextManager> {
     context_manager: C,
@@ -24,6 +51,7 @@ pub struct SimpleEngineInner<C: ContextManager> {
     pack_map: HashIndex<String, PackFn>,
     unpack_map: HashIndex<String, UnpackFn>,
     run_results: HashIndex<usize, Receiver<Value>>,
+    run_result_senders: HashIndex<usize, Sender<Value>>,
 }
 
 pub struct SimpleEngine<C: ContextManager> {
@@ -43,6 +71,7 @@ impl<C: ContextManager + Send + Sync + 'static> SimpleEngine<C> {
                 pack_map: HashIndex::new(),
                 unpack_map: HashIndex::new(),
                 run_results: HashIndex::new(),
+                run_result_senders: HashIndex::new(),
             }),
         }
     }
@@ -69,6 +98,11 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
             self.inner.runs.remove(&id);
         }
         self.inner.runs.insert(id, workflow_id).unwrap();
+
+        // Pre-create result channel so `get_result` can be called before `run` starts.
+        let (result_tx, result_rx) = unbounded();
+        self.inner.run_results.insert(id, result_rx).unwrap();
+        self.inner.run_result_senders.insert(id, result_tx).unwrap();
         id
     }
 
@@ -81,32 +115,47 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
             .peek(&workflow_id, &guard)
             .cloned()
             .unwrap();
+        let result_tx = self
+            .inner
+            .run_result_senders
+            .peek(&run_id, &guard)
+            .expect("result sender not found")
+            .clone();
         drop(guard);
 
-        let task_senders = Arc::new(HashIndex::new());
+        let task_senders = HashIndex::new();
         let ctx_origin: HashIndex<C::ContextId, usize> = HashIndex::new();
-        let (result_tx, result_rx) = unbounded::<Value>();
-        self.inner.run_results.insert(run_id, result_rx).unwrap();
-        let ctx_origin_ref = &ctx_origin;
-        let workflow_ref = &workflow;
-        let result_tx_ref = &result_tx;
+
+        // Finish signalling primitives (one-shot)
+        let (finish_tx, finish_rx) = bounded::<()>(1);
+        let active_ctxs = AtomicUsize::new(0);
 
         thread::scope(|s| {
-            workflow_ref
+            let run_ctx = RunContext {
+                context_manager: &self.inner.context_manager,
+                workflow: &workflow,
+                ctx_origin: &ctx_origin,
+                result_tx: &result_tx,
+                active_ctxs: &active_ctxs,
+                finish_tx: &finish_tx,
+                task_senders: &task_senders,
+                pack_map: &self.inner.pack_map,
+            };
+
+            workflow
                 .operations
                 .iter()
-                .map(|op| op.call.as_ref().unwrap().task_id.clone())
+                .filter_map(|op| op.call.as_ref().map(|call| call.task_id.clone()))
                 .unique()
                 .collect_vec()
                 .into_iter()
                 .for_each(|task_name| {
-                    let task_senders = Arc::clone(&task_senders);
-
                     let (in_tx, in_rx) = unbounded::<(C::ContextId, Value)>();
                     let (out_tx, out_rx) = unbounded::<(C::ContextId, Result<Value>)>();
 
-                    task_senders
-                        .insert(task_name.clone(), in_tx.clone())
+                    run_ctx
+                        .task_senders
+                        .insert(task_name.clone(), in_tx)
                         .unwrap();
 
                     let guard = Guard::new();
@@ -125,16 +174,21 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
                         }
                     });
 
+                    let run_ctx = run_ctx.clone();
                     s.spawn(move || {
                         while let Ok((ctx_id, out_box)) = out_rx.recv() {
                             match out_box {
                                 Ok(res) => {
                                     let guard = Guard::new();
                                     let origin_op_id =
-                                        *ctx_origin_ref.peek(&ctx_id, &guard).unwrap();
-                                    let operation = &workflow_ref.operations[origin_op_id];
+                                        *run_ctx.ctx_origin.peek(&ctx_id, &guard).unwrap();
+                                    drop(guard);
+
+                                    let operation = &run_ctx.workflow.operations[origin_op_id];
                                     let call =
                                         operation.call.as_ref().expect("origin should be call");
+
+                                    let guard = Guard::new();
                                     let unpack_fn =
                                         self.inner.unpack_map.peek(&call.task_id, &guard).cloned();
                                     drop(guard);
@@ -142,42 +196,38 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
                                     let ctx_id = if let Some(unpack_fn) = unpack_fn {
                                         let out_vals = (unpack_fn)(res);
                                         add_values(
-                                            &self.inner.context_manager,
+                                            &run_ctx,
                                             ctx_id,
                                             call.outputs.iter().copied().zip(out_vals).collect(),
                                         )
                                     } else {
-                                        self.inner.context_manager.add_value(
+                                        let new_id = self.inner.context_manager.add_value(
                                             ctx_id,
                                             call.outputs[0],
                                             res,
-                                        )
+                                        );
+                                        run_ctx.active_ctxs.fetch_add(1, Ordering::Release);
+                                        new_id
                                     };
 
-                                    if let Some(next_op_id) = next_op_id(
-                                        &operation.next,
-                                        ctx_id.clone(),
-                                        &self.inner.context_manager,
-                                        result_tx_ref,
-                                    ) {
+                                    if let Some(next_op_id) =
+                                        next_op_id(&run_ctx, &operation.next, ctx_id.clone())
+                                    {
                                         drive_until_call(
-                                            &self.inner.context_manager,
-                                            workflow_ref,
+                                            &run_ctx,
                                             next_op_id,
                                             Some(origin_op_id),
                                             ctx_id.clone(),
-                                            &*task_senders,
-                                            &self.inner.pack_map,
-                                            ctx_origin_ref,
-                                            result_tx_ref,
                                         );
                                     }
                                 }
                                 Err(err) => {
                                     if !err.is::<namu_core::TaskEnd>() {
                                         eprintln!("[dispatcher::{task_name}] error: {err}");
-                                    } else {
-                                        self.inner.context_manager.remove_context(ctx_id);
+                                    }
+                                    self.inner.context_manager.remove_context(ctx_id);
+                                    if run_ctx.active_ctxs.fetch_sub(1, Ordering::AcqRel) == 1 {
+                                        let _ = run_ctx.finish_tx.send(());
                                     }
                                 }
                             }
@@ -187,17 +237,16 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
 
             // Kick off execution for the entry operation (op id 0).
             let root_ctx = self.inner.context_manager.create_context();
-            drive_until_call(
-                &self.inner.context_manager,
-                workflow_ref,
-                0,
-                None,
-                root_ctx,
-                &*task_senders,
-                &self.inner.pack_map,
-                ctx_origin_ref,
-                result_tx_ref,
-            );
+            run_ctx.active_ctxs.fetch_add(1, Ordering::Release);
+            drive_until_call(&run_ctx, 0, None, root_ctx);
+
+            // Wait until every context is dropped then clear senders so task threads exit.
+            let _ = finish_rx.recv();
+            let guard = Guard::new();
+            run_ctx.task_senders.iter(&guard).for_each(|(_, tx)| {
+                let _ = tx.close();
+            });
+            drop(guard);
         });
     }
 
@@ -223,26 +272,30 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
 }
 
 fn add_values<C: ContextManager>(
-    context_manager: &C,
+    run_ctx: &RunContext<C>,
     ctx_id: C::ContextId,
     vals: Vec<(ValueId, Value)>,
 ) -> C::ContextId {
+    debug_assert!(vals.len() >= 1);
     let mut iter = vals.into_iter();
     let (val_id, val_arc) = iter.next().unwrap();
-    let mut new_ctx_id = context_manager.add_value(ctx_id, val_id, val_arc);
+    let mut new_ctx_id = run_ctx.context_manager.add_value(ctx_id, val_id, val_arc);
     for (val_id, val_arc) in iter {
         let old_ctx_id = new_ctx_id;
-        new_ctx_id = context_manager.add_value(old_ctx_id.clone(), val_id, val_arc);
-        context_manager.remove_context(old_ctx_id);
+        new_ctx_id = run_ctx
+            .context_manager
+            .add_value(old_ctx_id.clone(), val_id, val_arc);
+        run_ctx.context_manager.remove_context(old_ctx_id.clone());
     }
+
+    run_ctx.active_ctxs.fetch_add(1, Ordering::Release);
     new_ctx_id
 }
 
 fn next_op_id<C: ContextManager>(
+    run_ctx: &RunContext<C>,
     next: &Next,
     ctx_id: C::ContextId,
-    context_manager: &C,
-    result: &Sender<Value>,
 ) -> Option<usize>
 where
     C::ContextId: Clone,
@@ -254,20 +307,23 @@ where
             true_next,
             false_next,
         } => {
-            let cond_any = context_manager.get_value(ctx_id.clone(), *var);
+            let cond_any = run_ctx.context_manager.get_value(ctx_id.clone(), *var);
             // unwrap is safe because we check statically that the condition is a bool
             let cond = cond_any.downcast_ref::<bool>().copied().unwrap();
             Some(if cond { *true_next } else { *false_next })
         }
         Next::Return { var } => {
             if let Some(v_id) = var {
-                let val = context_manager.get_value(ctx_id.clone(), *v_id);
-                let _ = result.send(val);
+                let val = run_ctx.context_manager.get_value(ctx_id.clone(), *v_id);
+                let _ = run_ctx.result_tx.send(val);
             } else {
-                let _ = result.send(Value::new(()));
+                let _ = run_ctx.result_tx.send(Value::new(()));
             }
 
-            context_manager.remove_context(ctx_id);
+            run_ctx.context_manager.remove_context(ctx_id);
+            if run_ctx.active_ctxs.fetch_sub(1, Ordering::AcqRel) == 1 {
+                let _ = run_ctx.finish_tx.send(());
+            }
             None
         }
     }
@@ -284,6 +340,14 @@ impl<C: ContextManager + Send + Sync + 'static> SimpleEngine<C> {
             .clone();
         drop(guard);
         slot
+    }
+}
+
+impl<C: ContextManager> Clone for SimpleEngine<C> {
+    fn clone(&self) -> Self {
+        SimpleEngine {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -309,58 +373,64 @@ fn parse_literal(raw: &str) -> Value {
 /// Walk the workflow starting at `op_id`, executing literals & φ, and schedule the first `Call`.
 /// Returns `Some(updated_ctx_id)` when a call is enqueued, or `None` if a Return terminator was hit.
 fn drive_until_call<C: ContextManager>(
-    context_manager: &C,
-    workflow: &Workflow,
+    run_ctx: &RunContext<C>,
     mut op_id: usize,
     mut pred_op: Option<usize>,
     mut ctx_id: C::ContextId,
-    task_senders: &HashIndex<String, Sender<(C::ContextId, Value)>>,
-    pack_map: &HashIndex<String, PackFn>,
-    ctx_origin: &HashIndex<C::ContextId, usize>,
-    result_tx: &Sender<Value>,
 ) -> Option<C::ContextId>
 where
     C::ContextId: Clone,
 {
     loop {
-        let operation = &workflow.operations[op_id];
+        let operation = &run_ctx.workflow.operations[op_id];
 
-        // --- evaluate literals --------------------------------------------------------
+        let mut values_to_add = Vec::new();
+
         if !operation.literals.is_empty() {
             let lit_vals = operation
                 .literals
                 .iter()
-                .map(|lit| (lit.output, parse_literal(&lit.value)))
-                .collect();
-            ctx_id = add_values(context_manager, ctx_id, lit_vals);
+                .map(|lit| (lit.output, parse_literal(&lit.value)));
+            values_to_add.extend(lit_vals);
         }
 
-        // --- evaluate φ nodes ---------------------------------------------------------
         if !operation.phis.is_empty() {
-            let mut phi_vals = Vec::with_capacity(operation.phis.len());
-            for phi in &operation.phis {
-                if let Some(pred) = pred_op {
-                    if let Some((_, val_id)) = phi.from.iter().find(|(from_id, _)| *from_id == pred)
-                    {
-                        let val = context_manager.get_value(ctx_id.clone(), *val_id);
-                        phi_vals.push((phi.output, val));
-                    }
-                }
-            }
-            if !phi_vals.is_empty() {
-                ctx_id = add_values(context_manager, ctx_id, phi_vals);
+            if let Some(pred) = pred_op {
+                let phi_vals = operation.phis.iter().filter_map(|phi| {
+                    phi.from
+                        .iter()
+                        .find(|(from_id, _)| *from_id == pred)
+                        .map(|(_, val_id)| {
+                            (
+                                phi.output,
+                                run_ctx.context_manager.get_value(ctx_id.clone(), *val_id),
+                            )
+                        })
+                });
+                values_to_add.extend(phi_vals);
             }
         }
 
-        // --- if this op invokes a task, enqueue it and stop ---------------------------
+        if !values_to_add.is_empty() {
+            let old_ctx_id = ctx_id.clone();
+            ctx_id = add_values(run_ctx, ctx_id, values_to_add);
+
+            run_ctx.context_manager.remove_context(old_ctx_id.clone());
+            if run_ctx.active_ctxs.fetch_sub(1, Ordering::AcqRel) == 1 {
+                let _ = run_ctx.finish_tx.send(());
+            }
+        }
+
         if let Some(call) = &operation.call {
+            let inputs = run_ctx
+                .context_manager
+                .get_values(ctx_id.clone(), &call.inputs);
+
             let guard = Guard::new();
+            let pack_fn = run_ctx.pack_map.peek(&call.task_id, &guard).cloned();
+            drop(guard);
 
-            // Gather inputs
-            let inputs = context_manager.get_values(ctx_id.clone(), &call.inputs);
-
-            // Pack inputs if necessary
-            let packed = if let Some(pack_fn) = pack_map.peek(&call.task_id, &guard).cloned() {
+            let packed = if let Some(pack_fn) = pack_fn {
                 (pack_fn)(inputs)
             } else {
                 debug_assert_eq!(
@@ -372,25 +442,24 @@ where
                 inputs.into_iter().next().unwrap()
             };
 
-            // Send to task
-            let sender = task_senders
+            let guard = Guard::new();
+            let sender = run_ctx
+                .task_senders
                 .peek(&call.task_id, &guard)
                 .expect("sender not found")
                 .clone();
             drop(guard);
 
+            let _ = run_ctx.ctx_origin.insert(ctx_id.clone(), op_id);
+
             sender
                 .send((ctx_id.clone(), packed))
                 .expect("failed to send to task");
 
-            // Register origin op for dispatcher
-            let _ = ctx_origin.insert(ctx_id.clone(), op_id);
-
             return Some(ctx_id);
         }
 
-        // --- otherwise follow control-flow -------------------------------------------
-        match next_op_id(&operation.next, ctx_id.clone(), context_manager, result_tx) {
+        match next_op_id(&run_ctx, &operation.next, ctx_id.clone()) {
             Some(next) => {
                 pred_op = Some(op_id);
                 op_id = next;

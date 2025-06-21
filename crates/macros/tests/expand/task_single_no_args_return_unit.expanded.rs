@@ -3,7 +3,18 @@ fn __impl_no_args_task() -> anyhow::Result<()> {
     Ok(())
 }
 #[allow(non_camel_case_types)]
-struct __no_args_task;
+pub struct __no_args_task;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __no_args_task {
+    #[inline]
+    fn clone(&self) -> __no_args_task {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __no_args_task {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __no_args_task
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -42,7 +58,7 @@ pub fn no_args_task<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "no_args_task",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
                 ),
             );
             res

@@ -12,7 +12,7 @@ where
 {
     fn prepare(&mut self) -> Result<()>;
 
-    fn clone_box(&self) -> Box<dyn Task<Id, C> + Send + Sync>;
+    fn clone_boxed(&self) -> Box<dyn Task<Id, C> + Send + Sync>;
 
     fn run(&mut self, context: C) -> Result<()>;
 }
@@ -211,7 +211,7 @@ where
     C: TaskContext<Id>,
 {
     fn clone(&self) -> Self {
-        self.clone_box()
+        self.clone_boxed()
     }
 }
 

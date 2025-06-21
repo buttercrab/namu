@@ -1,5 +1,5 @@
-use std::cmp::Ordering;
 use std::hash::Hash;
+use std::{cmp::Ordering, fmt};
 
 use namu_core::{Value, ValueId};
 
@@ -8,7 +8,7 @@ pub mod naive_context;
 pub mod static_context;
 
 pub trait ContextManager: Send + Sync {
-    type ContextId: Clone + Eq + Hash + Send + Sync + 'static;
+    type ContextId: Clone + Eq + Hash + Send + Sync + fmt::Debug + 'static;
 
     fn create_context(&self) -> Self::ContextId;
 

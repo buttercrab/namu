@@ -3,7 +3,18 @@ fn __impl_double(a: i32) -> anyhow::Result<i32> {
     Ok(a * 2)
 }
 #[allow(non_camel_case_types)]
-struct __double;
+pub struct __double;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __double {
+    #[inline]
+    fn clone(&self) -> __double {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __double {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __double
 where
     Id: Clone,
@@ -11,6 +22,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -43,7 +59,7 @@ pub fn double<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "double",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
                 ),
             );
             res
@@ -55,7 +71,18 @@ fn __impl_identity(a: i32) -> anyhow::Result<i32> {
     Ok(a)
 }
 #[allow(non_camel_case_types)]
-struct __identity;
+pub struct __identity;
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::clone::Clone for __identity {
+    #[inline]
+    fn clone(&self) -> __identity {
+        *self
+    }
+}
+#[automatically_derived]
+#[allow(non_camel_case_types)]
+impl ::core::marker::Copy for __identity {}
 impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __identity
 where
     Id: Clone,
@@ -63,6 +90,11 @@ where
 {
     fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
         Ok(())
+    }
+    fn clone_boxed(
+        &self,
+    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        Box::new(*self)
     }
     fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
         ::namu::__macro_exports::SingleTask::run(self, context)
@@ -95,7 +127,7 @@ pub fn identity<G: 'static>(
             let res = ::alloc::fmt::format(
                 format_args!(
                     "{0}::{1}", "identity",
-                    "/Users/jaeyong/Development/Github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
+                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
                 ),
             );
             res

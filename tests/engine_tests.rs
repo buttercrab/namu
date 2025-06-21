@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::thread;
+
 use namu::workflow;
 use namu_core::{DynamicTaskContext, Task, Value};
 use namu_engine::context::dynamic_context::DynamicContextManager;
@@ -35,7 +37,7 @@ where
         Ok(())
     }
 
-    fn clone_box(&self) -> Box<dyn Task<Id, DynamicTaskContext<Id>> + Send + Sync> {
+    fn clone_boxed(&self) -> Box<dyn Task<Id, DynamicTaskContext<Id>> + Send + Sync> {
         Box::new(self.clone())
     }
 
@@ -69,7 +71,7 @@ where
         Ok(())
     }
 
-    fn clone_box(&self) -> Box<dyn Task<Id, DynamicTaskContext<Id>> + Send + Sync> {
+    fn clone_boxed(&self) -> Box<dyn Task<Id, DynamicTaskContext<Id>> + Send + Sync> {
         Box::new(self.clone())
     }
 
@@ -118,13 +120,18 @@ fn engine_executes_simple_workflow() {
     // 4. Run workflow.
     let wf_id = engine.create_workflow(wf_ir);
     let run_id = engine.create_run(wf_id);
-    engine.run(run_id);
+    let engine_clone = engine.clone();
+    let handle = thread::spawn(move || {
+        engine_clone.run(run_id);
+    });
 
     // 5. Await and assert result.
     let result = engine.get_result(run_id);
 
     let val = *result.recv().unwrap().downcast_ref::<i32>().unwrap();
     assert_eq!(val, 3);
+
+    handle.join().unwrap();
 }
 
 // ---- Fibonacci workflow test --------------------------------------------
@@ -164,11 +171,16 @@ fn engine_executes_fibonacci_workflow() {
     // 4. Run workflow.
     let wf_id = engine.create_workflow(wf_ir);
     let run_id = engine.create_run(wf_id);
-    engine.run(run_id);
+    let engine_clone = engine.clone();
+    let handle = thread::spawn(move || {
+        engine_clone.run(run_id);
+    });
 
     // 5. Await and assert result.
     let result = engine.get_result(run_id);
 
     let val = *result.recv().unwrap().downcast_ref::<i32>().unwrap();
     assert_eq!(val, 21);
+
+    handle.join().unwrap();
 }
