@@ -1,18 +1,12 @@
-use std::{
-    any::Any,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use namu_core::ir::ValueId;
+use namu_core::{Value, ValueId};
 use scc::HashMap;
 
 use crate::context::ContextManager;
 
 pub struct NaiveContextManager {
-    contexts: HashMap<usize, HashMap<ValueId, Arc<dyn Any + Send + Sync>>>,
+    contexts: HashMap<usize, HashMap<ValueId, Value>>,
     context_order: HashMap<usize, Vec<usize>>,
     id_counter: AtomicUsize,
 }
@@ -47,7 +41,7 @@ impl ContextManager for NaiveContextManager {
         &self,
         context_id: Self::ContextId,
         val_id: ValueId,
-        value: Arc<dyn Any + Send + Sync>,
+        value: Value,
     ) -> Self::ContextId {
         let context = self.contexts.get(&context_id).unwrap().clone();
         let mut context_order = self.context_order.get(&context_id).unwrap().clone();
@@ -59,20 +53,12 @@ impl ContextManager for NaiveContextManager {
         id
     }
 
-    fn get_value(
-        &self,
-        context_id: Self::ContextId,
-        val_id: ValueId,
-    ) -> Arc<dyn Any + Send + Sync> {
+    fn get_value(&self, context_id: Self::ContextId, val_id: ValueId) -> Value {
         let context = self.contexts.get(&context_id).unwrap();
         context.get().get(&val_id).unwrap().clone()
     }
 
-    fn get_values(
-        &self,
-        context_id: Self::ContextId,
-        val_ids: &[ValueId],
-    ) -> Vec<Arc<dyn Any + Send + Sync>> {
+    fn get_values(&self, context_id: Self::ContextId, val_ids: &[ValueId]) -> Vec<Value> {
         let context = self.contexts.get(&context_id).unwrap();
         val_ids
             .iter()

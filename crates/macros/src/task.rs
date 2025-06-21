@@ -12,32 +12,29 @@
 //!   - `#[task(stream)]`: Defines a `StreamTask`.
 //!
 //! ## Generated Code
-//! 1.  **Renamed Original Function**: The user's function is preserved with a
-//!     prefix (e.g., `__impl_my_task`).
-//! 2.  **Task Struct**: A unit struct (e.g., `__my_task`) is created to serve as
-//!     the task's identity and method container.
-//! 3.  **`task::Task` Implementation**: An `impl<Id, C> task::Task<Id, C> for ...`
-//!     block is generated. This contains the `prepare` and `run` methods. The
-//!     `run` logic is taken from the default implementations on the specialized
-//!     traits (`SingleTask`, etc.).
-//! 4.  **Specialized Trait Implementation**: An `impl` for `task::SingleTask`,
-//!     `task::BatchedTask`, or `task::StreamTask` is created. This defines the
-//!     `Input` and `Output` associated types and implements the `call` method,
-//!     which invokes the renamed original function.
-//! 5.  **Graph Constructor**: A function with the same name as the original is
-//!     generated. This function is what's called inside a `#[workflow]`. It
-//!     takes `TracedValue`s as input, registers the task with the executor's
-//!     registry, and adds a `Call` node to the graph via the `Builder` API.
+//! 1. **Renamed Original Function**: The user's function is preserved with a prefix (e.g.,
+//!    `__impl_my_task`).
+//! 2. **Task Struct**: A unit struct (e.g., `__my_task`) is created to serve as the task's identity
+//!    and method container.
+//! 3. **`task::Task` Implementation**: An `impl<Id, C> task::Task<Id, C> for ...` block is
+//!    generated. This contains the `prepare` and `run` methods. The `run` logic is taken from the
+//!    default implementations on the specialized traits (`SingleTask`, etc.).
+//! 4. **Specialized Trait Implementation**: An `impl` for `task::SingleTask`, `task::BatchedTask`,
+//!    or `task::StreamTask` is created. This defines the `Input` and `Output` associated types and
+//!    implements the `call` method, which invokes the renamed original function.
+//! 5. **Graph Constructor**: A function with the same name as the original is generated. This
+//!    function is what's called inside a `#[workflow]`. It takes `TracedValue`s as input, registers
+//!    the task with the executor's registry, and adds a `Call` node to the graph via the `Builder`
+//!    API.
 
 use proc_macro::TokenStream;
 use proc_macro_error::abort;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
+use syn::parse::{Parse, ParseStream};
 use syn::{
     AngleBracketedGenericArguments, GenericArgument, Ident, ItemFn, LitInt, Pat, Path,
-    PathArguments, PathSegment, ReturnType, Token, Type, TypePath,
-    parse::{Parse, ParseStream},
-    parse_macro_input, parse_quote,
+    PathArguments, PathSegment, ReturnType, Token, Type, TypePath, parse_macro_input, parse_quote,
 };
 
 // --- Attribute Parsing ---
@@ -194,6 +191,7 @@ struct TaskDefinition<'a> {
 fn generate_common_task_prelude(struct_name: &Ident, specialization_trait: &Ident) -> TokenStream2 {
     quote! {
         #[allow(non_camel_case_types)]
+        #[derive(Clone, Copy)]
         struct #struct_name;
 
         impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
@@ -202,6 +200,11 @@ fn generate_common_task_prelude(struct_name: &Ident, specialization_trait: &Iden
             C: ::namu::__macro_exports::TaskContext<Id>,
         {
             fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
+
+            fn clone_box(&self) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+                Box::new(*self)
+            }
+
             fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
                 ::namu::__macro_exports::#specialization_trait::run(self, context)
             }

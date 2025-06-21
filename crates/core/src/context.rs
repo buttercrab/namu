@@ -1,12 +1,14 @@
+use std::any::TypeId;
+use std::fmt::{Display, Formatter};
+use std::mem;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use kanal::{ReceiveError, Receiver, SendError, Sender};
-use serde::{Serialize, de::DeserializeOwned};
-use std::{
-    any::{Any, TypeId},
-    fmt::{Display, Formatter},
-    mem,
-};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+use crate::Value;
 
 #[derive(Debug, Copy, Clone)]
 pub struct TaskEnd;
@@ -31,13 +33,13 @@ pub trait TaskContext<Id>: Send {
         &self,
     ) -> Result<Option<(Id, T)>, ReceiveError>;
 
-    fn send<T: Send + Serialize + 'static>(
+    fn send<T: Send + Serialize + Clone + Send + Sync + 'static>(
         &self,
         item_id: Id,
         data: Result<T>,
     ) -> Result<(), SendError>;
 
-    async fn send_async<T: Send + Serialize + 'static>(
+    async fn send_async<T: Send + Serialize + Clone + Send + Sync + 'static>(
         &self,
         item_id: Id,
         data: Result<T>,
@@ -169,15 +171,12 @@ where
 
 #[derive(Clone)]
 pub struct DynamicTaskContext<Id> {
-    input_ch: Receiver<(Id, Box<dyn Any + Send>)>,
-    output_ch: Sender<(Id, Result<Box<dyn Any + Send>>)>,
+    input_ch: Receiver<(Id, Value)>,
+    output_ch: Sender<(Id, Result<Value>)>,
 }
 
 impl<Id> DynamicTaskContext<Id> {
-    pub fn new(
-        input_ch: Receiver<(Id, Box<dyn Any + Send>)>,
-        output_ch: Sender<(Id, Result<Box<dyn Any + Send>>)>,
-    ) -> Self {
+    pub fn new(input_ch: Receiver<(Id, Value)>, output_ch: Sender<(Id, Result<Value>)>) -> Self {
         Self {
             input_ch,
             output_ch,
@@ -190,42 +189,40 @@ impl<Id> TaskContext<Id> for DynamicTaskContext<Id>
 where
     Id: Send,
 {
-    fn recv<T: 'static>(&self) -> Result<(Id, T), ReceiveError> {
+    fn recv<T: Send + 'static>(&self) -> Result<(Id, T), ReceiveError> {
         let (id, data) = self.input_ch.recv()?;
-        Ok((id, *data.downcast::<T>().unwrap()))
+        Ok((id, unsafe { data.take::<T>() }))
     }
 
-    async fn recv_async<T: 'static>(&self) -> Result<(Id, T), ReceiveError> {
+    async fn recv_async<T: Send + 'static>(&self) -> Result<(Id, T), ReceiveError> {
         let (id, data) = self.input_ch.as_async().recv().await?;
-        Ok((id, *data.downcast::<T>().unwrap()))
+        Ok((id, unsafe { data.take::<T>() }))
     }
 
-    fn try_recv<T: 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError> {
+    fn try_recv<T: Send + 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError> {
         let result = self
             .input_ch
             .try_recv()?
-            .map(|(id, data)| (id, *data.downcast::<T>().unwrap()));
+            .map(|(id, data)| (id, unsafe { data.take::<T>() }));
         Ok(result)
     }
 
-    fn send<T: Send + 'static>(&self, item_id: Id, data: Result<T>) -> Result<(), SendError> {
-        self.output_ch.send((
-            item_id,
-            data.map(|data| Box::new(data) as Box<dyn Any + Send>),
-        ))
+    fn send<T: Serialize + Clone + Send + Sync + 'static>(
+        &self,
+        item_id: Id,
+        data: Result<T>,
+    ) -> Result<(), SendError> {
+        self.output_ch.send((item_id, data.map(Value::new)))
     }
 
-    async fn send_async<T: Send + 'static>(
+    async fn send_async<T: Serialize + Clone + Send + Sync + 'static>(
         &self,
         item_id: Id,
         data: Result<T>,
     ) -> Result<(), SendError> {
         self.output_ch
             .as_async()
-            .send((
-                item_id,
-                data.map(|data| Box::new(data) as Box<dyn Any + Send>),
-            ))
+            .send((item_id, data.map(Value::new)))
             .await
     }
 

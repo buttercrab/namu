@@ -1,24 +1,19 @@
-use std::{
-    any::Any,
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use namu_core::ir::ValueId;
-use scc::{HashIndex, HashMap as SccHashMap, ebr::Guard};
+use namu_core::{Value, ValueId};
+use scc::ebr::Guard;
+use scc::{HashIndex, HashMap as SccHashMap};
 
 use crate::context::ContextManager;
-
 #[derive(Clone, Debug)]
 struct ContextTreeNode {
     ancestors: Vec<usize>,
     depth: usize,
     order: usize,
     val_id: ValueId,
-    value: Arc<dyn Any + Send + Sync>,
+    value: Value,
     segment_tree: SegmentTree,
 }
 
@@ -37,12 +32,7 @@ impl DynamicContextManager {
         }
     }
 
-    fn new_node(
-        &self,
-        parent: Option<usize>,
-        val_id: ValueId,
-        value: Arc<dyn Any + Send + Sync>,
-    ) -> usize {
+    fn new_node(&self, parent: Option<usize>, val_id: ValueId, value: Value) -> usize {
         let order = parent.map_or(0, |parent_id| {
             self.node_state
                 .update(&parent_id, |_, (_, children)| *children + 1)
@@ -117,7 +107,7 @@ impl ContextManager for DynamicContextManager {
     type ContextId = usize;
 
     fn create_context(&self) -> Self::ContextId {
-        let id = self.new_node(None, 0, Arc::new(()));
+        let id = self.new_node(None, 0, namu_core::Value::new(()));
         id
     }
 
@@ -143,7 +133,8 @@ impl ContextManager for DynamicContextManager {
         }
 
         if current_a == current_b {
-            // One is an ancestor of the other. The original `a` or `b` with greater depth is "larger".
+            // One is an ancestor of the other. The original `a` or `b` with greater depth is
+            // "larger".
             return original_a.depth.cmp(&original_b.depth);
         }
 
@@ -167,16 +158,12 @@ impl ContextManager for DynamicContextManager {
         &self,
         context_id: Self::ContextId,
         val_id: ValueId,
-        value: Arc<dyn Any + Send + Sync>,
+        value: Value,
     ) -> Self::ContextId {
         self.new_node(Some(context_id), val_id, value)
     }
 
-    fn get_value(
-        &self,
-        context_id: Self::ContextId,
-        val_id: ValueId,
-    ) -> Arc<dyn Any + Send + Sync> {
+    fn get_value(&self, context_id: Self::ContextId, val_id: ValueId) -> Value {
         let guard = Guard::new();
         let node = self.nodes.peek(&context_id, &guard).unwrap();
         let depth = node.segment_tree.get(val_id);
@@ -184,11 +171,7 @@ impl ContextManager for DynamicContextManager {
         return node.value.clone();
     }
 
-    fn get_values(
-        &self,
-        context_id: Self::ContextId,
-        val_ids: &[ValueId],
-    ) -> Vec<Arc<dyn Any + Send + Sync>> {
+    fn get_values(&self, context_id: Self::ContextId, val_ids: &[ValueId]) -> Vec<Value> {
         if val_ids.is_empty() {
             return vec![];
         }
@@ -266,8 +249,11 @@ impl ContextManager for DynamicContextManager {
                 self.nodes.remove(&context_id);
 
                 if let Some(p_id) = parent_id {
-                    self.node_state
-                        .update(&p_id, |_, (_, children)| *children -= 1);
+                    self.node_state.update(&p_id, |_, (_, children)| {
+                        if *children > 0 {
+                            *children -= 1;
+                        }
+                    });
                     context_id = p_id;
                     continue;
                 }
@@ -426,7 +412,6 @@ impl SegmentTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn segment_tree_basic() {
@@ -455,16 +440,16 @@ mod tests {
         let root = ctx_mgr.create_context();
 
         // Add val 1 to root context
-        let ctx1 = ctx_mgr.add_value(root, 1, Arc::new(10usize));
-        let val: Arc<usize> = ctx_mgr.get_value(ctx1, 1).downcast::<usize>().unwrap();
-        assert_eq!(*val, 10);
+        let ctx1 = ctx_mgr.add_value(root, 1, namu_core::Value::new(10usize));
+        let val = *ctx_mgr.get_value(ctx1, 1).downcast_ref::<usize>().unwrap();
+        assert_eq!(val, 10);
 
         // Add another val 2 in new context
-        let ctx2 = ctx_mgr.add_value(ctx1, 2, Arc::new(20usize));
+        let ctx2 = ctx_mgr.add_value(ctx1, 2, namu_core::Value::new(20usize));
         let vals = ctx_mgr.get_values(ctx2, &[1, 2]);
-        let v1: &usize = vals[0].as_ref().downcast_ref::<usize>().unwrap();
-        let v2: &usize = vals[1].as_ref().downcast_ref::<usize>().unwrap();
-        assert_eq!((*v1, *v2), (10, 20));
+        let v1 = *vals[0].downcast_ref::<usize>().unwrap();
+        let v2 = *vals[1].downcast_ref::<usize>().unwrap();
+        assert_eq!((v1, v2), (10, 20));
 
         // Compare contexts ordering (root < ctx1 < ctx2)
         assert_eq!(

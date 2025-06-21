@@ -9,12 +9,10 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use namu_core::ir::ValueId;
+use namu_core::ValueId;
 
-use crate::{
-    graph::{Graph, NodeArena, TracedValue, ValueArena},
-    ir::{BasicBlock, BlockId, NodeKind, Terminator},
-};
+use crate::graph::{Graph, NodeArena, TracedValue, ValueArena};
+use crate::ir::{BasicBlock, BlockId, NodeKind, Terminator};
 
 // --- Builder API ---
 

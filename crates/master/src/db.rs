@@ -1,6 +1,7 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, SqlitePool};
-use std::path::Path;
 use tracing::info;
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]

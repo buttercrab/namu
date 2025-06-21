@@ -3,9 +3,9 @@ use std::collections::BTreeSet;
 use proc_macro::TokenStream;
 use proc_macro_error::abort;
 use quote::{format_ident, quote};
+use syn::visit_mut::{self, VisitMut};
 use syn::{
     Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input, parse_quote,
-    visit_mut::{self, VisitMut},
 };
 
 struct WorkflowVisitor {

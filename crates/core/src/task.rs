@@ -1,14 +1,18 @@
-use crate::context::TaskContext;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt, pin_mut};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+use crate::context::TaskContext;
 
 pub trait Task<Id, C>
 where
     C: TaskContext<Id>,
 {
     fn prepare(&mut self) -> Result<()>;
+
+    fn clone_box(&self) -> Box<dyn Task<Id, C> + Send + Sync>;
 
     fn run(&mut self, context: C) -> Result<()>;
 }
@@ -19,7 +23,7 @@ where
     C: TaskContext<Id>,
 {
     type Input: Send + DeserializeOwned + 'static;
-    type Output: Send + Serialize + 'static;
+    type Output: Serialize + Clone + Send + Sync + 'static;
 
     fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
@@ -39,7 +43,7 @@ where
     C: TaskContext<Id>,
 {
     type Input: Send + DeserializeOwned + 'static;
-    type Output: Send + Serialize + 'static;
+    type Output: Serialize + Clone + Send + Sync + 'static;
 
     fn batch_size(&self) -> usize;
 
@@ -83,7 +87,7 @@ where
     C: TaskContext<Id>,
 {
     type Input: Send + DeserializeOwned + 'static;
-    type Output: Send + Serialize + 'static;
+    type Output: Serialize + Clone + Send + Sync + 'static;
 
     fn call(&mut self, input: Self::Input) -> impl Iterator<Item = Result<Self::Output>>;
 
@@ -106,6 +110,8 @@ where
 {
     async fn prepare(&mut self) -> Result<()>;
 
+    fn clone_box(&self) -> Box<dyn AsyncTask<Id, C> + Send + Sync>;
+
     async fn run(&mut self, context: C) -> Result<()>;
 }
 
@@ -116,7 +122,7 @@ where
     C: TaskContext<Id> + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
-    type Output: Send + Serialize + 'static;
+    type Output: Serialize + Clone + Send + Sync + 'static;
 
     async fn call(&mut self, input: Self::Input) -> Result<Self::Output>;
 
@@ -137,7 +143,7 @@ where
     C: TaskContext<Id> + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
-    type Output: Send + Serialize + 'static;
+    type Output: Serialize + Clone + Send + Sync + 'static;
 
     fn batch_size(&self) -> usize;
 
@@ -182,7 +188,7 @@ where
     C: TaskContext<Id> + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
-    type Output: Send + Serialize + 'static;
+    type Output: Serialize + Clone + Send + Sync + 'static;
 
     fn call(&mut self, input: Self::Input) -> impl Stream<Item = Result<Self::Output>> + Send;
 
@@ -196,5 +202,25 @@ where
             let _ = context.send_end_async(id).await;
         }
         Ok(())
+    }
+}
+
+impl<Id, C> Clone for Box<dyn Task<Id, C> + Send + Sync>
+where
+    Id: Clone,
+    C: TaskContext<Id>,
+{
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+impl<Id, C> Clone for Box<dyn AsyncTask<Id, C> + Send + Sync>
+where
+    Id: Clone,
+    C: TaskContext<Id> + 'static,
+{
+    fn clone(&self) -> Self {
+        self.clone_box()
     }
 }

@@ -17,8 +17,10 @@ exclude = ["tasks/*", "pipelines/*"]
 
 [workspace.dependencies]
 anyhow = "1"
+erased-serde = "0.4"
 futures = "0.3"
 kanal = { version = "0.1", features = ["async"] }
+itertools = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.45", features = ["full"] }
@@ -31,6 +33,7 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 namu-core = { path = "crates/core" }
+namu-engine = { path = "crates/engine" }
 namu-flow = { path = "crates/flow" }
 namu-macros = { path = "crates/macros" }
 serde_json = { workspace = true }

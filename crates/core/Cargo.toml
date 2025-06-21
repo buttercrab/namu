@@ -9,3 +9,5 @@ async-trait = "0.1.88"
 futures = { workspace = true }
 kanal = { workspace = true }
 serde = { workspace = true }
+typeid = "1.0"
+erased-serde = { workspace = true }

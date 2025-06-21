@@ -1,9 +1,10 @@
-use clap::{Parser, Subcommand};
-use reqwest::multipart;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use clap::{Parser, Subcommand};
+use reqwest::multipart;
 use walkdir::WalkDir;
 
 #[derive(Parser)]

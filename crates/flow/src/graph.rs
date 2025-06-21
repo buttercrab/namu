@@ -1,11 +1,10 @@
 use std::marker::PhantomData;
 
-use namu_core::ir::{Call, Literal, Next, Operation, Phi, ValueId, Workflow};
+use namu_core::ValueId;
+use namu_core::ir::{Call, Literal, Next, Operation, Phi, Workflow};
 
-use crate::{
-    Node, NodeKind, Terminator,
-    ir::{BasicBlock, NodeId},
-};
+use crate::ir::{BasicBlock, NodeId};
+use crate::{Node, NodeKind, Terminator};
 
 #[derive(Debug, Clone, Copy)]
 pub struct TracedValue<T> {
@@ -147,7 +146,8 @@ impl<T> Graph<T> {
                         });
                     }
                     NodeKind::Call { task_id, inputs } => {
-                        // If there's already a pending call, flush first (shouldn't happen if builder respects 1 call per node group, but be safe).
+                        // If there's already a pending call, flush first (shouldn't happen if
+                        // builder respects 1 call per node group, but be safe).
                         if pending_call.is_some() {
                             let op_idx = push_pending_op(
                                 &mut ops,

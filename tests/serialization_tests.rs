@@ -2,10 +2,11 @@
 
 mod common;
 
-use crate::common::*;
 use namu::workflow;
 use namu_core::ir::Workflow;
 use serde_json;
+
+use crate::common::*;
 
 #[test]
 fn serializable_conditional_workflow() {

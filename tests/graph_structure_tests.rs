@@ -2,8 +2,9 @@
 
 mod common;
 
-use crate::common::*;
 use namu::workflow;
+
+use crate::common::*;
 
 #[test]
 fn simple_graph_structure() {

@@ -1,7 +1,7 @@
 pub mod prelude {
-    pub use crate::task;
-    pub use crate::workflow;
     pub use anyhow::Result;
+
+    pub use crate::{task, workflow};
 }
 
 pub mod __macro_exports {
@@ -14,5 +14,4 @@ pub mod __macro_exports {
     };
 }
 
-pub use namu_macros::task;
-pub use namu_macros::workflow;
+pub use namu_macros::{task, workflow};

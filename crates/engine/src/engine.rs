@@ -1,15 +1,17 @@
-use namu_core::{DynamicTaskContext, Task, ir::Workflow};
-use std::any::Any;
-use std::sync::Arc;
+use namu_core::ir::Workflow;
+use namu_core::{DynamicTaskContext, Task, Value};
 
 use crate::context::ContextManager;
 
 pub mod simple_engine;
 
-/// Type alias for a function that packs a vector of dynamically typed values (coming
-/// from the [`ContextManager`] as `Arc<dyn Any + Send + Sync>`) into a single boxed
-/// value that matches the concrete `Input` type of a task.
-pub type PackFn = fn(Vec<Arc<dyn Any + Send + Sync>>) -> Box<dyn Any + Send>;
+pub type PackFn = fn(Vec<Value>) -> Value;
+pub type UnpackFn = fn(Value) -> Vec<Value>;
+pub type TaskImpl<C> = Box<
+    dyn Task<<C as ContextManager>::ContextId, DynamicTaskContext<<C as ContextManager>::ContextId>>
+        + Send
+        + Sync,
+>;
 
 pub trait Engine<C: ContextManager> {
     type WorkflowId;
@@ -19,12 +21,13 @@ pub trait Engine<C: ContextManager> {
 
     fn create_run(&self, workflow_id: Self::WorkflowId) -> Self::RunId;
 
-    fn start_run(&self, run_id: Self::RunId);
+    fn run(&self, run_id: Self::RunId);
 
     fn add_task(
         &self,
         task_name: &str,
-        task: Box<dyn Task<C::ContextId, DynamicTaskContext<C::ContextId>> + Send>,
-        pack: PackFn,
+        task: TaskImpl<C>,
+        pack: Option<PackFn>,
+        unpack: Option<UnpackFn>,
     );
 }

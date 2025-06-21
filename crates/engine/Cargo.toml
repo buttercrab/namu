@@ -7,4 +7,6 @@ edition = "2024"
 namu-core = { path = "../core" }
 scc = "2.3"
 kanal = { workspace = true }
+itertools = { workspace = true }
+erased-serde = { workspace = true }
 anyhow = { workspace = true }

@@ -6,7 +6,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use namu_core::ir::ValueId;
+use namu_core::ValueId;
 
 pub type Value = Arc<dyn Any + Send + Sync>;
 pub type NodeId = usize;
