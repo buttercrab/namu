@@ -246,6 +246,19 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
             run_ctx.task_senders.iter(&guard).for_each(|(_, tx)| {
                 let _ = tx.close();
             });
+            let _ = self
+                .inner
+                .run_results
+                .peek(&run_id, &guard)
+                .unwrap()
+                .close();
+            let _ = self
+                .inner
+                .run_result_senders
+                .peek(&run_id, &guard)
+                .unwrap()
+                .close();
+            self.inner.runs.remove(&run_id);
             drop(guard);
         });
     }

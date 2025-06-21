@@ -2,95 +2,17 @@
 
 mod common;
 
-use std::thread;
-
+use itertools::Itertools;
 use namu::workflow;
-use namu_core::{DynamicTaskContext, Task, Value};
-use namu_engine::context::dynamic_context::DynamicContextManager;
-use namu_engine::engine::simple_engine::SimpleEngine;
-use namu_engine::engine::{Engine, PackFn};
+use namu_core::Value;
+use namu_engine::{
+    context::dynamic_context::DynamicContextManager,
+    engine::{PackFn, TaskImpl},
+};
 
 use crate::common::*;
 
-// ---- Hand-written task implementation ------------------------------------
-
-#[derive(Clone)]
-struct AddTask;
-
-impl<Id> namu_core::SingleTask<Id, DynamicTaskContext<Id>> for AddTask
-where
-    Id: Clone + Send,
-{
-    type Input = (i32, i32);
-    type Output = i32;
-
-    fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
-        Ok(input.0 + input.1)
-    }
-}
-
-impl<Id> Task<Id, DynamicTaskContext<Id>> for AddTask
-where
-    Id: Clone + Send,
-{
-    fn prepare(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn clone_boxed(&self) -> Box<dyn Task<Id, DynamicTaskContext<Id>> + Send + Sync> {
-        Box::new(self.clone())
-    }
-
-    fn run(&mut self, ctx: DynamicTaskContext<Id>) -> anyhow::Result<()> {
-        <Self as namu_core::SingleTask<Id, DynamicTaskContext<Id>>>::run(self, ctx)
-    }
-}
-
-// ---- Additional task: LessThanTask --------------------------------------
-
-#[derive(Clone)]
-struct LessThanTask;
-
-impl<Id> namu_core::SingleTask<Id, DynamicTaskContext<Id>> for LessThanTask
-where
-    Id: Clone + Send,
-{
-    type Input = (i32, i32);
-    type Output = bool;
-
-    fn call(&mut self, input: Self::Input) -> anyhow::Result<Self::Output> {
-        Ok(input.0 < input.1)
-    }
-}
-
-impl<Id> Task<Id, DynamicTaskContext<Id>> for LessThanTask
-where
-    Id: Clone + Send,
-{
-    fn prepare(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn clone_boxed(&self) -> Box<dyn Task<Id, DynamicTaskContext<Id>> + Send + Sync> {
-        Box::new(self.clone())
-    }
-
-    fn run(&mut self, ctx: DynamicTaskContext<Id>) -> anyhow::Result<()> {
-        <Self as namu_core::SingleTask<Id, DynamicTaskContext<Id>>>::run(self, ctx)
-    }
-}
-
-// ---- Helper pack / unpack -------------------------------------------------
-
-fn pack_add(inputs: Vec<Value>) -> Value {
-    let a = *inputs[0].downcast_ref::<i32>().unwrap();
-    let b = *inputs[1].downcast_ref::<i32>().unwrap();
-    Value::new((a, b))
-}
-
-// ---- Helper pack / unpack for less_than ---------------------------------
-
-fn pack_less_than(inputs: Vec<Value>) -> Value {
+fn pack_two(inputs: Vec<Value>) -> Value {
     let a = *inputs[0].downcast_ref::<i32>().unwrap();
     let b = *inputs[1].downcast_ref::<i32>().unwrap();
     Value::new((a, b))
@@ -111,27 +33,20 @@ fn engine_executes_simple_workflow() {
     let graph = simple_workflow();
     let wf_ir = graph.to_serializable("simple".to_string());
 
-    // 2. Create engine.
-    let engine = SimpleEngine::new(DynamicContextManager::new());
+    // 2. Execute workflow via helper.
+    let result_val = run_workflow(
+        wf_ir,
+        [(
+            "add",
+            Box::new(__add) as TaskImpl<DynamicContextManager>,
+            Some(pack_two as PackFn),
+            None,
+        )],
+    );
 
-    // 3. Register task.
-    engine.add_task("add", Box::new(AddTask), Some(pack_add as PackFn), None);
-
-    // 4. Run workflow.
-    let wf_id = engine.create_workflow(wf_ir);
-    let run_id = engine.create_run(wf_id);
-    let engine_clone = engine.clone();
-    let handle = thread::spawn(move || {
-        engine_clone.run(run_id);
-    });
-
-    // 5. Await and assert result.
-    let result = engine.get_result(run_id);
-
-    let val = *result.recv().unwrap().downcast_ref::<i32>().unwrap();
+    // 3. Assert result.
+    let val = *result_val[0].downcast_ref::<i32>().unwrap();
     assert_eq!(val, 3);
-
-    handle.join().unwrap();
 }
 
 // ---- Fibonacci workflow test --------------------------------------------
@@ -156,31 +71,64 @@ fn engine_executes_fibonacci_workflow() {
     let graph = fibonacci_workflow();
     let wf_ir = graph.to_serializable("fibonacci".to_string());
 
-    // 2. Create engine.
-    let engine = SimpleEngine::new(DynamicContextManager::new());
-
-    // 3. Register tasks.
-    engine.add_task("add", Box::new(AddTask), Some(pack_add as PackFn), None);
-    engine.add_task(
-        "less_than",
-        Box::new(LessThanTask),
-        Some(pack_less_than as PackFn),
-        None,
+    // 2. Execute workflow via helper.
+    let result_val = run_workflow(
+        wf_ir,
+        [
+            (
+                "add",
+                Box::new(__add) as TaskImpl<DynamicContextManager>,
+                Some(pack_two as PackFn),
+                None,
+            ),
+            (
+                "less_than",
+                Box::new(__less_than) as TaskImpl<DynamicContextManager>,
+                Some(pack_two as PackFn),
+                None,
+            ),
+        ],
     );
 
-    // 4. Run workflow.
-    let wf_id = engine.create_workflow(wf_ir);
-    let run_id = engine.create_run(wf_id);
-    let engine_clone = engine.clone();
-    let handle = thread::spawn(move || {
-        engine_clone.run(run_id);
-    });
-
-    // 5. Await and assert result.
-    let result = engine.get_result(run_id);
-
-    let val = *result.recv().unwrap().downcast_ref::<i32>().unwrap();
+    // 3. Assert result.
+    let val = *result_val[0].downcast_ref::<i32>().unwrap();
     assert_eq!(val, 21);
+}
 
-    handle.join().unwrap();
+#[test]
+fn engine_executes_list_workflow() {
+    #[workflow]
+    fn list_workflow() -> i32 {
+        let a = range(1, 4);
+        let b = split(a, 3);
+        b
+    }
+
+    let graph = list_workflow();
+    let wf_ir = graph.to_serializable("list".to_string());
+
+    let result_val = run_workflow(
+        wf_ir,
+        [
+            (
+                "range",
+                Box::new(__range) as TaskImpl<DynamicContextManager>,
+                Some(pack_two as PackFn),
+                None,
+            ),
+            (
+                "split",
+                Box::new(__split) as TaskImpl<DynamicContextManager>,
+                Some(pack_two as PackFn),
+                None,
+            ),
+        ],
+    );
+
+    let vals = result_val
+        .iter()
+        .map(|v| *v.downcast_ref::<i32>().unwrap())
+        .sorted()
+        .collect::<Vec<_>>();
+    assert_eq!(vals, vec![10, 11, 12, 20, 21, 22, 30, 31, 32]);
 }

@@ -36,4 +36,7 @@ namu-core = { path = "crates/core" }
 namu-engine = { path = "crates/engine" }
 namu-flow = { path = "crates/flow" }
 namu-macros = { path = "crates/macros" }
+
+[dev-dependencies]
 serde_json = { workspace = true }
+itertools = { workspace = true }
