@@ -1,50 +1,81 @@
 use namu_macros::{task, workflow};
-fn __impl_task_a(a: i32) -> anyhow::Result<i32> {
-    Ok(a)
-}
-#[allow(non_camel_case_types)]
-pub struct __task_a;
-#[automatically_derived]
-#[allow(non_camel_case_types)]
-impl ::core::clone::Clone for __task_a {
-    #[inline]
-    fn clone(&self) -> __task_a {
-        *self
+#[allow(non_snake_case)]
+pub mod task_a {
+    use super::*;
+    fn task_impl(a: i32) -> anyhow::Result<i32> {
+        Ok(a)
     }
-}
-#[automatically_derived]
-#[allow(non_camel_case_types)]
-impl ::core::marker::Copy for __task_a {}
-impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __task_a
-where
-    Id: Clone,
-    C: ::namu::__macro_exports::TaskContext<Id>,
-{
-    fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
-        Ok(())
+    #[allow(non_camel_case_types)]
+    pub struct Task;
+    #[automatically_derived]
+    #[allow(non_camel_case_types)]
+    impl ::core::clone::Clone for Task {
+        #[inline]
+        fn clone(&self) -> Task {
+            *self
+        }
     }
-    fn clone_boxed(
-        &self,
-    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
-        Box::new(*self)
+    #[automatically_derived]
+    #[allow(non_camel_case_types)]
+    impl ::core::marker::Copy for Task {}
+    impl<Id, C> ::namu::__macro_exports::Task<Id, C> for Task
+    where
+        Id: Clone,
+        C: ::namu::__macro_exports::TaskContext<Id>,
+    {
+        fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
+            Ok(())
+        }
+        fn clone_boxed(
+            &self,
+        ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+            Box::new(*self)
+        }
+        fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+            ::namu::__macro_exports::SingleTask::run(self, context)
+        }
     }
-    fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
-        ::namu::__macro_exports::SingleTask::run(self, context)
+    impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for Task
+    where
+        Id: Clone,
+        C: ::namu::__macro_exports::TaskContext<Id>,
+    {
+        type Input = i32;
+        type Output = i32;
+        fn call(
+            &mut self,
+            input: Self::Input,
+        ) -> ::namu::__macro_exports::Result<Self::Output> {
+            let a = input;
+            task_impl(a)
+        }
     }
-}
-impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for __task_a
-where
-    Id: Clone,
-    C: ::namu::__macro_exports::TaskContext<Id>,
-{
-    type Input = i32;
-    type Output = i32;
-    fn call(
-        &mut self,
-        input: Self::Input,
-    ) -> ::namu::__macro_exports::Result<Self::Output> {
-        let a = input;
-        __impl_task_a(a)
+    #[allow(dead_code)]
+    pub fn pack(
+        mut inputs: Vec<::namu::__macro_exports::Value>,
+    ) -> ::namu::__macro_exports::Value {
+        if true {
+            match (&inputs.len(), &1) {
+                (left_val, right_val) => {
+                    if !(*left_val == *right_val) {
+                        let kind = ::core::panicking::AssertKind::Eq;
+                        ::core::panicking::assert_failed(
+                            kind,
+                            &*left_val,
+                            &*right_val,
+                            ::core::option::Option::None,
+                        );
+                    }
+                }
+            };
+        }
+        inputs.pop().unwrap()
+    }
+    #[allow(dead_code)]
+    pub fn unpack(
+        val: ::namu::__macro_exports::Value,
+    ) -> Vec<::namu::__macro_exports::Value> {
+        <[_]>::into_vec(::alloc::boxed::box_new([val]))
     }
 }
 #[allow(non_snake_case)]
@@ -67,52 +98,83 @@ pub fn task_a<G: 'static>(
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }
-fn __impl_task_b(a: i32) -> anyhow::Result<i32> {
-    Ok(a)
-}
-#[allow(non_camel_case_types)]
-pub struct __task_b;
-#[automatically_derived]
-#[allow(non_camel_case_types)]
-impl ::core::clone::Clone for __task_b {
-    #[inline]
-    fn clone(&self) -> __task_b {
-        *self
+#[allow(non_snake_case)]
+pub mod task_b {
+    use super::*;
+    fn task_impl(a: i32) -> anyhow::Result<i32> {
+        Ok(a)
     }
-}
-#[automatically_derived]
-#[allow(non_camel_case_types)]
-impl ::core::marker::Copy for __task_b {}
-impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __task_b
-where
-    Id: Clone,
-    C: ::namu::__macro_exports::TaskContext<Id>,
-{
-    fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
-        Ok(())
+    #[allow(non_camel_case_types)]
+    pub struct Task;
+    #[automatically_derived]
+    #[allow(non_camel_case_types)]
+    impl ::core::clone::Clone for Task {
+        #[inline]
+        fn clone(&self) -> Task {
+            *self
+        }
     }
-    fn clone_boxed(
-        &self,
-    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
-        Box::new(*self)
+    #[automatically_derived]
+    #[allow(non_camel_case_types)]
+    impl ::core::marker::Copy for Task {}
+    impl<Id, C> ::namu::__macro_exports::Task<Id, C> for Task
+    where
+        Id: Clone,
+        C: ::namu::__macro_exports::TaskContext<Id>,
+    {
+        fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
+            Ok(())
+        }
+        fn clone_boxed(
+            &self,
+        ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+            Box::new(*self)
+        }
+        fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+            ::namu::__macro_exports::SingleTask::run(self, context)
+        }
     }
-    fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
-        ::namu::__macro_exports::SingleTask::run(self, context)
+    impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for Task
+    where
+        Id: Clone,
+        C: ::namu::__macro_exports::TaskContext<Id>,
+    {
+        type Input = i32;
+        type Output = i32;
+        fn call(
+            &mut self,
+            input: Self::Input,
+        ) -> ::namu::__macro_exports::Result<Self::Output> {
+            let a = input;
+            task_impl(a)
+        }
     }
-}
-impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for __task_b
-where
-    Id: Clone,
-    C: ::namu::__macro_exports::TaskContext<Id>,
-{
-    type Input = i32;
-    type Output = i32;
-    fn call(
-        &mut self,
-        input: Self::Input,
-    ) -> ::namu::__macro_exports::Result<Self::Output> {
-        let a = input;
-        __impl_task_b(a)
+    #[allow(dead_code)]
+    pub fn pack(
+        mut inputs: Vec<::namu::__macro_exports::Value>,
+    ) -> ::namu::__macro_exports::Value {
+        if true {
+            match (&inputs.len(), &1) {
+                (left_val, right_val) => {
+                    if !(*left_val == *right_val) {
+                        let kind = ::core::panicking::AssertKind::Eq;
+                        ::core::panicking::assert_failed(
+                            kind,
+                            &*left_val,
+                            &*right_val,
+                            ::core::option::Option::None,
+                        );
+                    }
+                }
+            };
+        }
+        inputs.pop().unwrap()
+    }
+    #[allow(dead_code)]
+    pub fn unpack(
+        val: ::namu::__macro_exports::Value,
+    ) -> Vec<::namu::__macro_exports::Value> {
+        <[_]>::into_vec(::alloc::boxed::box_new([val]))
     }
 }
 #[allow(non_snake_case)]

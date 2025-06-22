@@ -4,19 +4,8 @@ mod common;
 
 use itertools::Itertools;
 use namu::workflow;
-use namu_core::Value;
-use namu_engine::{
-    context::dynamic_context::DynamicContextManager,
-    engine::{PackFn, TaskImpl},
-};
 
 use crate::common::*;
-
-fn pack_two(inputs: Vec<Value>) -> Value {
-    let a = *inputs[0].downcast_ref::<i32>().unwrap();
-    let b = *inputs[1].downcast_ref::<i32>().unwrap();
-    Value::new((a, b))
-}
 
 // ---- The actual test ------------------------------------------------------
 
@@ -34,15 +23,7 @@ fn engine_executes_simple_workflow() {
     let wf_ir = graph.to_serializable("simple".to_string());
 
     // 2. Execute workflow via helper.
-    let result_val = run_workflow(
-        wf_ir,
-        [(
-            "add",
-            Box::new(__add) as TaskImpl<DynamicContextManager>,
-            Some(pack_two as PackFn),
-            None,
-        )],
-    );
+    let result_val = run_workflow(wf_ir);
 
     // 3. Assert result.
     let val = *result_val[0].downcast_ref::<i32>().unwrap();
@@ -72,23 +53,7 @@ fn engine_executes_fibonacci_workflow() {
     let wf_ir = graph.to_serializable("fibonacci".to_string());
 
     // 2. Execute workflow via helper.
-    let result_val = run_workflow(
-        wf_ir,
-        [
-            (
-                "add",
-                Box::new(__add) as TaskImpl<DynamicContextManager>,
-                Some(pack_two as PackFn),
-                None,
-            ),
-            (
-                "less_than",
-                Box::new(__less_than) as TaskImpl<DynamicContextManager>,
-                Some(pack_two as PackFn),
-                None,
-            ),
-        ],
-    );
+    let result_val = run_workflow(wf_ir);
 
     // 3. Assert result.
     let val = *result_val[0].downcast_ref::<i32>().unwrap();
@@ -107,23 +72,7 @@ fn engine_executes_list_workflow() {
     let graph = list_workflow();
     let wf_ir = graph.to_serializable("list".to_string());
 
-    let result_val = run_workflow(
-        wf_ir,
-        [
-            (
-                "range",
-                Box::new(__range) as TaskImpl<DynamicContextManager>,
-                Some(pack_two as PackFn),
-                None,
-            ),
-            (
-                "split",
-                Box::new(__split) as TaskImpl<DynamicContextManager>,
-                Some(pack_two as PackFn),
-                None,
-            ),
-        ],
-    );
+    let result_val = run_workflow(wf_ir);
 
     let vals = result_val
         .iter()

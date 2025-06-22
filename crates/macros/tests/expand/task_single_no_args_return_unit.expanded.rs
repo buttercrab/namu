@@ -1,50 +1,66 @@
 use namu_macros::task;
-fn __impl_no_args_task() -> anyhow::Result<()> {
-    Ok(())
-}
-#[allow(non_camel_case_types)]
-pub struct __no_args_task;
-#[automatically_derived]
-#[allow(non_camel_case_types)]
-impl ::core::clone::Clone for __no_args_task {
-    #[inline]
-    fn clone(&self) -> __no_args_task {
-        *self
-    }
-}
-#[automatically_derived]
-#[allow(non_camel_case_types)]
-impl ::core::marker::Copy for __no_args_task {}
-impl<Id, C> ::namu::__macro_exports::Task<Id, C> for __no_args_task
-where
-    Id: Clone,
-    C: ::namu::__macro_exports::TaskContext<Id>,
-{
-    fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
+#[allow(non_snake_case)]
+pub mod no_args_task {
+    use super::*;
+    fn task_impl() -> anyhow::Result<()> {
         Ok(())
     }
-    fn clone_boxed(
-        &self,
-    ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
-        Box::new(*self)
+    #[allow(non_camel_case_types)]
+    pub struct Task;
+    #[automatically_derived]
+    #[allow(non_camel_case_types)]
+    impl ::core::clone::Clone for Task {
+        #[inline]
+        fn clone(&self) -> Task {
+            *self
+        }
     }
-    fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
-        ::namu::__macro_exports::SingleTask::run(self, context)
+    #[automatically_derived]
+    #[allow(non_camel_case_types)]
+    impl ::core::marker::Copy for Task {}
+    impl<Id, C> ::namu::__macro_exports::Task<Id, C> for Task
+    where
+        Id: Clone,
+        C: ::namu::__macro_exports::TaskContext<Id>,
+    {
+        fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
+            Ok(())
+        }
+        fn clone_boxed(
+            &self,
+        ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+            Box::new(*self)
+        }
+        fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
+            ::namu::__macro_exports::SingleTask::run(self, context)
+        }
     }
-}
-impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for __no_args_task
-where
-    Id: Clone,
-    C: ::namu::__macro_exports::TaskContext<Id>,
-{
-    type Input = ();
-    type Output = ();
-    fn call(
-        &mut self,
-        input: Self::Input,
-    ) -> ::namu::__macro_exports::Result<Self::Output> {
-        let () = input;
-        __impl_no_args_task()
+    impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for Task
+    where
+        Id: Clone,
+        C: ::namu::__macro_exports::TaskContext<Id>,
+    {
+        type Input = ();
+        type Output = ();
+        fn call(
+            &mut self,
+            input: Self::Input,
+        ) -> ::namu::__macro_exports::Result<Self::Output> {
+            let () = input;
+            task_impl()
+        }
+    }
+    #[allow(dead_code)]
+    pub fn pack(
+        _inputs: Vec<::namu::__macro_exports::Value>,
+    ) -> ::namu::__macro_exports::Value {
+        ::namu::__macro_exports::Value::new(())
+    }
+    #[allow(dead_code)]
+    pub fn unpack(
+        val: ::namu::__macro_exports::Value,
+    ) -> Vec<::namu::__macro_exports::Value> {
+        <[_]>::into_vec(::alloc::boxed::box_new([val]))
     }
 }
 #[allow(non_snake_case)]
