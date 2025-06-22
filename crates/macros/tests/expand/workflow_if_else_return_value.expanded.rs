@@ -86,15 +86,6 @@ pub fn double<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "double",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "double",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }
@@ -185,15 +176,6 @@ pub fn identity<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "identity",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "identity",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_return_value.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }

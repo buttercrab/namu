@@ -112,7 +112,6 @@ impl<T> Builder<T> {
 pub fn call<Env: 'static, T: 'static>(
     builder: &Builder<Env>,
     task_id: &str,
-    _debug_loc: String,
     inputs: Vec<ValueId>,
 ) -> TracedValue<T> {
     let outs = builder.call(task_id.to_string(), inputs, 1);
@@ -126,7 +125,6 @@ macro_rules! define_call {
         pub fn $fname<Env: 'static, $( $T: 'static ),*>(
             builder: &Builder<Env>,
             task_id: &str,
-            _debug_loc: String,
             inputs: Vec<ValueId>,
         ) -> ( $( TracedValue<$T>, )* ) {
             let outs = builder.call(task_id.to_string(), inputs, $arity);

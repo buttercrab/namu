@@ -95,15 +95,6 @@ pub fn less_than<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "less_than",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "less_than",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_while_loop.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
     )
 }
@@ -194,15 +185,6 @@ pub fn add_one<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "add_one",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "add_one",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_while_loop.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }

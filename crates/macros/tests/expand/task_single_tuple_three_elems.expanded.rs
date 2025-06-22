@@ -100,15 +100,6 @@ pub fn triple<G: 'static>(
     ::namu::__macro_exports::call3(
         &builder,
         "triple",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "triple",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_tuple_three_elems.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }

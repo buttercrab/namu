@@ -67,18 +67,5 @@ pub mod no_args_task {
 pub fn no_args_task<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
 ) -> ::namu::__macro_exports::TracedValue<()> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "no_args_task",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "no_args_task",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_no_args_return_unit.rs",
-                ),
-            );
-            res
-        }),
-        ::alloc::vec::Vec::new(),
-    )
+    ::namu::__macro_exports::call(&builder, "no_args_task", ::alloc::vec::Vec::new())
 }

@@ -88,15 +88,6 @@ pub fn stream_task<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "stream_task",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "stream_task",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_stream.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([input.id])),
     )
 }

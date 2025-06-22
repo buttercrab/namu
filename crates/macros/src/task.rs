@@ -434,7 +434,7 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
     };
 
     let constructor_body = quote! {
-        ::namu::__macro_exports::#call_fn_ident(&builder, stringify!(#func_name), format!("{}::{}", stringify!(#func_name), file!()), vec![#(#input_ids),*])
+        ::namu::__macro_exports::#call_fn_ident(&builder, stringify!(#func_name), vec![#(#input_ids),*])
     };
 
     quote! {

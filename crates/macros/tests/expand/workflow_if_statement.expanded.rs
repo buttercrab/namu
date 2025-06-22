@@ -86,15 +86,6 @@ pub fn do_nothing<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "do_nothing",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "do_nothing",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_statement.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }

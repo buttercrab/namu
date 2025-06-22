@@ -86,15 +86,6 @@ pub fn add_one<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "add_one",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "add_one",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }
@@ -185,15 +176,6 @@ pub fn multiply_by_two<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "multiply_by_two",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "multiply_by_two",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_chained_tasks.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }

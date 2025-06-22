@@ -86,15 +86,6 @@ pub fn is_positive<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "is_positive",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "is_positive",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }
@@ -166,20 +157,7 @@ pub mod action_if_true {
 pub fn action_if_true<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
 ) -> ::namu::__macro_exports::TracedValue<()> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "action_if_true",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "action_if_true",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_with_task_in_condition.rs",
-                ),
-            );
-            res
-        }),
-        ::alloc::vec::Vec::new(),
-    )
+    ::namu::__macro_exports::call(&builder, "action_if_true", ::alloc::vec::Vec::new())
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]

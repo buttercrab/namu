@@ -86,15 +86,6 @@ pub fn single_arg_task<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "single_arg_task",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "single_arg_task",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/task_single_one_arg.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }

@@ -86,15 +86,6 @@ pub fn task_a<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "task_a",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "task_a",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }
@@ -185,15 +176,6 @@ pub fn task_b<G: 'static>(
     ::namu::__macro_exports::call(
         &builder,
         "task_b",
-        ::alloc::__export::must_use({
-            let res = ::alloc::fmt::format(
-                format_args!(
-                    "{0}::{1}", "task_b",
-                    "/home/jaeyong/dev/github/namu/crates/macros/tests/expand/workflow_if_else_statement.rs",
-                ),
-            );
-            res
-        }),
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }
