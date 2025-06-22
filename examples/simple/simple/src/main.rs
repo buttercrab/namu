@@ -1,9 +1,8 @@
 use std::thread;
 
-use namu_engine::{
-    context::dynamic_context::DynamicContextManager,
-    engine::{Engine, simple_engine::SimpleEngine},
-};
+use namu_engine::context::dynamic_context::DynamicContextManager;
+use namu_engine::engine::Engine;
+use namu_engine::engine::simple_engine::SimpleEngine;
 use simple::simple;
 
 fn main() {

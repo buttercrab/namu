@@ -4,19 +4,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use anyhow::Result;
+use inventory; // for compile-time task registry
 use itertools::Itertools;
-use kanal::Sender as OneShotSender;
-use kanal::{Receiver, Sender, bounded, unbounded};
+use kanal::{Receiver, Sender as OneShotSender, Sender, bounded, unbounded};
 use namu_core::ir::{Next, Workflow};
-use namu_core::{DynamicTaskContext, Value, ValueId};
+use namu_core::{DynamicTaskContext, Value, ValueId, registry as task_registry};
 use scc::HashIndex;
 use scc::ebr::Guard;
 
 use crate::context::ContextManager;
 use crate::engine::{Engine, PackFn, TaskImpl, UnpackFn};
-
-use inventory; // for compile-time task registry
-use namu_core::registry as task_registry;
 
 struct RunContext<'a, C: ContextManager> {
     context_manager: &'a C,
@@ -419,7 +416,8 @@ fn parse_literal(raw: &str) -> Value {
 }
 
 /// Walk the workflow starting at `op_id`, executing literals & φ, and schedule the first `Call`.
-/// Returns `Some(updated_ctx_id)` when a call is enqueued, or `None` if a Return terminator was hit.
+/// Returns `Some(updated_ctx_id)` when a call is enqueued, or `None` if a Return terminator was
+/// hit.
 fn drive_until_call<C: ContextManager>(
     run_ctx: &RunContext<C>,
     mut op_id: usize,

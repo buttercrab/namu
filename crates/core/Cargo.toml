@@ -6,9 +6,9 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 async-trait = "0.1.88"
+erased-serde = { workspace = true }
 futures = { workspace = true }
+inventory.workspace = true
 kanal = { workspace = true }
 serde = { workspace = true }
 typeid = "1.0"
-erased-serde = { workspace = true }
-inventory.workspace = true

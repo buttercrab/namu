@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-namu = { path = "../../../" }
 add = { path = "../tasks/add" }
 is_less = { path = "../tasks/is_less" }
-serde_json = "1.0"
-namu-engine = { path = "../../../crates/engine" }
+namu = { path = "../../../" }
 namu-core = { path = "../../../crates/core" }
+namu-engine = { path = "../../../crates/engine" }
+serde_json = "1.0"

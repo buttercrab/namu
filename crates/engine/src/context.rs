@@ -1,5 +1,6 @@
+use std::cmp::Ordering;
+use std::fmt;
 use std::hash::Hash;
-use std::{cmp::Ordering, fmt};
 
 use namu_core::{Value, ValueId};
 

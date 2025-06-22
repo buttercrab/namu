@@ -5,7 +5,8 @@ use namu::{register_task, task};
 use namu_core::Value;
 use namu_core::ir::Workflow;
 use namu_engine::context::dynamic_context::DynamicContextManager;
-use namu_engine::engine::{Engine, simple_engine::SimpleEngine};
+use namu_engine::engine::Engine;
+use namu_engine::engine::simple_engine::SimpleEngine;
 
 // --- Test Tasks ---
 
@@ -87,10 +88,10 @@ pub fn panicker() -> Result<i32> {
 /// in-process [`SimpleEngine`].
 ///
 /// * `workflow` – The compiled workflow IR to run.
-/// * `task_registrations` – An iterator over task registrations where each
-///   tuple contains `(task_name, task_impl, pack_fn, unpack_fn)` mirroring
-///   the parameters of [`Engine::add_task`].  Passing `None` for the pack / unpack
-///   functions is fine for tasks that take / return a single value.
+/// * `task_registrations` – An iterator over task registrations where each tuple contains
+///   `(task_name, task_impl, pack_fn, unpack_fn)` mirroring the parameters of [`Engine::add_task`].
+///   Passing `None` for the pack / unpack functions is fine for tasks that take / return a single
+///   value.
 ///
 /// The function blocks until the workflow finishes and returns the produced
 /// [`Value`].  The caller is expected to down-cast the value to the expected
@@ -112,8 +113,8 @@ pub fn run_workflow(workflow: Workflow) -> Vec<Value> {
     let wf_id = engine.create_workflow(workflow);
     let run_id = engine.create_run(wf_id);
 
-    // 3. Run the engine in a background thread so we can synchronously wait
-    //    for the result on the main thread.
+    // 3. Run the engine in a background thread so we can synchronously wait for the result on the
+    //    main thread.
     let engine_clone = engine.clone();
     let handle = std::thread::spawn(move || {
         engine_clone.run(run_id);

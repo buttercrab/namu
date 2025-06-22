@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = { workspace = true }
+erased-serde = { workspace = true }
+inventory.workspace = true
+itertools = { workspace = true }
+kanal = { workspace = true }
 namu-core = { path = "../core" }
 scc = "2.3"
-kanal = { workspace = true }
-itertools = { workspace = true }
-erased-serde = { workspace = true }
-anyhow = { workspace = true }
-inventory.workspace = true

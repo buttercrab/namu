@@ -1,0 +1,41 @@
+name: Rust
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest Rust toolchain
+        run: |
+          rustup update --no-self-update
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: |
+          cargo check --workspace
+      - name: Test
+        run: |
+          cargo test --workspace
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest Rust toolchain
+        run: |
+          rustup update --no-self-update
+          rustup toolchain install nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: |
+          cargo +nightly fmt --all --check

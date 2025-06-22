@@ -1,10 +1,9 @@
+use darling::FromMeta;
 use darling::ast::NestedMeta;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::parse_macro_input;
-use syn::{Token, punctuated::Punctuated};
-
-use darling::FromMeta;
+use syn::punctuated::Punctuated;
+use syn::{Token, parse_macro_input};
 
 #[derive(Debug, FromMeta)]
 struct Args {
