@@ -17,6 +17,9 @@ syn = { version = "2", features = [
     "extra-traits",
 ] }
 erased-serde.workspace = true
+# For registry submission
+inventory.workspace = true
+darling.workspace = true
 
 [dev-dependencies]
 macrotest = "1.1.0"

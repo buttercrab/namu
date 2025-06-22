@@ -11,3 +11,4 @@ kanal = { workspace = true }
 serde = { workspace = true }
 typeid = "1.0"
 erased-serde = { workspace = true }
+inventory.workspace = true

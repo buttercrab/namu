@@ -445,6 +445,105 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
     }
 }
 
+// --- Helper generators for pack/unpack and wrapper module ---
+
+fn generate_pack_fn(def: &TaskDefinition) -> TokenStream2 {
+    let pack_fn_ident = format_ident!("pack");
+    let arg_types = def.arg_types;
+
+    let arg_count = arg_types.len();
+
+    match arg_count {
+        0 => quote! {
+            #[allow(dead_code)]
+            pub fn #pack_fn_ident(_inputs: Vec<::namu::__macro_exports::Value>) -> ::namu::__macro_exports::Value {
+                ::namu::__macro_exports::Value::new(())
+            }
+        },
+        1 => quote! {
+            #[allow(dead_code)]
+            pub fn #pack_fn_ident(mut inputs: Vec<::namu::__macro_exports::Value>) -> ::namu::__macro_exports::Value {
+                debug_assert_eq!(inputs.len(), 1);
+                inputs.pop().unwrap()
+            }
+        },
+        _ => {
+            // Multiple arguments – downcast each then pack into tuple
+            let idxs: Vec<_> = (0..arg_count).collect();
+            let vars: Vec<Ident> = idxs.iter().map(|i| format_ident!("v{i}")).collect();
+            let downcasts = vars.iter().zip(arg_types.iter()).map(|(v, ty)| {
+                quote! {
+                    let #v = {
+                        let val = inputs.remove(0);
+                        (*val.downcast_ref::<#ty>().expect("pack downcast failed")).clone()
+                    };
+                }
+            });
+            let tuple = quote! { (#(#vars),*) };
+            quote! {
+                #[allow(dead_code)]
+                pub fn #pack_fn_ident(mut inputs: Vec<::namu::__macro_exports::Value>) -> ::namu::__macro_exports::Value {
+                    debug_assert_eq!(inputs.len(), #arg_count);
+                    #(#downcasts)*
+                    ::namu::__macro_exports::Value::new(#tuple)
+                }
+            }
+        }
+    }
+}
+
+fn generate_unpack_fn(def: &TaskDefinition) -> TokenStream2 {
+    let unpack_fn_ident = format_ident!("unpack");
+
+    // Determine output arity similar to constructor logic
+    let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.args.task_type {
+        TaskType::Single => {
+            let ty = extract_result_type(def.return_ty).clone();
+            if let Type::Tuple(tuple) = &ty {
+                if tuple.elems.is_empty() {
+                    (ty.clone(), false, Vec::new())
+                } else {
+                    (ty.clone(), true, tuple.elems.iter().cloned().collect())
+                }
+            } else {
+                (ty.clone(), false, Vec::new())
+            }
+        }
+        TaskType::Batch => {
+            let output_result_type = extract_vec_inner_type(def.return_ty);
+            let ty = extract_result_type(output_result_type).clone();
+            (ty, false, Vec::new())
+        }
+        TaskType::Stream => {
+            let output_iterator_type = extract_result_type(def.return_ty);
+            let ty = extract_result_type(extract_iterator_item_type(output_iterator_type)).clone();
+            (ty, false, Vec::new())
+        }
+    };
+
+    if is_tuple {
+        // Need to downcast to tuple then split
+        let arity = tuple_elems.len();
+        let idxs: Vec<_> = (0..arity).collect();
+        let vars: Vec<Ident> = idxs.iter().map(|i| format_ident!("o{i}")).collect();
+        quote! {
+            #[allow(dead_code)]
+            pub fn #unpack_fn_ident(val: ::namu::__macro_exports::Value) -> Vec<::namu::__macro_exports::Value> {
+                let tuple_ref = val.downcast_ref::<#output_type>().expect("unpack downcast failed");
+                let (#(#vars),*) = tuple_ref.clone();
+                vec![#(::namu::__macro_exports::Value::new(#vars)),*]
+            }
+        }
+    } else {
+        quote! {
+            #[allow(dead_code)]
+            pub fn #unpack_fn_ident(val: ::namu::__macro_exports::Value) -> Vec<::namu::__macro_exports::Value> {
+                vec![val]
+            }
+        }
+    }
+}
+
 // --- Main Macro Logic ---
 
 pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -452,8 +551,8 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
 
     let func_name = &func.sig.ident;
-    let struct_name = format_ident!("__{}", func_name);
-    let impl_func_name = format_ident!("__impl_{}", func_name);
+    let struct_name = format_ident!("Task");
+    let impl_func_name = format_ident!("task_impl");
 
     let impl_func = {
         let mut f = func.clone();
@@ -501,9 +600,21 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let constructor = generate_constructor(&def, &func.sig);
 
+    let pack_fn = generate_pack_fn(&def);
+    let unpack_fn = generate_unpack_fn(&def);
+
+    let module_ident = func_name;
+
     quote! {
-        #impl_func
-        #task_trait_impl
+        #[allow(non_snake_case)]
+        pub mod #module_ident {
+            use super::*;
+            #impl_func
+            #task_trait_impl
+            #pack_fn
+            #unpack_fn
+        }
+
         #constructor
     }
     .into()

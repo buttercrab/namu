@@ -1,5 +1,6 @@
 mod context;
 pub mod ir;
+pub mod registry;
 mod task;
 mod value;
 

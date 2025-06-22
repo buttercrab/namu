@@ -1,15 +1,10 @@
-use namu_core::Value;
+use std::thread;
+
 use namu_engine::{
     context::dynamic_context::DynamicContextManager,
     engine::{Engine, simple_engine::SimpleEngine},
 };
 use simple::simple;
-
-fn pack_two(inputs: Vec<Value>) -> Value {
-    let a = *inputs[0].downcast_ref::<i32>().unwrap();
-    let b = *inputs[1].downcast_ref::<i32>().unwrap();
-    Value::new((a, b))
-}
 
 fn main() {
     let graph = simple();
@@ -18,17 +13,15 @@ fn main() {
     let json = serde_json::to_string_pretty(&serialized).unwrap();
     println!("{}", json);
 
-    let engine = SimpleEngine::new(DynamicContextManager::new());
+    let engine = SimpleEngine::with_registered(DynamicContextManager::new());
     let wf_id = engine.create_workflow(serialized);
-    engine.add_task("add", Box::new(add::__add), Some(pack_two), None);
-    engine.add_task(
-        "is_less",
-        Box::new(is_less::__is_less),
-        Some(pack_two),
-        None,
-    );
     let run_id = engine.create_run(wf_id);
-    engine.run(run_id);
+    let engine_clone = engine.clone();
+    let handle = thread::spawn(move || engine_clone.run(run_id));
     let result = engine.get_result(run_id);
-    println!("result: {:?}", result.recv().unwrap());
+    println!(
+        "result: {:?}",
+        result.recv().unwrap().downcast_ref::<i32>().unwrap()
+    );
+    handle.join().unwrap();
 }

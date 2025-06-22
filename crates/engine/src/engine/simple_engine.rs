@@ -15,6 +15,9 @@ use scc::ebr::Guard;
 use crate::context::ContextManager;
 use crate::engine::{Engine, PackFn, TaskImpl, UnpackFn};
 
+use inventory; // for compile-time task registry
+use namu_core::registry as task_registry;
+
 struct RunContext<'a, C: ContextManager> {
     context_manager: &'a C,
     workflow: &'a Workflow,
@@ -73,6 +76,38 @@ impl<C: ContextManager + Send + Sync + 'static> SimpleEngine<C> {
                 run_results: HashIndex::new(),
                 run_result_senders: HashIndex::new(),
             }),
+        }
+    }
+
+    /// Convenience helper that constructs the engine and automatically
+    /// registers every task collected via the `inventory` registry.  This is
+    /// the common way end-users interact with the runtime – they no longer
+    /// need to call `add_task` manually.
+    pub fn with_registered(context_manager: C) -> SimpleEngine<C> {
+        let engine = Self::new(context_manager);
+        engine.register_all_tasks();
+        engine
+    }
+
+    /// Iterate over the global task registry and add each entry to the
+    /// engine's internal maps.
+    fn register_all_tasks(&self) {
+        for entry in inventory::iter::<task_registry::TaskEntry> {
+            // The boxed trait object returned by `create` uses `usize` as the
+            // context identifier.  All built-in context managers in NAMU also
+            // use `usize`, so we can safely transmute to the expected trait
+            // object type for the concrete `C`.
+            let task: TaskImpl<C> = unsafe {
+                std::mem::transmute::<
+                    Box<
+                        dyn namu_core::Task<usize, namu_core::DynamicTaskContext<usize>>
+                            + Send
+                            + Sync,
+                    >,
+                    TaskImpl<C>,
+                >((entry.create)())
+            };
+            self.add_task(entry.name, task, entry.pack, entry.unpack);
         }
     }
 }
