@@ -8,9 +8,10 @@ use darling::FromMeta;
 
 #[derive(Debug, FromMeta)]
 struct Args {
-    method: syn::Path, // allow module-qualified paths
+    method: syn::Path,
     name: String,
     author: String,
+    version: Option<String>,
 }
 
 pub fn register_task_impl(input: TokenStream) -> TokenStream {
@@ -25,6 +26,7 @@ pub fn register_task_impl(input: TokenStream) -> TokenStream {
     let method_path = args.method;
     let name_lit = args.name;
     let author_lit = args.author;
+    let version_lit = args.version.unwrap_or_else(|| "0.1".to_string());
 
     let expanded = quote! {
         ::namu::__macro_exports::inventory::submit! {
@@ -34,6 +36,7 @@ pub fn register_task_impl(input: TokenStream) -> TokenStream {
                 create: || Box::new(#method_path::Task),
                 pack:   Some(#method_path::pack),
                 unpack: Some(#method_path::unpack),
+                version: #version_lit,
             }
         }
     };

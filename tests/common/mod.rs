@@ -14,7 +14,7 @@ pub fn add(a: i32, b: i32) -> Result<i32> {
     Ok(a + b)
 }
 
-register_task! { method = add, name = "add", author = "test" }
+register_task! { method = add, name = "add", author = "test", version = "0.1" }
 
 #[task]
 pub fn is_positive(v: i32) -> Result<bool> {
@@ -41,7 +41,7 @@ pub fn less_than(a: i32, b: i32) -> Result<bool> {
     Ok(a < b)
 }
 
-register_task! { method = less_than, name = "less_than", author = "test" }
+register_task! { method = less_than, name = "less_than", author = "test", version = "0.1" }
 
 #[task]
 pub fn is_even(n: i32) -> Result<bool> {
@@ -68,14 +68,14 @@ pub fn range(start: i32, end: i32) -> Result<impl Iterator<Item = Result<i32>>> 
     Ok((start..end).map(|x| x * 10).map(Ok))
 }
 
-register_task! { method = range, name = "range", author = "test" }
+register_task! { method = range, name = "range", author = "test", version = "0.1" }
 
 #[task(stream)]
 pub fn split(n: i32, k: i32) -> Result<impl Iterator<Item = Result<i32>>> {
     Ok((0..k).map(move |x| n + x).map(Ok))
 }
 
-register_task! { method = split, name = "split", author = "test" }
+register_task! { method = split, name = "split", author = "test", version = "0.1" }
 
 #[task]
 #[allow(unreachable_code)]

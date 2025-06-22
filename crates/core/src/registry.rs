@@ -20,6 +20,8 @@ pub struct TaskEntry {
     pub author: &'static str,
     /// Factory that returns a boxed task instance.
     pub create: fn() -> Box<dyn Task<usize, DynamicTaskContext<usize>> + Send + Sync>,
+    /// SemVer-style version string of the task implementation.
+    pub version: &'static str,
     /// Optional pack helper.  `None` means the task takes exactly one input
     /// and no special packing is required.
     pub pack: Option<PackFn>,

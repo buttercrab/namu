@@ -8,5 +8,6 @@ pub fn add(a: i32, b: i32) -> Result<i32> {
 register_task! {
     method = add,
     name = "add",
-    author = "Jaeyong Sung"
+    author = "Jaeyong Sung",
+    version = "0.1"
 }

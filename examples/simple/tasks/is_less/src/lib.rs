@@ -8,5 +8,6 @@ pub fn is_less(a: i32, b: i32) -> Result<bool> {
 register_task! {
     method = is_less,
     name = "is_less",
-    author = "Jaeyong Sung"
+    author = "Jaeyong Sung",
+    version = "0.1"
 }
