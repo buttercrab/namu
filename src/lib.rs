@@ -5,6 +5,7 @@ pub mod prelude {
     pub use crate::{task, workflow};
 }
 
+#[doc(hidden)]
 pub mod __macro_exports {
     pub use anyhow::Result;
     pub use inventory;
