@@ -35,6 +35,7 @@ jobs:
         run: |
           rustup update --no-self-update
           rustup toolchain install nightly
+          rustup component add rustfmt --toolchain nightly
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: |
