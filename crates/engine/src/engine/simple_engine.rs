@@ -9,8 +9,8 @@ use itertools::Itertools;
 use kanal::{Receiver, Sender as OneShotSender, Sender, bounded, unbounded};
 use namu_core::ir::{Next, Workflow};
 use namu_core::{DynamicTaskContext, Value, ValueId, registry as task_registry};
-use scc::HashIndex;
 use scc::ebr::Guard;
+use scc::{HashIndex, HashMap};
 
 use crate::context::ContextManager;
 use crate::engine::{Engine, PackFn, TaskImpl, UnpackFn};
@@ -50,8 +50,8 @@ pub struct SimpleEngineInner<C: ContextManager> {
     tasks: HashIndex<String, TaskImpl<C>>,
     pack_map: HashIndex<String, PackFn>,
     unpack_map: HashIndex<String, UnpackFn>,
-    run_results: HashIndex<usize, Receiver<Value>>,
-    run_result_senders: HashIndex<usize, Sender<Value>>,
+    run_results: HashMap<usize, Receiver<Value>>,
+    run_result_senders: HashMap<usize, Sender<Value>>,
 }
 
 pub struct SimpleEngine<C: ContextManager> {
@@ -70,8 +70,8 @@ impl<C: ContextManager + Send + Sync + 'static> SimpleEngine<C> {
                 tasks: HashIndex::new(),
                 pack_map: HashIndex::new(),
                 unpack_map: HashIndex::new(),
-                run_results: HashIndex::new(),
-                run_result_senders: HashIndex::new(),
+                run_results: HashMap::new(),
+                run_result_senders: HashMap::new(),
             }),
         }
     }
@@ -147,13 +147,8 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
             .peek(&workflow_id, &guard)
             .cloned()
             .unwrap();
-        let result_tx = self
-            .inner
-            .run_result_senders
-            .peek(&run_id, &guard)
-            .expect("result sender not found")
-            .clone();
         drop(guard);
+        let result_tx = self.inner.run_result_senders.get(&run_id).unwrap().clone();
 
         let task_senders = HashIndex::new();
         let ctx_origin: HashIndex<C::ContextId, usize> = HashIndex::new();
@@ -278,21 +273,12 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
             run_ctx.task_senders.iter(&guard).for_each(|(_, tx)| {
                 let _ = tx.close();
             });
-            let _ = self
-                .inner
-                .run_results
-                .peek(&run_id, &guard)
-                .unwrap()
-                .close();
-            let _ = self
-                .inner
-                .run_result_senders
-                .peek(&run_id, &guard)
-                .unwrap()
-                .close();
-            self.inner.runs.remove(&run_id);
-            drop(guard);
         });
+        drop(result_tx);
+
+        let _ = self.inner.run_results.remove(&run_id);
+        let _ = self.inner.run_result_senders.remove(&run_id);
+        self.inner.runs.remove(&run_id);
     }
 
     fn add_task(
@@ -376,15 +362,7 @@ where
 
 impl<C: ContextManager + Send + Sync + 'static> SimpleEngine<C> {
     pub fn get_result(&self, run_id: usize) -> Receiver<Value> {
-        let guard = Guard::new();
-        let slot = self
-            .inner
-            .run_results
-            .peek(&run_id, &guard)
-            .unwrap()
-            .clone();
-        drop(guard);
-        slot
+        self.inner.run_results.get(&run_id).unwrap().clone()
     }
 }
 

@@ -25,9 +25,9 @@ pub struct RegisterWorkerRequest {
 
 #[derive(Debug, Clone)]
 pub struct WorkerConnection {
-    pub worker_id: String,
-    pub address: String,
-    pub port: u16,
+    pub _worker_id: String,
+    pub _address: String,
+    pub _port: u16,
     pub sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, axum::extract::ws::Message>>>,
 }
 
@@ -71,9 +71,9 @@ async fn websocket_handler(socket: WebSocket, pool: SqlitePool, connections: Wor
 
                         // Store connection
                         let connection = WorkerConnection {
-                            worker_id: register_req.worker_id.clone(),
-                            address: register_req.address,
-                            port: register_req.port,
+                            _worker_id: register_req.worker_id.clone(),
+                            _address: register_req.address,
+                            _port: register_req.port,
                             sender: sender.clone(),
                         };
 

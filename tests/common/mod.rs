@@ -123,10 +123,7 @@ pub fn run_workflow(workflow: Workflow) -> Vec<Value> {
     // 4. Await completion and fetch the single output value.
     let result_rx = engine.get_result(run_id);
 
-    let mut values = Vec::new();
-    while let Ok(value) = result_rx.recv() {
-        values.push(value);
-    }
+    let values = result_rx.collect::<Vec<_>>();
 
     handle.join().expect("engine thread panicked");
 
