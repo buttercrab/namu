@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use namu_core::{Value, ValueId};
+use namu_core::{ContextId, Value, ValueId};
 use scc::ebr::Guard;
 use scc::{HashIndex, HashMap as SccHashMap};
 
@@ -123,13 +123,11 @@ impl DynamicContextManager {
 }
 
 impl ContextManager for DynamicContextManager {
-    type ContextId = usize;
-
-    fn create_context(&self) -> Self::ContextId {
+    fn create_context(&self) -> ContextId {
         self.new_node(None, 0, Value::new(()))
     }
 
-    fn compare_context(&self, a: Self::ContextId, b: Self::ContextId) -> std::cmp::Ordering {
+    fn compare_context(&self, a: ContextId, b: ContextId) -> std::cmp::Ordering {
         if a == b {
             return std::cmp::Ordering::Equal;
         }
@@ -172,16 +170,11 @@ impl ContextManager for DynamicContextManager {
         node_a.order.cmp(&node_b.order)
     }
 
-    fn add_value(
-        &self,
-        context_id: Self::ContextId,
-        val_id: ValueId,
-        value: Value,
-    ) -> Self::ContextId {
+    fn add_value(&self, context_id: ContextId, val_id: ValueId, value: Value) -> ContextId {
         self.new_node(Some(context_id), val_id, value)
     }
 
-    fn get_value(&self, context_id: Self::ContextId, val_id: ValueId) -> Value {
+    fn get_value(&self, context_id: ContextId, val_id: ValueId) -> Value {
         let guard = Guard::new();
         let node = self.nodes.peek(&context_id, &guard).unwrap();
         let depth = node.segment_tree.get(val_id);
@@ -189,7 +182,7 @@ impl ContextManager for DynamicContextManager {
         node.value.clone()
     }
 
-    fn get_values(&self, context_id: Self::ContextId, val_ids: &[ValueId]) -> Vec<Value> {
+    fn get_values(&self, context_id: ContextId, val_ids: &[ValueId]) -> Vec<Value> {
         if val_ids.is_empty() {
             return vec![];
         }
@@ -240,7 +233,7 @@ impl ContextManager for DynamicContextManager {
             .collect()
     }
 
-    fn remove_context(&self, mut context_id: Self::ContextId) {
+    fn remove_context(&self, mut context_id: ContextId) {
         if self
             .node_state
             .update(&context_id, |_, (is_used, _)| *is_used = false)

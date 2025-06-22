@@ -194,14 +194,13 @@ fn generate_common_task_prelude(struct_name: &Ident, specialization_trait: &Iden
         #[derive(Clone, Copy)]
         pub struct #struct_name;
 
-        impl<Id, C> ::namu::__macro_exports::Task<Id, C> for #struct_name
+        impl<C> ::namu::__macro_exports::Task<C> for #struct_name
         where
-            Id: Clone,
-            C: ::namu::__macro_exports::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext,
         {
             fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
 
-            fn clone_boxed(&self) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+            fn clone_boxed(&self) -> Box<dyn ::namu::__macro_exports::Task<C> + Send + Sync> {
                 Box::new(*self)
             }
 
@@ -248,10 +247,9 @@ fn generate_single_task_impl(def: &TaskDefinition) -> TokenStream2 {
     quote! {
         #common
 
-        impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for #struct_name
+        impl<C> ::namu::__macro_exports::SingleTask<C> for #struct_name
         where
-            Id: Clone,
-            C: ::namu::__macro_exports::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext,
         {
             type Input = #input_type;
             type Output = #output_type;
@@ -289,10 +287,9 @@ fn generate_batch_task_impl(def: &TaskDefinition) -> TokenStream2 {
     quote! {
         #common
 
-        impl<Id, C> ::namu::__macro_exports::BatchedTask<Id, C> for #struct_name
+        impl<C> ::namu::__macro_exports::BatchedTask<C> for #struct_name
         where
-            Id: Clone,
-            C: ::namu::__macro_exports::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext,
         {
             type Input = #input_type;
             type Output = #output_type;
@@ -344,10 +341,9 @@ fn generate_stream_task_impl(def: &TaskDefinition) -> TokenStream2 {
     quote! {
         #common
 
-        impl<Id, C> ::namu::__macro_exports::StreamTask<Id, C> for #struct_name
+        impl<C> ::namu::__macro_exports::StreamTask<C> for #struct_name
         where
-            Id: Clone,
-            C: ::namu::__macro_exports::TaskContext<Id>,
+            C: ::namu::__macro_exports::TaskContext,
         {
             type Input = #input_type;
             type Output = #output_type;

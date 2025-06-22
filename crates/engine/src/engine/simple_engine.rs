@@ -3,26 +3,26 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use anyhow::Result;
-use inventory; // for compile-time task registry
+use inventory;
 use itertools::Itertools;
 use kanal::{Receiver, Sender as OneShotSender, Sender, bounded, unbounded};
 use namu_core::ir::{Next, Workflow};
-use namu_core::{DynamicTaskContext, Value, ValueId, registry as task_registry};
+use namu_core::registry::{PackFn, TaskEntry, TaskImpl, UnpackFn};
+use namu_core::{ContextId, DynamicTaskContext, Value, ValueId};
 use scc::ebr::Guard;
 use scc::{HashIndex, HashMap};
 
 use crate::context::ContextManager;
-use crate::engine::{Engine, PackFn, TaskImpl, UnpackFn};
+use crate::engine::Engine;
 
 struct RunContext<'a, C: ContextManager> {
     context_manager: &'a C,
     workflow: &'a Workflow,
-    ctx_origin: &'a HashIndex<C::ContextId, usize>,
+    ctx_origin: &'a HashIndex<ContextId, usize>,
     result_tx: &'a Sender<Value>,
     active_ctxs: &'a AtomicUsize,
     finish_tx: &'a OneShotSender<()>,
-    task_senders: &'a HashIndex<String, Sender<(C::ContextId, Value)>>,
+    task_senders: &'a HashIndex<String, Sender<(ContextId, Value)>>,
     pack_map: &'a HashIndex<String, PackFn>,
 }
 
@@ -47,7 +47,7 @@ pub struct SimpleEngineInner<C: ContextManager> {
     workflow_counter: AtomicUsize,
     runs: HashIndex<usize, usize>,
     run_counter: AtomicUsize,
-    tasks: HashIndex<String, TaskImpl<C>>,
+    tasks: HashIndex<String, TaskImpl>,
     pack_map: HashIndex<String, PackFn>,
     unpack_map: HashIndex<String, UnpackFn>,
     run_results: HashMap<usize, Receiver<Value>>,
@@ -89,21 +89,8 @@ impl<C: ContextManager + Send + Sync + 'static> SimpleEngine<C> {
     /// Iterate over the global task registry and add each entry to the
     /// engine's internal maps.
     fn register_all_tasks(&self) {
-        for entry in inventory::iter::<task_registry::TaskEntry> {
-            // The boxed trait object returned by `create` uses `usize` as the
-            // context identifier.  All built-in context managers in NAMU also
-            // use `usize`, so we can safely transmute to the expected trait
-            // object type for the concrete `C`.
-            let task: TaskImpl<C> = unsafe {
-                std::mem::transmute::<
-                    Box<
-                        dyn namu_core::Task<usize, namu_core::DynamicTaskContext<usize>>
-                            + Send
-                            + Sync,
-                    >,
-                    TaskImpl<C>,
-                >((entry.create)())
-            };
+        for entry in inventory::iter::<TaskEntry> {
+            let task: TaskImpl = (entry.create)();
             self.add_task(entry.name, task, entry.pack, entry.unpack);
         }
     }
@@ -151,7 +138,7 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
         let result_tx = self.inner.run_result_senders.get(&run_id).unwrap().clone();
 
         let task_senders = HashIndex::new();
-        let ctx_origin: HashIndex<C::ContextId, usize> = HashIndex::new();
+        let ctx_origin: HashIndex<ContextId, usize> = HashIndex::new();
 
         // Finish signalling primitives (one-shot)
         let (finish_tx, finish_rx) = bounded::<()>(1);
@@ -177,8 +164,8 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
                 .collect_vec()
                 .into_iter()
                 .for_each(|task_name| {
-                    let (in_tx, in_rx) = unbounded::<(C::ContextId, Value)>();
-                    let (out_tx, out_rx) = unbounded::<(C::ContextId, Result<Value>)>();
+                    let (in_tx, in_rx) = unbounded();
+                    let (out_tx, out_rx) = unbounded();
 
                     run_ctx
                         .task_senders
@@ -238,13 +225,13 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
                                     };
 
                                     if let Some(next_op_id) =
-                                        next_op_id(&run_ctx, &operation.next, ctx_id.clone())
+                                        next_op_id(&run_ctx, &operation.next, ctx_id)
                                     {
                                         drive_until_call(
                                             &run_ctx,
                                             next_op_id,
                                             Some(origin_op_id),
-                                            ctx_id.clone(),
+                                            ctx_id,
                                         );
                                     }
                                 }
@@ -284,7 +271,7 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
     fn add_task(
         &self,
         task_name: &str,
-        task: TaskImpl<C>,
+        task: TaskImpl,
         pack: Option<PackFn>,
         unpack: Option<UnpackFn>,
     ) {
@@ -304,9 +291,9 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
 
 fn add_values<C: ContextManager>(
     run_ctx: &RunContext<C>,
-    ctx_id: C::ContextId,
+    ctx_id: ContextId,
     vals: Vec<(ValueId, Value)>,
-) -> C::ContextId {
+) -> ContextId {
     debug_assert!(!vals.is_empty());
     let mut iter = vals.into_iter();
     let (val_id, val_arc) = iter.next().unwrap();
@@ -315,8 +302,8 @@ fn add_values<C: ContextManager>(
         let old_ctx_id = new_ctx_id;
         new_ctx_id = run_ctx
             .context_manager
-            .add_value(old_ctx_id.clone(), val_id, val_arc);
-        run_ctx.context_manager.remove_context(old_ctx_id.clone());
+            .add_value(old_ctx_id, val_id, val_arc);
+        run_ctx.context_manager.remove_context(old_ctx_id);
     }
 
     run_ctx.active_ctxs.fetch_add(1, Ordering::Release);
@@ -326,11 +313,8 @@ fn add_values<C: ContextManager>(
 fn next_op_id<C: ContextManager>(
     run_ctx: &RunContext<C>,
     next: &Next,
-    ctx_id: C::ContextId,
-) -> Option<usize>
-where
-    C::ContextId: Clone,
-{
+    ctx_id: ContextId,
+) -> Option<usize> {
     match next {
         Next::Jump { next } => Some(*next),
         Next::Branch {
@@ -338,14 +322,14 @@ where
             true_next,
             false_next,
         } => {
-            let cond_any = run_ctx.context_manager.get_value(ctx_id.clone(), *var);
+            let cond_any = run_ctx.context_manager.get_value(ctx_id, *var);
             // unwrap is safe because we check statically that the condition is a bool
             let cond = cond_any.downcast_ref::<bool>().copied().unwrap();
             Some(if cond { *true_next } else { *false_next })
         }
         Next::Return { var } => {
             if let Some(v_id) = var {
-                let val = run_ctx.context_manager.get_value(ctx_id.clone(), *v_id);
+                let val = run_ctx.context_manager.get_value(ctx_id, *v_id);
                 let _ = run_ctx.result_tx.send(val);
             } else {
                 let _ = run_ctx.result_tx.send(Value::new(()));
@@ -366,7 +350,7 @@ impl<C: ContextManager + Send + Sync + 'static> SimpleEngine<C> {
     }
 }
 
-impl<C: ContextManager> Clone for SimpleEngine<C> {
+impl<C: ContextManager + Send + Sync + 'static> Clone for SimpleEngine<C> {
     fn clone(&self) -> Self {
         SimpleEngine {
             inner: self.inner.clone(),
@@ -400,11 +384,8 @@ fn drive_until_call<C: ContextManager>(
     run_ctx: &RunContext<C>,
     mut op_id: usize,
     mut pred_op: Option<usize>,
-    mut ctx_id: C::ContextId,
-) -> Option<C::ContextId>
-where
-    C::ContextId: Clone,
-{
+    mut ctx_id: ContextId,
+) -> Option<ContextId> {
     loop {
         let operation = &run_ctx.workflow.operations[op_id];
 
@@ -427,7 +408,7 @@ where
                         .map(|(_, val_id)| {
                             (
                                 phi.output,
-                                run_ctx.context_manager.get_value(ctx_id.clone(), *val_id),
+                                run_ctx.context_manager.get_value(ctx_id, *val_id),
                             )
                         })
                 });
@@ -436,19 +417,17 @@ where
         }
 
         if !values_to_add.is_empty() {
-            let old_ctx_id = ctx_id.clone();
+            let old_ctx_id = ctx_id;
             ctx_id = add_values(run_ctx, ctx_id, values_to_add);
 
-            run_ctx.context_manager.remove_context(old_ctx_id.clone());
+            run_ctx.context_manager.remove_context(old_ctx_id);
             if run_ctx.active_ctxs.fetch_sub(1, Ordering::AcqRel) == 1 {
                 let _ = run_ctx.finish_tx.send(());
             }
         }
 
         if let Some(call) = &operation.call {
-            let inputs = run_ctx
-                .context_manager
-                .get_values(ctx_id.clone(), &call.inputs);
+            let inputs = run_ctx.context_manager.get_values(ctx_id, &call.inputs);
 
             let guard = Guard::new();
             let pack_fn = run_ctx.pack_map.peek(&call.task_id, &guard).cloned();
@@ -474,16 +453,16 @@ where
                 .clone();
             drop(guard);
 
-            let _ = run_ctx.ctx_origin.insert(ctx_id.clone(), op_id);
+            let _ = run_ctx.ctx_origin.insert(ctx_id, op_id);
 
             sender
-                .send((ctx_id.clone(), packed))
+                .send((ctx_id, packed))
                 .expect("failed to send to task");
 
             return Some(ctx_id);
         }
 
-        match next_op_id(run_ctx, &operation.next, ctx_id.clone()) {
+        match next_op_id(run_ctx, &operation.next, ctx_id) {
             Some(next) => {
                 pred_op = Some(op_id);
                 op_id = next;

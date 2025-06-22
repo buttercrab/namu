@@ -8,7 +8,7 @@ use kanal::{ReceiveError, Receiver, SendError, Sender};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::Value;
+use crate::{ContextId, Value};
 
 #[derive(Debug, Copy, Clone)]
 pub struct TaskEnd;
@@ -22,42 +22,45 @@ impl Display for TaskEnd {
 impl std::error::Error for TaskEnd {}
 
 #[async_trait]
-pub trait TaskContext<Id>: Send {
-    fn recv<T: Send + DeserializeOwned + 'static>(&self) -> Result<(Id, T), ReceiveError>;
+pub trait TaskContext: Send {
+    fn recv<T: Send + DeserializeOwned + 'static>(&self) -> Result<(ContextId, T), ReceiveError>;
 
     async fn recv_async<T: Send + DeserializeOwned + 'static>(
         &self,
-    ) -> Result<(Id, T), ReceiveError>;
+    ) -> Result<(ContextId, T), ReceiveError>;
 
     fn try_recv<T: Send + DeserializeOwned + 'static>(
         &self,
-    ) -> Result<Option<(Id, T)>, ReceiveError>;
+    ) -> Result<Option<(ContextId, T)>, ReceiveError>;
 
     fn send<T: Send + Serialize + Clone + Send + Sync + 'static>(
         &self,
-        item_id: Id,
+        item_id: ContextId,
         data: Result<T>,
     ) -> Result<(), SendError>;
 
     async fn send_async<T: Send + Serialize + Clone + Send + Sync + 'static>(
         &self,
-        item_id: Id,
+        item_id: ContextId,
         data: Result<T>,
     ) -> Result<(), SendError>;
 
-    fn send_end(&self, item_id: Id) -> Result<(), SendError>;
+    fn send_end(&self, item_id: ContextId) -> Result<(), SendError>;
 
-    async fn send_end_async(&self, item_id: Id) -> Result<(), SendError>;
+    async fn send_end_async(&self, item_id: ContextId) -> Result<(), SendError>;
 }
 
 #[derive(Clone)]
-pub struct StaticTaskContext<Id, In, Out> {
-    input_ch: Receiver<(Id, In)>,
-    output_ch: Sender<(Id, Result<Out>)>,
+pub struct StaticTaskContext<In, Out> {
+    input_ch: Receiver<(ContextId, In)>,
+    output_ch: Sender<(ContextId, Result<Out>)>,
 }
 
-impl<Id, In, Out> StaticTaskContext<Id, In, Out> {
-    pub fn new(input_ch: Receiver<(Id, In)>, output_ch: Sender<(Id, Result<Out>)>) -> Self {
+impl<In, Out> StaticTaskContext<In, Out> {
+    pub fn new(
+        input_ch: Receiver<(ContextId, In)>,
+        output_ch: Sender<(ContextId, Result<Out>)>,
+    ) -> Self {
         Self {
             input_ch,
             output_ch,
@@ -66,13 +69,12 @@ impl<Id, In, Out> StaticTaskContext<Id, In, Out> {
 }
 
 #[async_trait]
-impl<Id, In, Out> TaskContext<Id> for StaticTaskContext<Id, In, Out>
+impl<In, Out> TaskContext for StaticTaskContext<In, Out>
 where
-    Id: Send,
     In: Send + 'static,
     Out: Send + 'static,
 {
-    fn recv<T: 'static>(&self) -> Result<(Id, T), ReceiveError> {
+    fn recv<T: 'static>(&self) -> Result<(ContextId, T), ReceiveError> {
         assert_eq!(
             TypeId::of::<T>(),
             TypeId::of::<In>(),
@@ -87,7 +89,7 @@ where
         Ok((id, unsafe { transmute_unchecked(data) }))
     }
 
-    async fn recv_async<T: 'static>(&self) -> Result<(Id, T), ReceiveError> {
+    async fn recv_async<T: 'static>(&self) -> Result<(ContextId, T), ReceiveError> {
         assert_eq!(
             TypeId::of::<T>(),
             TypeId::of::<In>(),
@@ -100,7 +102,7 @@ where
         Ok((id, unsafe { transmute_unchecked(data) }))
     }
 
-    fn try_recv<T: 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError> {
+    fn try_recv<T: 'static>(&self) -> Result<Option<(ContextId, T)>, ReceiveError> {
         assert_eq!(
             TypeId::of::<T>(),
             TypeId::of::<In>(),
@@ -117,7 +119,7 @@ where
         Ok(result)
     }
 
-    fn send<T: 'static>(&self, item_id: Id, data: Result<T>) -> Result<(), SendError> {
+    fn send<T: 'static>(&self, item_id: ContextId, data: Result<T>) -> Result<(), SendError> {
         assert_eq!(
             TypeId::of::<T>(),
             TypeId::of::<Out>(),
@@ -135,7 +137,7 @@ where
 
     async fn send_async<T: Send + 'static>(
         &self,
-        item_id: Id,
+        item_id: ContextId,
         data: Result<T>,
     ) -> Result<(), SendError> {
         assert_eq!(
@@ -155,13 +157,13 @@ where
             .await
     }
 
-    fn send_end(&self, item_id: Id) -> Result<(), SendError> {
+    fn send_end(&self, item_id: ContextId) -> Result<(), SendError> {
         // TODO: better way to signal end of task?
         self.output_ch
             .send((item_id, Err(anyhow::Error::from(TaskEnd))))
     }
 
-    async fn send_end_async(&self, item_id: Id) -> Result<(), SendError> {
+    async fn send_end_async(&self, item_id: ContextId) -> Result<(), SendError> {
         self.output_ch
             .as_async()
             .send((item_id, Err(anyhow::Error::from(TaskEnd))))
@@ -170,13 +172,16 @@ where
 }
 
 #[derive(Clone)]
-pub struct DynamicTaskContext<Id> {
-    input_ch: Receiver<(Id, Value)>,
-    output_ch: Sender<(Id, Result<Value>)>,
+pub struct DynamicTaskContext {
+    input_ch: Receiver<(ContextId, Value)>,
+    output_ch: Sender<(ContextId, Result<Value>)>,
 }
 
-impl<Id> DynamicTaskContext<Id> {
-    pub fn new(input_ch: Receiver<(Id, Value)>, output_ch: Sender<(Id, Result<Value>)>) -> Self {
+impl DynamicTaskContext {
+    pub fn new(
+        input_ch: Receiver<(ContextId, Value)>,
+        output_ch: Sender<(ContextId, Result<Value>)>,
+    ) -> Self {
         Self {
             input_ch,
             output_ch,
@@ -185,21 +190,18 @@ impl<Id> DynamicTaskContext<Id> {
 }
 
 #[async_trait]
-impl<Id> TaskContext<Id> for DynamicTaskContext<Id>
-where
-    Id: Send,
-{
-    fn recv<T: Send + 'static>(&self) -> Result<(Id, T), ReceiveError> {
+impl TaskContext for DynamicTaskContext {
+    fn recv<T: 'static>(&self) -> Result<(ContextId, T), ReceiveError> {
         let (id, data) = self.input_ch.recv()?;
         Ok((id, unsafe { data.take::<T>() }))
     }
 
-    async fn recv_async<T: Send + 'static>(&self) -> Result<(Id, T), ReceiveError> {
+    async fn recv_async<T: 'static>(&self) -> Result<(ContextId, T), ReceiveError> {
         let (id, data) = self.input_ch.as_async().recv().await?;
         Ok((id, unsafe { data.take::<T>() }))
     }
 
-    fn try_recv<T: Send + 'static>(&self) -> Result<Option<(Id, T)>, ReceiveError> {
+    fn try_recv<T: 'static>(&self) -> Result<Option<(ContextId, T)>, ReceiveError> {
         let result = self
             .input_ch
             .try_recv()?
@@ -209,7 +211,7 @@ where
 
     fn send<T: Serialize + Clone + Send + Sync + 'static>(
         &self,
-        item_id: Id,
+        item_id: ContextId,
         data: Result<T>,
     ) -> Result<(), SendError> {
         self.output_ch.send((item_id, data.map(Value::new)))
@@ -217,7 +219,7 @@ where
 
     async fn send_async<T: Serialize + Clone + Send + Sync + 'static>(
         &self,
-        item_id: Id,
+        item_id: ContextId,
         data: Result<T>,
     ) -> Result<(), SendError> {
         self.output_ch
@@ -226,13 +228,13 @@ where
             .await
     }
 
-    fn send_end(&self, item_id: Id) -> Result<(), SendError> {
+    fn send_end(&self, item_id: ContextId) -> Result<(), SendError> {
         // TODO: better way to signal end of task?
         self.output_ch
             .send((item_id, Err(anyhow::Error::from(TaskEnd))))
     }
 
-    async fn send_end_async(&self, item_id: Id) -> Result<(), SendError> {
+    async fn send_end_async(&self, item_id: ContextId) -> Result<(), SendError> {
         self.output_ch
             .as_async()
             .send((item_id, Err(anyhow::Error::from(TaskEnd))))

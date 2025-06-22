@@ -18,27 +18,25 @@ pub mod single_arg_task {
     #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::marker::Copy for Task {}
-    impl<Id, C> ::namu::__macro_exports::Task<Id, C> for Task
+    impl<C> ::namu::__macro_exports::Task<C> for Task
     where
-        Id: Clone,
-        C: ::namu::__macro_exports::TaskContext<Id>,
+        C: ::namu::__macro_exports::TaskContext,
     {
         fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> {
             Ok(())
         }
         fn clone_boxed(
             &self,
-        ) -> Box<dyn ::namu::__macro_exports::Task<Id, C> + Send + Sync> {
+        ) -> Box<dyn ::namu::__macro_exports::Task<C> + Send + Sync> {
             Box::new(*self)
         }
         fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
             ::namu::__macro_exports::SingleTask::run(self, context)
         }
     }
-    impl<Id, C> ::namu::__macro_exports::SingleTask<Id, C> for Task
+    impl<C> ::namu::__macro_exports::SingleTask<C> for Task
     where
-        Id: Clone,
-        C: ::namu::__macro_exports::TaskContext<Id>,
+        C: ::namu::__macro_exports::TaskContext,
     {
         type Input = i32;
         type Output = i32;

@@ -13,3 +13,4 @@ pub use value::Value;
 
 pub type ValueId = usize;
 pub type OpId = usize;
+pub type ContextId = usize;

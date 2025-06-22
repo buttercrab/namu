@@ -1,17 +1,9 @@
 use namu_core::ir::Workflow;
-use namu_core::{DynamicTaskContext, Task, Value};
+use namu_core::registry::{PackFn, TaskImpl, UnpackFn};
 
 use crate::context::ContextManager;
 
 pub mod simple_engine;
-
-pub type PackFn = fn(Vec<Value>) -> Value;
-pub type UnpackFn = fn(Value) -> Vec<Value>;
-pub type TaskImpl<C> = Box<
-    dyn Task<<C as ContextManager>::ContextId, DynamicTaskContext<<C as ContextManager>::ContextId>>
-        + Send
-        + Sync,
->;
 
 pub trait Engine<C: ContextManager> {
     type WorkflowId;
@@ -26,7 +18,7 @@ pub trait Engine<C: ContextManager> {
     fn add_task(
         &self,
         task_name: &str,
-        task: TaskImpl<C>,
+        task: TaskImpl,
         pack: Option<PackFn>,
         unpack: Option<UnpackFn>,
     );

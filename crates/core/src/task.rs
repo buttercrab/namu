@@ -6,21 +6,20 @@ use serde::de::DeserializeOwned;
 
 use crate::context::TaskContext;
 
-pub trait Task<Id, C>
+pub trait Task<C>
 where
-    C: TaskContext<Id>,
+    C: TaskContext,
 {
     fn prepare(&mut self) -> Result<()>;
 
-    fn clone_boxed(&self) -> Box<dyn Task<Id, C> + Send + Sync>;
+    fn clone_boxed(&self) -> Box<dyn Task<C> + Send + Sync>;
 
     fn run(&mut self, context: C) -> Result<()>;
 }
 
-pub trait SingleTask<Id, C>: Task<Id, C>
+pub trait SingleTask<C>: Task<C>
 where
-    Id: Clone,
-    C: TaskContext<Id>,
+    C: TaskContext,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Serialize + Clone + Send + Sync + 'static;
@@ -30,17 +29,16 @@ where
     fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv() {
             let y = self.call(x);
-            let _ = context.send(id.clone(), y);
+            let _ = context.send(id, y);
             let _ = context.send_end(id);
         }
         Ok(())
     }
 }
 
-pub trait BatchedTask<Id, C>: Task<Id, C>
+pub trait BatchedTask<C>: Task<C>
 where
-    Id: Clone,
-    C: TaskContext<Id>,
+    C: TaskContext,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Serialize + Clone + Send + Sync + 'static;
@@ -55,7 +53,7 @@ where
         let mut buf = Vec::with_capacity(batch_size);
 
         while let Ok((id, x)) = context.recv() {
-            ids.push(id.clone());
+            ids.push(id);
             buf.push(x);
 
             if buf.len() >= batch_size {
@@ -64,8 +62,8 @@ where
                 debug_assert_eq!(ys.len(), batch_size);
 
                 for (i, y) in ys.into_iter().enumerate() {
-                    let _ = context.send(ids[i].clone(), y);
-                    let _ = context.send_end(ids[i].clone());
+                    let _ = context.send(ids[i], y);
+                    let _ = context.send_end(ids[i]);
                 }
                 ids.clear();
             }
@@ -75,18 +73,17 @@ where
             #[allow(clippy::drain_collect)]
             let ys = self.call(buf.drain(..).collect());
             for (i, y) in ys.into_iter().enumerate() {
-                let _ = context.send(ids[i].clone(), y);
-                let _ = context.send_end(ids[i].clone());
+                let _ = context.send(ids[i], y);
+                let _ = context.send_end(ids[i]);
             }
         }
         Ok(())
     }
 }
 
-pub trait StreamTask<Id, C>: Task<Id, C>
+pub trait StreamTask<C>: Task<C>
 where
-    Id: Clone,
-    C: TaskContext<Id>,
+    C: TaskContext,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Serialize + Clone + Send + Sync + 'static;
@@ -97,7 +94,7 @@ where
         while let Ok((id, x)) = context.recv() {
             let ys = self.call(x);
             for y in ys {
-                let _ = context.send(id.clone(), y);
+                let _ = context.send(id, y);
             }
             let _ = context.send_end(id);
         }
@@ -106,22 +103,21 @@ where
 }
 
 #[async_trait]
-pub trait AsyncTask<Id, C>
+pub trait AsyncTask<C>
 where
-    C: TaskContext<Id> + 'static,
+    C: TaskContext + 'static,
 {
     async fn prepare(&mut self) -> Result<()>;
 
-    fn clone_box(&self) -> Box<dyn AsyncTask<Id, C> + Send + Sync>;
+    fn clone_box(&self) -> Box<dyn AsyncTask<C> + Send + Sync>;
 
     async fn run(&mut self, context: C) -> Result<()>;
 }
 
 #[async_trait]
-pub trait AsyncSingleTask<Id, C>: AsyncTask<Id, C>
+pub trait AsyncSingleTask<C>: AsyncTask<C>
 where
-    Id: Clone + Send,
-    C: TaskContext<Id> + 'static,
+    C: TaskContext + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Serialize + Clone + Send + Sync + 'static;
@@ -131,7 +127,7 @@ where
     async fn run(&mut self, context: C) -> Result<()> {
         while let Ok((id, x)) = context.recv_async().await {
             let y = self.call(x).await;
-            let _ = context.send_async(id.clone(), y).await;
+            let _ = context.send_async(id, y).await;
             let _ = context.send_end_async(id).await;
         }
         Ok(())
@@ -139,10 +135,9 @@ where
 }
 
 #[async_trait]
-pub trait AsyncBatchedTask<Id, C>: AsyncTask<Id, C>
+pub trait AsyncBatchedTask<C>: AsyncTask<C>
 where
-    Id: Clone + Send,
-    C: TaskContext<Id> + 'static,
+    C: TaskContext + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Serialize + Clone + Send + Sync + 'static;
@@ -157,7 +152,7 @@ where
         let mut buf = Vec::with_capacity(batch_size);
 
         while let Ok((id, x)) = context.recv_async().await {
-            ids.push(id.clone());
+            ids.push(id);
             buf.push(x);
 
             if buf.len() >= batch_size {
@@ -166,8 +161,8 @@ where
                 debug_assert_eq!(ys.len(), batch_size);
 
                 for (i, y) in ys.into_iter().enumerate() {
-                    let _ = context.send_async(ids[i].clone(), y).await;
-                    let _ = context.send_end_async(ids[i].clone()).await;
+                    let _ = context.send_async(ids[i], y).await;
+                    let _ = context.send_end_async(ids[i]).await;
                 }
                 ids.clear();
             }
@@ -177,8 +172,8 @@ where
             #[allow(clippy::drain_collect)]
             let ys = self.call(buf.drain(..).collect()).await;
             for (i, y) in ys.into_iter().enumerate() {
-                let _ = context.send_async(ids[i].clone(), y).await;
-                let _ = context.send_end_async(ids[i].clone()).await;
+                let _ = context.send_async(ids[i], y).await;
+                let _ = context.send_end_async(ids[i]).await;
             }
         }
         Ok(())
@@ -186,10 +181,9 @@ where
 }
 
 #[async_trait]
-pub trait AsyncStreamTask<Id, C>: AsyncTask<Id, C>
+pub trait AsyncStreamTask<C>: AsyncTask<C>
 where
-    Id: Clone + Send,
-    C: TaskContext<Id> + 'static,
+    C: TaskContext + 'static,
 {
     type Input: Send + DeserializeOwned + 'static;
     type Output: Serialize + Clone + Send + Sync + 'static;
@@ -201,7 +195,7 @@ where
             let ys = self.call(x);
             pin_mut!(ys);
             while let Some(y) = ys.next().await {
-                let _ = context.send_async(id.clone(), y).await;
+                let _ = context.send_async(id, y).await;
             }
             let _ = context.send_end_async(id).await;
         }
@@ -209,20 +203,18 @@ where
     }
 }
 
-impl<Id, C> Clone for Box<dyn Task<Id, C> + Send + Sync>
+impl<C> Clone for Box<dyn Task<C> + Send + Sync>
 where
-    Id: Clone,
-    C: TaskContext<Id>,
+    C: TaskContext,
 {
     fn clone(&self) -> Self {
         self.clone_boxed()
     }
 }
 
-impl<Id, C> Clone for Box<dyn AsyncTask<Id, C> + Send + Sync>
+impl<C> Clone for Box<dyn AsyncTask<C> + Send + Sync>
 where
-    Id: Clone,
-    C: TaskContext<Id> + 'static,
+    C: TaskContext + 'static,
 {
     fn clone(&self) -> Self {
         self.clone_box()
