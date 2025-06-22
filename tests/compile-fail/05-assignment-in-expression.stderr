@@ -1,0 +1,5 @@
+error: assignments are not supported in expressions, put semicolon after the assignment
+ --> tests/compile-fail/05-assignment-in-expression.rs:7:15
+  |
+7 |     let _y = (x = 2);
+  |               ^^^^^

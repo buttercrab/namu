@@ -123,7 +123,6 @@ Block 3:
 }
 
 #[test]
-#[ignore]
 fn conditional_in_while_loop_graph_structure() {
     #[workflow]
     fn conditional_in_while_loop() -> i32 {
@@ -146,25 +145,25 @@ fn conditional_in_while_loop_graph_structure() {
   let var1 = 0;
   jump -> Block 1
 Block 1:
-  let var2 = phi([block 0, var0], [block 4, var8]);
-  let var3 = phi([block 0, var1], [block 4, var10]);
-  let var4 = not_one(var2);
+  let var2 = phi([block 0, var1], [block 4, var10]);
+  let var3 = phi([block 0, var0], [block 4, var8]);
+  let var4 = not_one(var3);
   branch var4 ? Block 2 : Block 3
 Block 2:
-  let var5 = is_even(var2);
+  let var5 = is_even(var3);
   branch var5 ? Block 5 : Block 6
 Block 3:
-  return var3
+  return var2
 Block 4:
   let var8 = phi([block 5, var6], [block 6, var7]);
   let var9 = 1;
-  let var10 = add(var3, var9);
+  let var10 = add(var2, var9);
   jump -> Block 1
 Block 5:
-  let var6 = divide_by_2(var2);
+  let var6 = divide_by_2(var3);
   jump -> Block 4
 Block 6:
-  let var7 = multiply_by_3_and_add_1(var2);
+  let var7 = multiply_by_3_and_add_1(var3);
   jump -> Block 4";
     assert_eq!(graph.graph_string().trim(), expected.trim());
 }

@@ -1,0 +1,5 @@
+error: Tuple destructuring requires at least one element
+ --> tests/compile-fail/06-tuple-destruct-empty.rs:6:5
+  |
+6 |     let () = ();
+  |     ^^^^^^^^^^^^

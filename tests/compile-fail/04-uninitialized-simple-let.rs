@@ -2,9 +2,8 @@ use graph::workflow;
 use namu as graph;
 
 #[workflow]
-fn immutable_assign() {
-    let x = 1;
-    x = 2;
+fn uninitialized_simple_let() {
+    let y;
 }
 
 fn main() {}

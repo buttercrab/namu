@@ -261,7 +261,6 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
                 let _ = tx.close();
             });
         });
-        drop(result_tx);
 
         let _ = self.inner.run_results.remove(&run_id);
         let _ = self.inner.run_result_senders.remove(&run_id);

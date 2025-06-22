@@ -1379,6 +1379,7 @@ dependencies = [
  "namu-flow",
  "namu-macros",
  "serde_json",
+ "trybuild",
 ]
 
 [[package]]
