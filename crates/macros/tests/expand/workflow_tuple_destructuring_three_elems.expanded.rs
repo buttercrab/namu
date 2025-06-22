@@ -75,10 +75,10 @@ pub mod triple {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        let tuple_ref = val
-            .downcast_ref::<(i32, bool, String)>()
-            .expect("unpack downcast failed");
-        let (o0, o1, o2) = tuple_ref.clone();
+        let tuple_val: (i32, bool, String) = unsafe {
+            val.take::<(i32, bool, String)>()
+        };
+        let (o0, o1, o2) = tuple_val;
         <[_]>::into_vec(
             ::alloc::boxed::box_new([
                 ::namu::__macro_exports::Value::new(o0),

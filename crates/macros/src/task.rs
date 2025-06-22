@@ -529,8 +529,9 @@ fn generate_unpack_fn(def: &TaskDefinition) -> TokenStream2 {
         quote! {
             #[allow(dead_code)]
             pub fn #unpack_fn_ident(val: ::namu::__macro_exports::Value) -> Vec<::namu::__macro_exports::Value> {
-                let tuple_ref = val.downcast_ref::<#output_type>().expect("unpack downcast failed");
-                let (#(#vars),*) = tuple_ref.clone();
+                // SAFETY: we ensure the stored type matches `#output_type`.
+                let tuple_val: #output_type = unsafe { val.take::<#output_type>() };
+                let (#(#vars),*) = tuple_val;
                 vec![#(::namu::__macro_exports::Value::new(#vars)),*]
             }
         }
