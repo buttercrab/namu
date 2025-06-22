@@ -45,11 +45,7 @@ impl WorkflowVisitor {
     }
 
     fn list_vars(&self) -> Vec<Ident> {
-        self.scopes
-            .iter()
-            .map(|x| x.iter().cloned())
-            .flatten()
-            .collect()
+        self.scopes.iter().flat_map(|x| x.iter().cloned()).collect()
     }
 }
 

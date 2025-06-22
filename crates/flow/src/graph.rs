@@ -137,8 +137,7 @@ impl<T> Graph<T> {
                             prev_op_idx = Some(op_idx);
                         }
 
-                        let from_placeholder: Vec<(usize, usize)> =
-                            from.iter().map(|(b, v)| (*b as usize, *v)).collect();
+                        let from_placeholder: Vec<_> = from.iter().map(|(b, v)| (*b, *v)).collect();
 
                         pending_phis.push(Phi {
                             output: node.outputs[0],
@@ -239,8 +238,8 @@ impl<T> Graph<T> {
         }
 
         // Third pass: patch phi source blocks (BlockId -> OpId)
-        for op_idx in 0..ops.len() {
-            for phi in &mut ops[op_idx].phis {
+        for op in &mut ops {
+            for phi in &mut op.phis {
                 for source in phi.from.iter_mut() {
                     let block_id = source.0;
                     let val_id = source.1;

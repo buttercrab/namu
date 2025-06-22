@@ -59,6 +59,7 @@ where
             buf.push(x);
 
             if buf.len() >= batch_size {
+                #[allow(clippy::drain_collect)]
                 let ys = self.call(buf.drain(..).collect());
                 debug_assert_eq!(ys.len(), batch_size);
 
@@ -71,6 +72,7 @@ where
         }
 
         if !buf.is_empty() {
+            #[allow(clippy::drain_collect)]
             let ys = self.call(buf.drain(..).collect());
             for (i, y) in ys.into_iter().enumerate() {
                 let _ = context.send(ids[i].clone(), y);
@@ -159,6 +161,7 @@ where
             buf.push(x);
 
             if buf.len() >= batch_size {
+                #[allow(clippy::drain_collect)]
                 let ys = self.call(buf.drain(..).collect()).await;
                 debug_assert_eq!(ys.len(), batch_size);
 
@@ -171,6 +174,7 @@ where
         }
 
         if !buf.is_empty() {
+            #[allow(clippy::drain_collect)]
             let ys = self.call(buf.drain(..).collect()).await;
             for (i, y) in ys.into_iter().enumerate() {
                 let _ = context.send_async(ids[i].clone(), y).await;

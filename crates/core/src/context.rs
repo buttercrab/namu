@@ -66,7 +66,7 @@ impl<Id, In, Out> StaticTaskContext<Id, In, Out> {
 }
 
 #[async_trait]
-impl<'de, Id, In, Out> TaskContext<Id> for StaticTaskContext<Id, In, Out>
+impl<Id, In, Out> TaskContext<Id> for StaticTaskContext<Id, In, Out>
 where
     Id: Send,
     In: Send + 'static,

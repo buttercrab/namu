@@ -130,6 +130,7 @@ macro_rules! define_call {
             inputs: Vec<ValueId>,
         ) -> ( $( TracedValue<$T>, )* ) {
             let outs = builder.call(task_id.to_string(), inputs, $arity);
+            #[allow(clippy::unused_unit)]
             ( $( TracedValue::new(outs[$idx]), )*)
         }
     };

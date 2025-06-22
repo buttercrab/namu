@@ -5,6 +5,7 @@ use scc::HashMap;
 
 use crate::context::ContextManager;
 
+#[derive(Default, Debug)]
 pub struct NaiveContextManager {
     contexts: HashMap<usize, HashMap<ValueId, Value>>,
     context_order: HashMap<usize, Vec<usize>>,

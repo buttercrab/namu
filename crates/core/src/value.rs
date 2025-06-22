@@ -129,8 +129,9 @@ impl Value {
         }
     }
 
-    // SAFETY: Caller must ensure that `self` actually contains a `T` – this is
-    // guaranteed by `Value::new` which records the `type_id`.
+    /// # Safety
+    ///
+    /// Caller must ensure that `self` actually contains a `T`
     pub unsafe fn take<T>(mut self) -> T {
         debug_assert_eq!(self.type_id, typeid::of::<T>(), "invalid cast");
 
@@ -167,6 +168,9 @@ impl Value {
         }
     }
 
+    /// # Safety
+    ///
+    /// Caller must ensure that `self` actually contains a `T`
     pub unsafe fn downcast_ref_unchecked<T: 'static>(&self) -> &T {
         let ptr = if is_small::<T>() {
             unsafe { self.value.inline.as_ptr().cast::<T>() }
@@ -186,6 +190,9 @@ impl Value {
         }
     }
 
+    /// # Safety
+    ///
+    /// Caller must ensure that `self` actually contains a `T`
     pub unsafe fn downcast_mut_unchecked<T: 'static>(&mut self) -> &mut T {
         let ptr = if is_small::<T>() {
             unsafe { self.value.inline.as_mut_ptr().cast::<T>() }

@@ -20,7 +20,7 @@ pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
     if let Some(parent) = Path::new(db_path).parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|e| sqlx::Error::Io(e.into()))?;
+            .map_err(sqlx::Error::Io)?;
     }
 
     // Check if database file exists
@@ -32,7 +32,7 @@ pub async fn init_db() -> Result<SqlitePool, sqlx::Error> {
         // Touch the file to create it
         tokio::fs::File::create(db_path)
             .await
-            .map_err(|e| sqlx::Error::Io(e.into()))?;
+            .map_err(sqlx::Error::Io)?;
     } else {
         info!("Using existing database file: {}", db_path);
     }

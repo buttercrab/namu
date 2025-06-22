@@ -321,7 +321,7 @@ fn add_values<C: ContextManager>(
     ctx_id: C::ContextId,
     vals: Vec<(ValueId, Value)>,
 ) -> C::ContextId {
-    debug_assert!(vals.len() >= 1);
+    debug_assert!(!vals.is_empty());
     let mut iter = vals.into_iter();
     let (val_id, val_arc) = iter.next().unwrap();
     let mut new_ctx_id = run_ctx.context_manager.add_value(ctx_id, val_id, val_arc);
@@ -505,7 +505,7 @@ where
             return Some(ctx_id);
         }
 
-        match next_op_id(&run_ctx, &operation.next, ctx_id.clone()) {
+        match next_op_id(run_ctx, &operation.next, ctx_id.clone()) {
             Some(next) => {
                 pred_op = Some(op_id);
                 op_id = next;

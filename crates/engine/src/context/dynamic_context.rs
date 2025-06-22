@@ -17,6 +17,7 @@ struct ContextTreeNode {
     segment_tree: SegmentTree,
 }
 
+#[derive(Default, Debug)]
 pub struct DynamicContextManager {
     nodes: HashIndex<usize, ContextTreeNode>,
     node_state: SccHashMap<usize, (bool, usize)>, // (is_used, children_count)
@@ -110,7 +111,7 @@ impl DynamicContextManager {
         while diff > 0 {
             if diff & i > 0 {
                 context_id = node.ancestors[j];
-                node = self.nodes.peek(&context_id, &guard).unwrap();
+                node = self.nodes.peek(&context_id, guard).unwrap();
                 diff ^= i;
             }
             i <<= 1;
@@ -125,8 +126,7 @@ impl ContextManager for DynamicContextManager {
     type ContextId = usize;
 
     fn create_context(&self) -> Self::ContextId {
-        let id = self.new_node(None, 0, namu_core::Value::new(()));
-        id
+        self.new_node(None, 0, Value::new(()))
     }
 
     fn compare_context(&self, a: Self::ContextId, b: Self::ContextId) -> std::cmp::Ordering {
@@ -186,7 +186,7 @@ impl ContextManager for DynamicContextManager {
         let node = self.nodes.peek(&context_id, &guard).unwrap();
         let depth = node.segment_tree.get(val_id);
         let (_, node) = self.ascend_to_depth(context_id, node, depth, &guard);
-        return node.value.clone();
+        node.value.clone()
     }
 
     fn get_values(&self, context_id: Self::ContextId, val_ids: &[ValueId]) -> Vec<Value> {
