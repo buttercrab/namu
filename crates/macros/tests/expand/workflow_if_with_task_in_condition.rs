@@ -1,11 +1,11 @@
 use namu_macros::{task, workflow};
 
-#[task]
+#[task(single)]
 fn is_positive(a: i32) -> anyhow::Result<bool> {
     Ok(a > 0)
 }
 
-#[task]
+#[task(single)]
 fn action_if_true() -> anyhow::Result<()> {
     Ok(())
 }

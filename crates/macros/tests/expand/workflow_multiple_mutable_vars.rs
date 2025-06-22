@@ -1,11 +1,11 @@
 use namu_macros::{task, workflow};
 
-#[task]
+#[task(single)]
 fn less_than(a: i32, b: i32) -> anyhow::Result<bool> {
     Ok(a < b)
 }
 
-#[task]
+#[task(single)]
 fn add(a: i32, b: i32) -> anyhow::Result<i32> {
     Ok(a + b)
 }

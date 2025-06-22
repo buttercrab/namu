@@ -1,11 +1,11 @@
 use namu_macros::{task, workflow};
 
-#[task]
+#[task(single)]
 fn task_a(a: i32) -> anyhow::Result<i32> {
     Ok(a)
 }
 
-#[task]
+#[task(single)]
 fn task_b(a: i32) -> anyhow::Result<i32> {
     Ok(a)
 }

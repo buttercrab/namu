@@ -1,21 +1,21 @@
 use namu_macros::{task, workflow};
 
-#[task]
+#[task(single)]
 fn less_than(a: i32, b: i32) -> anyhow::Result<bool> {
     Ok(a < b)
 }
 
-#[task]
+#[task(single)]
 fn is_even(a: i32) -> anyhow::Result<bool> {
     Ok(a % 2 == 0)
 }
 
-#[task]
+#[task(single)]
 fn add_one(a: i32) -> anyhow::Result<i32> {
     Ok(a + 1)
 }
 
-#[task]
+#[task(single)]
 fn add_two(a: i32) -> anyhow::Result<i32> {
     Ok(a + 2)
 }

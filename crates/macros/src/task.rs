@@ -33,8 +33,8 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    AngleBracketedGenericArguments, GenericArgument, Ident, ItemFn, LitInt, Pat, Path,
-    PathArguments, PathSegment, ReturnType, Token, Type, TypePath, parse_macro_input, parse_quote,
+    AngleBracketedGenericArguments, GenericArgument, Ident, LitInt, Pat, Path, PathArguments,
+    PathSegment, ReturnType, Token, Type, TypePath, parse_macro_input, parse_quote,
 };
 
 // --- Attribute Parsing ---
@@ -42,6 +42,7 @@ use syn::{
 #[derive(Debug, Default)]
 enum TaskType {
     #[default]
+    Direct, // no code generation; user implements Task manually
     Single,
     Batch,
     Stream,
@@ -385,6 +386,7 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
             let ty = extract_result_type(extract_iterator_item_type(output_iterator_type)).clone();
             (ty.clone(), false, Vec::new())
         }
+        _ => unreachable!(),
     };
 
     let mut constructor_sig = original_sig.clone();
@@ -410,6 +412,7 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
                 .inputs
                 .push(parse_quote! { #name: ::namu::__macro_exports::TracedValue<#inner_ty> });
         }
+        _ => unreachable!(),
     }
 
     if is_tuple {
@@ -515,6 +518,7 @@ fn generate_unpack_fn(def: &TaskDefinition) -> TokenStream2 {
             let ty = extract_result_type(extract_iterator_item_type(output_iterator_type)).clone();
             (ty, false, Vec::new())
         }
+        _ => unreachable!(),
     };
 
     if is_tuple {
@@ -545,7 +549,30 @@ fn generate_unpack_fn(def: &TaskDefinition) -> TokenStream2 {
 
 pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as TaskArgs);
-    let func = parse_macro_input!(item as ItemFn);
+    let item: syn::Item = parse_macro_input!(item as syn::Item);
+
+    // If this is a "direct" task, we simply return the item unchanged.
+    if matches!(args.task_type, TaskType::Direct) {
+        // We allow only structs or enums for direct tasks; functions should specify kind.
+        match &item {
+            syn::Item::Struct(_) | syn::Item::Enum(_) => {}
+            syn::Item::Impl(_) => {}
+            syn::Item::Fn(f) => {
+                abort!(f, "Function tasks must specify kind, e.g. #[task(single)]");
+            }
+            _ => {}
+        }
+        return TokenStream::from(quote! { #item });
+    }
+
+    // For non-direct (function-style) tasks we expect an ItemFn
+    let func = match item {
+        syn::Item::Fn(f) => f,
+        _ => abort!(
+            item,
+            "Only functions are supported for single/batch/stream tasks"
+        ),
+    };
 
     let func_name = &func.sig.ident;
     let struct_name = format_ident!("Task");
@@ -593,6 +620,7 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
         TaskType::Single => generate_single_task_impl(&def),
         TaskType::Batch => generate_batch_task_impl(&def),
         TaskType::Stream => generate_stream_task_impl(&def),
+        _ => unreachable!(),
     };
 
     let constructor = generate_constructor(&def, &func.sig);
@@ -602,7 +630,7 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let module_ident = func_name;
 
-    quote! {
+    TokenStream::from(quote! {
         #[allow(non_snake_case)]
         pub mod #module_ident {
             use super::*;
@@ -613,6 +641,5 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         #constructor
-    }
-    .into()
+    })
 }

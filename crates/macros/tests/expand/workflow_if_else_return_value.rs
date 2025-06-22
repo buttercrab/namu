@@ -1,11 +1,11 @@
 use namu_macros::{task, workflow};
 
-#[task]
+#[task(single)]
 fn double(a: i32) -> anyhow::Result<i32> {
     Ok(a * 2)
 }
 
-#[task]
+#[task(single)]
 fn identity(a: i32) -> anyhow::Result<i32> {
     Ok(a)
 }

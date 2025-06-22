@@ -1,11 +1,11 @@
 use namu_macros::{task, workflow};
 
-#[task]
+#[task(single)]
 fn add_one(a: i32) -> anyhow::Result<i32> {
     Ok(a + 1)
 }
 
-#[task]
+#[task(single)]
 fn multiply_by_two(a: i32) -> anyhow::Result<i32> {
     Ok(a * 2)
 }
