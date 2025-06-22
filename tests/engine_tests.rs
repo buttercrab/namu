@@ -65,8 +65,7 @@ fn engine_executes_list_workflow() {
     #[workflow]
     fn list_workflow() -> i32 {
         let a = range(1, 4);
-        let b = split(a, 3);
-        b
+        split(a, 3)
     }
 
     let graph = list_workflow();

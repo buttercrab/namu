@@ -4,7 +4,6 @@ mod common;
 
 use namu::workflow;
 use namu_core::ir::Workflow;
-use serde_json;
 
 use crate::common::*;
 
