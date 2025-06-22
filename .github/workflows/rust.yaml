@@ -18,6 +18,7 @@ jobs:
       - name: Install latest Rust toolchain
         run: |
           rustup update --no-self-update
+          cargo install cargo-expand
       - uses: Swatinem/rust-cache@v2
       - name: Check
         run: |
