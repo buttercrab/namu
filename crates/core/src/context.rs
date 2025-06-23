@@ -193,19 +193,19 @@ impl DynamicTaskContext {
 impl TaskContext for DynamicTaskContext {
     fn recv<T: 'static>(&self) -> Result<(ContextId, T), ReceiveError> {
         let (id, data) = self.input_ch.recv()?;
-        Ok((id, unsafe { data.take::<T>() }))
+        Ok((id, unsafe { data.take_unchecked::<T>() }))
     }
 
     async fn recv_async<T: 'static>(&self) -> Result<(ContextId, T), ReceiveError> {
         let (id, data) = self.input_ch.as_async().recv().await?;
-        Ok((id, unsafe { data.take::<T>() }))
+        Ok((id, unsafe { data.take_unchecked::<T>() }))
     }
 
     fn try_recv<T: 'static>(&self) -> Result<Option<(ContextId, T)>, ReceiveError> {
         let result = self
             .input_ch
             .try_recv()?
-            .map(|(id, data)| (id, unsafe { data.take::<T>() }));
+            .map(|(id, data)| (id, unsafe { data.take_unchecked::<T>() }));
         Ok(result)
     }
 

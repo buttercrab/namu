@@ -129,10 +129,20 @@ impl Value {
         }
     }
 
+    pub fn take<T>(self) -> Option<T> {
+        if self.type_id == typeid::of::<T>() {
+            // SAFETY: The `type_id` is guaranteed to match the type stored in
+            // `self.value` by the `Value::new` constructor.
+            Some(unsafe { self.take_unchecked::<T>() })
+        } else {
+            None
+        }
+    }
+
     /// # Safety
     ///
     /// Caller must ensure that `self` actually contains a `T`
-    pub unsafe fn take<T>(mut self) -> T {
+    pub unsafe fn take_unchecked<T>(mut self) -> T {
         debug_assert_eq!(self.type_id, typeid::of::<T>(), "invalid cast");
 
         if is_small::<T>() {
@@ -158,7 +168,7 @@ impl Value {
         unsafe { (self.vtable.serialize)(&self.value, &mut erased) }.map_err(ser::Error::custom)
     }
 
-    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+    pub fn downcast_ref<T>(&self) -> Option<&T> {
         if self.type_id == typeid::of::<T>() {
             // SAFETY: The `type_id` is guaranteed to match the type stored in
             // `self.value` by the `Value::new` constructor.
@@ -171,7 +181,9 @@ impl Value {
     /// # Safety
     ///
     /// Caller must ensure that `self` actually contains a `T`
-    pub unsafe fn downcast_ref_unchecked<T: 'static>(&self) -> &T {
+    pub unsafe fn downcast_ref_unchecked<T>(&self) -> &T {
+        debug_assert_eq!(self.type_id, typeid::of::<T>(), "invalid cast");
+
         let ptr = if is_small::<T>() {
             unsafe { self.value.inline.as_ptr().cast::<T>() }
         } else {
@@ -180,7 +192,7 @@ impl Value {
         unsafe { &*ptr }
     }
 
-    pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+    pub fn downcast_mut<T>(&mut self) -> Option<&mut T> {
         if self.type_id == typeid::of::<T>() {
             // SAFETY: The `type_id` is guaranteed to match the type stored in
             // `self.value` by the `Value::new` constructor.
@@ -193,7 +205,9 @@ impl Value {
     /// # Safety
     ///
     /// Caller must ensure that `self` actually contains a `T`
-    pub unsafe fn downcast_mut_unchecked<T: 'static>(&mut self) -> &mut T {
+    pub unsafe fn downcast_mut_unchecked<T>(&mut self) -> &mut T {
+        debug_assert_eq!(self.type_id, typeid::of::<T>(), "invalid cast");
+
         let ptr = if is_small::<T>() {
             unsafe { self.value.inline.as_mut_ptr().cast::<T>() }
         } else {
