@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,6 +6,7 @@ use axum::extract::{State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{Json, Response};
 use futures_util::{SinkExt, StreamExt};
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;

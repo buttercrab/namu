@@ -104,7 +104,7 @@ const fn is_small<T>() -> bool {
 
 impl Value {
     pub fn new<T: Serialize + Clone + Send + Sync + 'static>(t: T) -> Self {
-        let type_id = typeid::of::<T>();
+        let type_id = TypeId::of::<T>();
         let vtable = ValueVTable::new::<T>();
 
         if is_small::<T>() {
@@ -129,8 +129,8 @@ impl Value {
         }
     }
 
-    pub fn take<T>(self) -> Option<T> {
-        if self.type_id == typeid::of::<T>() {
+    pub fn take<T: 'static>(self) -> Option<T> {
+        if self.type_id == TypeId::of::<T>() {
             // SAFETY: The `type_id` is guaranteed to match the type stored in
             // `self.value` by the `Value::new` constructor.
             Some(unsafe { self.take_unchecked::<T>() })
@@ -142,8 +142,8 @@ impl Value {
     /// # Safety
     ///
     /// Caller must ensure that `self` actually contains a `T`
-    pub unsafe fn take_unchecked<T>(mut self) -> T {
-        debug_assert_eq!(self.type_id, typeid::of::<T>(), "invalid cast");
+    pub unsafe fn take_unchecked<T: 'static>(mut self) -> T {
+        debug_assert_eq!(self.type_id, TypeId::of::<T>(), "invalid cast");
 
         if is_small::<T>() {
             let ptr = unsafe { self.value.inline.as_mut_ptr().cast::<T>() };
@@ -168,8 +168,8 @@ impl Value {
         unsafe { (self.vtable.serialize)(&self.value, &mut erased) }.map_err(ser::Error::custom)
     }
 
-    pub fn downcast_ref<T>(&self) -> Option<&T> {
-        if self.type_id == typeid::of::<T>() {
+    pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        if self.type_id == TypeId::of::<T>() {
             // SAFETY: The `type_id` is guaranteed to match the type stored in
             // `self.value` by the `Value::new` constructor.
             Some(unsafe { self.downcast_ref_unchecked::<T>() })
@@ -181,8 +181,8 @@ impl Value {
     /// # Safety
     ///
     /// Caller must ensure that `self` actually contains a `T`
-    pub unsafe fn downcast_ref_unchecked<T>(&self) -> &T {
-        debug_assert_eq!(self.type_id, typeid::of::<T>(), "invalid cast");
+    pub unsafe fn downcast_ref_unchecked<T: 'static>(&self) -> &T {
+        debug_assert_eq!(self.type_id, TypeId::of::<T>(), "invalid cast");
 
         let ptr = if is_small::<T>() {
             unsafe { self.value.inline.as_ptr().cast::<T>() }
@@ -192,8 +192,8 @@ impl Value {
         unsafe { &*ptr }
     }
 
-    pub fn downcast_mut<T>(&mut self) -> Option<&mut T> {
-        if self.type_id == typeid::of::<T>() {
+    pub fn downcast_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        if self.type_id == TypeId::of::<T>() {
             // SAFETY: The `type_id` is guaranteed to match the type stored in
             // `self.value` by the `Value::new` constructor.
             Some(unsafe { self.downcast_mut_unchecked::<T>() })
@@ -205,8 +205,8 @@ impl Value {
     /// # Safety
     ///
     /// Caller must ensure that `self` actually contains a `T`
-    pub unsafe fn downcast_mut_unchecked<T>(&mut self) -> &mut T {
-        debug_assert_eq!(self.type_id, typeid::of::<T>(), "invalid cast");
+    pub unsafe fn downcast_mut_unchecked<T: 'static>(&mut self) -> &mut T {
+        debug_assert_eq!(self.type_id, TypeId::of::<T>(), "invalid cast");
 
         let ptr = if is_small::<T>() {
             unsafe { self.value.inline.as_mut_ptr().cast::<T>() }

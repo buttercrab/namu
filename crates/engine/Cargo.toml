@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 anyhow = { workspace = true }
 erased-serde = { workspace = true }
-inventory.workspace = true
+hashbrown = { workspace = true }
+inventory = { workspace = true }
 itertools = { workspace = true }
 kanal = { workspace = true }
 namu-core = { path = "../core" }

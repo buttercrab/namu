@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use hashbrown::HashMap;
 use namu_core::{ContextId, Value, ValueId};
 use scc::ebr::Guard;
 use scc::{HashIndex, HashMap as SccHashMap};
@@ -204,7 +204,7 @@ impl ContextManager for DynamicContextManager {
 
         // Step 3: Sort unique depths in descending order.
         let mut sorted_depths: Vec<_> = depths_to_visit.keys().copied().collect();
-        sorted_depths.sort_unstable_by(|a, b| b.cmp(a)); // Sort descending
+        sorted_depths.sort_unstable_by(|a, b| b.cmp(&a)); // Sort descending
 
         // Step 4: Single upward traversal.
         let mut current_id = context_id;

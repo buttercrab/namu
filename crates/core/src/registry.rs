@@ -1,3 +1,7 @@
+use std::sync::OnceLock;
+
+use hashbrown::HashMap;
+
 use crate::{DynamicTaskContext, Task, Value};
 
 pub type PackFn = fn(Vec<Value>) -> Value;
@@ -18,6 +22,18 @@ pub struct TaskEntry {
 
 inventory::collect!(TaskEntry);
 
+pub fn get_tasks() -> HashMap<String, TaskEntry> {
+    static TASKS: OnceLock<HashMap<String, TaskEntry>> = OnceLock::new();
+    TASKS
+        .get_or_init(|| {
+            inventory::iter::<TaskEntry>
+                .into_iter()
+                .map(|e| (e.name.to_string(), e.clone()))
+                .collect()
+        })
+        .clone()
+}
+
 #[derive(Clone, Copy)]
 pub struct TypeEntry {
     pub name: &'static str,
@@ -26,3 +42,15 @@ pub struct TypeEntry {
 }
 
 inventory::collect!(TypeEntry);
+
+pub fn get_types() -> HashMap<String, TypeEntry> {
+    static TYPES: OnceLock<HashMap<String, TypeEntry>> = OnceLock::new();
+    TYPES
+        .get_or_init(|| {
+            inventory::iter::<TypeEntry>
+                .into_iter()
+                .map(|e| (e.name.to_string(), e.clone()))
+                .collect()
+        })
+        .clone()
+}

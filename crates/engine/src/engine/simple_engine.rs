@@ -126,15 +126,13 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
     }
 
     fn run(&self, run_id: Self::RunId) {
-        let guard = Guard::new();
-        let workflow_id = *self.inner.runs.peek(&run_id, &guard).unwrap();
+        let workflow_id = *self.inner.runs.peek(&run_id, &Guard::new()).unwrap();
         let workflow = self
             .inner
             .workflows
-            .peek(&workflow_id, &guard)
+            .peek(&workflow_id, &Guard::new())
             .cloned()
             .unwrap();
-        drop(guard);
         let result_tx = self.inner.run_result_senders.get(&run_id).unwrap().clone();
 
         let task_senders = HashIndex::new();
@@ -172,9 +170,12 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
                         .insert(task_name.clone(), in_tx)
                         .unwrap();
 
-                    let guard = Guard::new();
-                    let task = self.inner.tasks.peek(&task_name, &guard).cloned().unwrap();
-                    drop(guard);
+                    let task = self
+                        .inner
+                        .tasks
+                        .peek(&task_name, &Guard::new())
+                        .cloned()
+                        .unwrap();
 
                     s.spawn(move || {
                         let mut task = task;
@@ -193,19 +194,18 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
                         while let Ok((ctx_id, out_box)) = out_rx.recv() {
                             match out_box {
                                 Ok(res) => {
-                                    let guard = Guard::new();
                                     let origin_op_id =
-                                        *run_ctx.ctx_origin.peek(&ctx_id, &guard).unwrap();
-                                    drop(guard);
+                                        *run_ctx.ctx_origin.peek(&ctx_id, &Guard::new()).unwrap();
 
                                     let operation = &run_ctx.workflow.operations[origin_op_id];
                                     let call =
                                         operation.call.as_ref().expect("origin should be call");
 
-                                    let guard = Guard::new();
-                                    let unpack_fn =
-                                        self.inner.unpack_map.peek(&call.task_id, &guard).cloned();
-                                    drop(guard);
+                                    let unpack_fn = self
+                                        .inner
+                                        .unpack_map
+                                        .peek(&call.task_id, &Guard::new())
+                                        .cloned();
 
                                     let ctx_id = if let Some(unpack_fn) = unpack_fn {
                                         let out_vals = (unpack_fn)(res);
@@ -249,17 +249,18 @@ impl<C: ContextManager + Send + Sync + 'static> Engine<C> for SimpleEngine<C> {
                     });
                 });
 
-            // Kick off execution for the entry operation (op id 0).
             let root_ctx = self.inner.context_manager.create_context();
             run_ctx.active_ctxs.fetch_add(1, Ordering::Release);
             drive_until_call(&run_ctx, 0, None, root_ctx);
 
             // Wait until every context is dropped then clear senders so task threads exit.
             let _ = finish_rx.recv();
-            let guard = Guard::new();
-            run_ctx.task_senders.iter(&guard).for_each(|(_, tx)| {
-                let _ = tx.close();
-            });
+            run_ctx
+                .task_senders
+                .iter(&Guard::new())
+                .for_each(|(_, tx)| {
+                    let _ = tx.close();
+                });
         });
 
         let _ = self.inner.run_results.remove(&run_id);
@@ -428,9 +429,7 @@ fn drive_until_call<C: ContextManager>(
         if let Some(call) = &operation.call {
             let inputs = run_ctx.context_manager.get_values(ctx_id, &call.inputs);
 
-            let guard = Guard::new();
-            let pack_fn = run_ctx.pack_map.peek(&call.task_id, &guard).cloned();
-            drop(guard);
+            let pack_fn = run_ctx.pack_map.peek(&call.task_id, &Guard::new()).cloned();
 
             let packed = if let Some(pack_fn) = pack_fn {
                 (pack_fn)(inputs)
@@ -444,13 +443,11 @@ fn drive_until_call<C: ContextManager>(
                 inputs.into_iter().next().unwrap()
             };
 
-            let guard = Guard::new();
             let sender = run_ctx
                 .task_senders
-                .peek(&call.task_id, &guard)
+                .peek(&call.task_id, &Guard::new())
                 .expect("sender not found")
                 .clone();
-            drop(guard);
 
             let _ = run_ctx.ctx_origin.insert(ctx_id, op_id);
 

@@ -1,8 +1,7 @@
-use namu_core::registry::TypeEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::{Deserializer as JsonDeserializer, Serializer as JsonSerializer};
 
-#[namu_macros::r#type]
+#[namu::r#type]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct MyType {
     pub x: i32,
@@ -11,10 +10,10 @@ pub struct MyType {
 
 #[test]
 fn type_macro_inventory_and_deserialize() {
-    let entry = inventory::iter::<TypeEntry>
-        .into_iter()
-        .find(|e| e.name == "MyType")
-        .expect("TypeEntry not found");
+    let entry = namu_core::registry::get_types()
+        .get("MyType")
+        .unwrap()
+        .clone();
 
     let json = r#"{ "x": 42, "y": "hello" }"#;
     let mut de = JsonDeserializer::from_str(json);

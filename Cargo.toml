@@ -17,9 +17,12 @@ resolver = "3"
 
 [workspace.dependencies]
 anyhow = "1"
+async-trait = "0.1"
 darling = "0.20"
 erased-serde = "0.4"
 futures = "0.3"
+futures-util = "0.3"
+hashbrown = "0.15"
 inventory = "0.3"
 itertools = "0.14"
 kanal = { version = "0.1", features = ["async"] }
