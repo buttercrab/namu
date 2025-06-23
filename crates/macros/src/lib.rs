@@ -5,6 +5,7 @@ mod bridge;
 mod register;
 mod task;
 mod workflow;
+mod type_macro;
 
 #[proc_macro_error]
 #[proc_macro_attribute]
@@ -26,4 +27,10 @@ pub fn register_task(item: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn task_bridge(item: TokenStream) -> TokenStream {
     bridge::task_bridge_impl(item)
+}
+
+#[proc_macro_error]
+#[proc_macro_attribute]
+pub fn r#type(attr: TokenStream, item: TokenStream) -> TokenStream {
+    type_macro::r#type(attr, item)
 }

@@ -41,6 +41,8 @@ namu-flow = { path = "crates/flow" }
 namu-macros = { path = "crates/macros" }
 
 [dev-dependencies]
+erased-serde = { workspace = true }
 itertools = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 trybuild = "1.0.105"

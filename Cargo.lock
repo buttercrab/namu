@@ -1372,12 +1372,14 @@ name = "namu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "erased-serde",
  "inventory",
  "itertools",
  "namu-core",
  "namu-engine",
  "namu-flow",
  "namu-macros",
+ "serde",
  "serde_json",
  "trybuild",
 ]
