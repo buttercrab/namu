@@ -1,6 +1,6 @@
-use namu_core::{registry::TypeEntry};
-use serde_json::{Deserializer as JsonDeserializer, Serializer as JsonSerializer};
+use namu_core::registry::TypeEntry;
 use serde::{Deserialize, Serialize};
+use serde_json::{Deserializer as JsonDeserializer, Serializer as JsonSerializer};
 
 #[namu_macros::r#type]
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -29,7 +29,10 @@ fn type_macro_inventory_and_deserialize() {
 
 #[test]
 fn type_macro_value_serialize_to_json() {
-    let my = MyType { x: 42, y: "hello".to_string() };
+    let my = MyType {
+        x: 42,
+        y: "hello".to_string(),
+    };
 
     let value = namu_core::Value::new(my.clone());
     let mut json = Vec::new();

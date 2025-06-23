@@ -4,8 +4,8 @@ use proc_macro_error::proc_macro_error;
 mod bridge;
 mod register;
 mod task;
-mod workflow;
 mod type_macro;
+mod workflow;
 
 #[proc_macro_error]
 #[proc_macro_attribute]
