@@ -10,10 +10,7 @@ pub struct MyType {
 
 #[test]
 fn type_macro_inventory_and_deserialize() {
-    let entry = namu_core::registry::get_types()
-        .get("MyType")
-        .unwrap()
-        .clone();
+    let entry = *namu_core::registry::get_types().get("MyType").unwrap();
 
     let json = r#"{ "x": 42, "y": "hello" }"#;
     let mut de = JsonDeserializer::from_str(json);

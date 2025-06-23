@@ -28,7 +28,7 @@ pub fn get_tasks() -> HashMap<String, TaskEntry> {
         .get_or_init(|| {
             inventory::iter::<TaskEntry>
                 .into_iter()
-                .map(|e| (e.name.to_string(), e.clone()))
+                .map(|e| (e.name.to_string(), *e))
                 .collect()
         })
         .clone()
@@ -49,7 +49,7 @@ pub fn get_types() -> HashMap<String, TypeEntry> {
         .get_or_init(|| {
             inventory::iter::<TypeEntry>
                 .into_iter()
-                .map(|e| (e.name.to_string(), e.clone()))
+                .map(|e| (e.name.to_string(), *e))
                 .collect()
         })
         .clone()
