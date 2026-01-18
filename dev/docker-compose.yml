@@ -15,3 +15,23 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - ./data/redis:/data
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ./data/minio:/data
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "\
+      mc alias set local http://minio:9000 minioadmin minioadmin && \
+      mc mb -p local/namu || true \
+      "

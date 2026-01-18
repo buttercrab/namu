@@ -1,11 +1,11 @@
 use namu_core::ir::{Call, Next, Operation};
-use namu_proto::{QueueMessage, TaskKind};
+use namu_proto::{QueueMessage, TaskKind, ValueRef};
 use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
 use sha2::Digest;
 use uuid::Uuid;
 
-use crate::{AppState, RunState, db, redis_store};
+use crate::{AppState, RunState, db, object_store, redis_store};
 
 pub async fn drive_until_call(
     state: &AppState,
@@ -72,12 +72,13 @@ async fn enqueue_call(
     .await?;
 
     let mut redis = state.redis.clone();
-    let (input_values, input_hashes) = resolve_inputs_for_message(
+    let (input_values, input_hashes, input_refs) = resolve_inputs_for_message(
         &mut redis,
         run_id,
         ctx_id,
         &call.inputs,
         state.inline_input_limit,
+        state.object_store.as_ref(),
     )
     .await?;
 
@@ -91,7 +92,7 @@ async fn enqueue_call(
         lease_ms,
         input_values,
         input_hashes: Some(input_hashes),
-        input_refs: None,
+        input_refs,
     };
 
     redis_store::queue_task(&mut redis, &manifest.resource_class, &msg).await?;
@@ -116,7 +117,12 @@ async fn resolve_inputs_for_message(
     ctx_id: usize,
     input_ids: &[usize],
     inline_limit: usize,
-) -> anyhow::Result<(Option<Vec<JsonValue>>, Vec<String>)> {
+    object_store: Option<&object_store::ObjectStore>,
+) -> anyhow::Result<(
+    Option<Vec<JsonValue>>,
+    Vec<String>,
+    Option<Vec<Option<ValueRef>>>,
+)> {
     let mut raw_values = Vec::with_capacity(input_ids.len());
     for id in input_ids {
         let raw = redis_store::get_value_raw(redis, run_id, ctx_id, *id)
@@ -141,7 +147,28 @@ async fn resolve_inputs_for_message(
             None
         };
 
-    Ok((inline_values, input_hashes))
+    let input_refs = if let Some(store) = object_store {
+        let mut refs = Vec::with_capacity(raw_values.len());
+        for (idx, raw) in raw_values.iter().enumerate() {
+            let needs_ref = if inline_limit == 0 {
+                true
+            } else {
+                raw.len() > inline_limit
+            };
+            if needs_ref {
+                let hash = input_hashes.get(idx).map(|h| h.as_str()).unwrap_or("");
+                let value_ref = store.put_value(hash, raw.as_bytes()).await?;
+                refs.push(Some(value_ref));
+            } else {
+                refs.push(None);
+            }
+        }
+        Some(refs)
+    } else {
+        None
+    };
+
+    Ok((inline_values, input_hashes, input_refs))
 }
 
 pub async fn apply_task_output(
