@@ -2,11 +2,12 @@
 name = "simple"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
-add = { path = "../tasks/add" }
-is_less = { path = "../tasks/is_less" }
-namu = { path = "../../../" }
-namu-core = { path = "../../../crates/core" }
-namu-engine = { path = "../../../crates/engine" }
+add = { path = "../tasks/add", version = "0.1.0" }
+is_less = { path = "../tasks/is_less", version = "0.1.0" }
+namu = { path = "../../../", version = "0.1.0" }
+namu-core = { path = "../../../crates/core", version = "0.1.0" }
+namu-engine = { path = "../../../crates/engine", version = "0.1.0" }
 serde_json = "1.0"

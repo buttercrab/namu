@@ -50,11 +50,11 @@ impl<T> Builder<T> {
         self.inner.borrow().current_block_id
     }
 
-    pub fn arena(&self) -> Ref<NodeArena> {
+    pub fn arena(&self) -> Ref<'_, NodeArena> {
         Ref::map(self.inner.borrow(), |inner| &inner.node_arena)
     }
 
-    pub fn arena_mut(&self) -> RefMut<NodeArena> {
+    pub fn arena_mut(&self) -> RefMut<'_, NodeArena> {
         RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.node_arena)
     }
 

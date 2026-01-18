@@ -86,16 +86,15 @@ async fn websocket_handler(socket: WebSocket, pool: SqlitePool, connections: Wor
                         // Send confirmation
                         let response =
                             json!({"status": "registered", "worker_id": register_req.worker_id});
-                        if let Ok(msg) = serde_json::to_string(&response) {
-                            if let Err(e) = sender
+                        if let Ok(msg) = serde_json::to_string(&response)
+                            && let Err(e) = sender
                                 .lock()
                                 .await
                                 .send(axum::extract::ws::Message::Text(msg.into()))
                                 .await
-                            {
-                                error!("Failed to send registration confirmation: {}", e);
-                                break;
-                            }
+                        {
+                            error!("Failed to send registration confirmation: {}", e);
+                            break;
                         }
                     }
                     Err(_) => {
@@ -105,10 +104,10 @@ async fn websocket_handler(socket: WebSocket, pool: SqlitePool, connections: Wor
             }
             Ok(axum::extract::ws::Message::Pong(_)) => {
                 // Update heartbeat in database
-                if let Some(ref wid) = worker_id {
-                    if let Err(e) = db::update_worker_heartbeat(&pool, wid).await {
-                        error!("Failed to update heartbeat for worker {}: {}", wid, e);
-                    }
+                if let Some(ref wid) = worker_id
+                    && let Err(e) = db::update_worker_heartbeat(&pool, wid).await
+                {
+                    error!("Failed to update heartbeat for worker {}: {}", wid, e);
                 }
             }
             Ok(axum::extract::ws::Message::Close(_)) => {

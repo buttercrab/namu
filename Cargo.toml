@@ -34,14 +34,15 @@ tokio = { version = "1.45", features = ["full"] }
 name = "namu"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 anyhow = { workspace = true }
 inventory = { workspace = true }
-namu-core = { path = "crates/core" }
-namu-engine = { path = "crates/engine" }
-namu-flow = { path = "crates/flow" }
-namu-macros = { path = "crates/macros" }
+namu-core = { path = "crates/core", version = "0.1.0" }
+namu-engine = { path = "crates/engine", version = "0.1.0" }
+namu-flow = { path = "crates/flow", version = "0.1.0" }
+namu-macros = { path = "crates/macros", version = "0.1.0" }
 
 [dev-dependencies]
 erased-serde = { workspace = true }
