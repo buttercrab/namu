@@ -6,7 +6,8 @@
 //!
 //! ## Macro Arguments
 //! The macro can be used in several ways:
-//!   - `#[task]`: Defines a `SingleTask`. This is the default.
+//!   - `#[task]` on a function: Defines a `SingleTask` (default).
+//!   - `#[task]` on a struct/enum/impl: Registers a direct task implementation.
 //!   - `#[task(batch)]`: Defines a `BatchedTask` with a default batch size.
 //!   - `#[task(batch, batch_size = 16)]`: Defines a `BatchedTask` with a specific batch size.
 //!   - `#[task(stream)]`: Defines a `StreamTask`.
@@ -28,7 +29,7 @@
 //!    API.
 
 use proc_macro::TokenStream;
-use proc_macro_error::abort;
+use proc_macro_error2::abort;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
@@ -39,9 +40,8 @@ use syn::{
 
 // --- Attribute Parsing ---
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy)]
 enum TaskType {
-    #[default]
     Direct, // no code generation; user implements Task manually
     Single,
     Batch,
@@ -50,7 +50,7 @@ enum TaskType {
 
 #[derive(Debug, Default)]
 struct TaskArgs {
-    task_type: TaskType,
+    task_type: Option<TaskType>,
     batch_size: Option<usize>,
 }
 
@@ -63,13 +63,14 @@ impl Parse for TaskArgs {
 
         let task_type_ident: Ident = input.parse()?;
         match task_type_ident.to_string().as_str() {
-            "single" => args.task_type = TaskType::Single,
-            "batch" => args.task_type = TaskType::Batch,
-            "stream" => args.task_type = TaskType::Stream,
+            "single" => args.task_type = Some(TaskType::Single),
+            "batch" => args.task_type = Some(TaskType::Batch),
+            "stream" => args.task_type = Some(TaskType::Stream),
+            "direct" => args.task_type = Some(TaskType::Direct),
             _ => {
                 return Err(syn::Error::new(
                     task_type_ident.span(),
-                    "expected `single`, `batch`, or `stream`",
+                    "expected `single`, `batch`, `stream`, or `direct`",
                 ));
             }
         }
@@ -152,18 +153,16 @@ fn extract_vec_inner_type(ty: &Type) -> &Type {
 fn extract_iterator_item_type(ty: &Type) -> &Type {
     if let Type::ImplTrait(impl_trait) = ty {
         for bound in &impl_trait.bounds {
-            if let syn::TypeParamBound::Trait(trait_bound) = bound {
-                if let Some(segment) = trait_bound.path.segments.last() {
-                    if segment.ident == "Iterator" {
-                        if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                            for arg in &args.args {
-                                if let GenericArgument::AssocType(assoc) = arg {
-                                    if assoc.ident == "Item" {
-                                        return &assoc.ty;
-                                    }
-                                }
-                            }
-                        }
+            if let syn::TypeParamBound::Trait(trait_bound) = bound
+                && let Some(segment) = trait_bound.path.segments.last()
+                && segment.ident == "Iterator"
+                && let PathArguments::AngleBracketed(args) = &segment.arguments
+            {
+                for arg in &args.args {
+                    if let GenericArgument::AssocType(assoc) = arg
+                        && assoc.ident == "Item"
+                    {
+                        return &assoc.ty;
                     }
                 }
             }
@@ -181,7 +180,8 @@ struct TaskDefinition<'a> {
     func_name: &'a Ident,
     struct_name: &'a Ident,
     impl_func_name: &'a Ident,
-    args: &'a TaskArgs,
+    task_type: TaskType,
+    batch_size: Option<usize>,
     arg_names: &'a [Ident],
     arg_types: &'a [Box<Type>],
     return_ty: &'a Type,
@@ -272,7 +272,7 @@ fn generate_batch_task_impl(def: &TaskDefinition) -> TokenStream2 {
             "Batch task must have exactly one argument: Vec<Input>"
         );
     }
-    let batch_size = def.args.batch_size.unwrap_or(16);
+    let batch_size = def.batch_size.unwrap_or(16);
     let input_vec_type = &def.arg_types[0];
     let input_type = extract_vec_inner_type(input_vec_type);
 
@@ -362,7 +362,7 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
     let arg_types = def.arg_types;
 
     // Determine output element type(s)
-    let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.args.task_type {
+    let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.task_type {
         TaskType::Single => {
             let ty = extract_result_type(def.return_ty).clone();
             // Treat `()` as non-tuple scalar; any tuple with at least 1 element is handled as tuple
@@ -396,7 +396,7 @@ fn generate_constructor(def: &TaskDefinition, original_sig: &syn::Signature) -> 
         .inputs
         .push(parse_quote! { builder: &::namu::__macro_exports::Builder<G> });
 
-    match def.args.task_type {
+    match def.task_type {
         TaskType::Single | TaskType::Stream => {
             for (name, ty) in arg_names.iter().zip(arg_types.iter()) {
                 constructor_sig
@@ -495,7 +495,7 @@ fn generate_unpack_fn(def: &TaskDefinition) -> TokenStream2 {
     let unpack_fn_ident = format_ident!("unpack");
 
     // Determine output arity similar to constructor logic
-    let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.args.task_type {
+    let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.task_type {
         TaskType::Single => {
             let ty = extract_result_type(def.return_ty).clone();
             if let Type::Tuple(tuple) = &ty {
@@ -551,14 +551,25 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as TaskArgs);
     let item: syn::Item = parse_macro_input!(item as syn::Item);
 
+    let task_type = match args.task_type {
+        Some(task_type) => task_type,
+        None => match &item {
+            syn::Item::Fn(_) => TaskType::Single,
+            syn::Item::Struct(_) | syn::Item::Enum(_) | syn::Item::Impl(_) => TaskType::Direct,
+            _ => TaskType::Direct,
+        },
+    };
+
     // If this is a "direct" task, we simply return the item unchanged.
-    if matches!(args.task_type, TaskType::Direct) {
-        // We allow only structs or enums for direct tasks; functions should specify kind.
+    if matches!(task_type, TaskType::Direct) {
+        // We allow only structs/enums/impls for direct tasks; functions should specify kind.
         match &item {
-            syn::Item::Struct(_) | syn::Item::Enum(_) => {}
-            syn::Item::Impl(_) => {}
+            syn::Item::Struct(_) | syn::Item::Enum(_) | syn::Item::Impl(_) => {}
             syn::Item::Fn(f) => {
-                abort!(f, "Function tasks must specify kind, e.g. #[task(single)]");
+                abort!(
+                    f,
+                    "Function tasks must specify kind (e.g. #[task(single)]) or omit args for the default single task"
+                );
             }
             _ => {}
         }
@@ -610,13 +621,14 @@ pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
         func_name,
         struct_name: &struct_name,
         impl_func_name: &impl_func_name,
-        args: &args,
+        task_type,
+        batch_size: args.batch_size,
         arg_names: &arg_names,
         arg_types: &arg_types,
         return_ty,
     };
 
-    let task_trait_impl = match args.task_type {
+    let task_trait_impl = match task_type {
         TaskType::Single => generate_single_task_impl(&def),
         TaskType::Batch => generate_batch_task_impl(&def),
         TaskType::Stream => generate_stream_task_impl(&def),

@@ -1,5 +1,7 @@
 //! Common test utilities, tasks, and setup for graph integration tests.
 
+#![allow(dead_code)]
+
 use anyhow::Result;
 use namu::{register_task, task};
 use namu_core::Value;

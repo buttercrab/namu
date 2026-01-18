@@ -399,21 +399,21 @@ fn drive_until_call<C: ContextManager>(
             values_to_add.extend(lit_vals);
         }
 
-        if !operation.phis.is_empty() {
-            if let Some(pred) = pred_op {
-                let phi_vals = operation.phis.iter().filter_map(|phi| {
-                    phi.from
-                        .iter()
-                        .find(|(from_id, _)| *from_id == pred)
-                        .map(|(_, val_id)| {
-                            (
-                                phi.output,
-                                run_ctx.context_manager.get_value(ctx_id, *val_id),
-                            )
-                        })
-                });
-                values_to_add.extend(phi_vals);
-            }
+        if !operation.phis.is_empty()
+            && let Some(pred) = pred_op
+        {
+            let phi_vals = operation.phis.iter().filter_map(|phi| {
+                phi.from
+                    .iter()
+                    .find(|(from_id, _)| *from_id == pred)
+                    .map(|(_, val_id)| {
+                        (
+                            phi.output,
+                            run_ctx.context_manager.get_value(ctx_id, *val_id),
+                        )
+                    })
+            });
+            values_to_add.extend(phi_vals);
         }
 
         if !values_to_add.is_empty() {

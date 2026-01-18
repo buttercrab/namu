@@ -5,8 +5,7 @@ pub mod multiple_args_task {
     fn task_impl(a: i32, b: String) -> anyhow::Result<String> {
         Ok(
             ::alloc::__export::must_use({
-                let res = ::alloc::fmt::format(format_args!("{0}{1}", a, b));
-                res
+                ::alloc::fmt::format(format_args!("{0}{1}", a, b))
             }),
         )
     }
