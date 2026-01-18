@@ -15,25 +15,63 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust toolchains
+      - name: Install latest Rust toolchain
         run: |
           rustup update --no-self-update
-          rustup toolchain install nightly
           rustup component add clippy
-          rustup component add rustfmt --toolchain nightly
-      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-expand
         run: |
           cargo install cargo-expand --locked
+      - uses: Swatinem/rust-cache@v2
+      - name: Check (all targets, all features)
+        run: |
+          cargo check --workspace --all-targets --all-features
+      - name: Clippy (deny warnings)
+        run: |
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test (all targets, all features)
+        run: |
+          cargo test --workspace --all-targets --all-features
+      - name: Doc (no deps)
+        run: |
+          cargo doc --workspace --all-features --no-deps
+      - name: Ensure trybuild cache dir
+        run: |
+          mkdir -p target/tests/target
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest Rust toolchain
+        run: |
+          rustup update --no-self-update
+          rustup toolchain install nightly
+          rustup component add rustfmt --toolchain nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: |
+          cargo +nightly fmt --all --check
+
+  security:
+    name: Security (deny + audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest Rust toolchain
+        run: |
+          rustup update --no-self-update
+      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-deny
         run: |
           cargo install cargo-deny --locked
       - name: Install cargo-audit
         run: |
           cargo install cargo-audit --locked
-      - name: Verify
+      - name: Cargo deny
         run: |
-          ./scripts/verify.sh
-      - name: Ensure trybuild cache dir
+          cargo deny check --deny warnings
+      - name: Cargo audit
         run: |
-          mkdir -p target/tests/target
+          cargo audit --deny warnings
