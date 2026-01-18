@@ -9,18 +9,24 @@ name = "namu-master"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.8", features = ["ws", "multipart"] }
-base64 = "0.22"
+anyhow = { workspace = true }
+axum = { version = "0.8", features = ["multipart"] }
+bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
-futures-util = { workspace = true }
-hashbrown = { workspace = true }
+namu-core = { path = "../core", version = "0.1.0" }
+namu-proto = { path = "../proto", version = "0.1.0" }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros"] }
+sha2 = "0.10"
+sqlx-core = { version = "0.8", default-features = false, features = ["_rt-tokio", "_tls-none", "uuid", "chrono", "json"] }
+sqlx-postgres = { version = "0.8", default-features = false, features = ["uuid", "chrono", "json"] }
+tar = "0.4"
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
-uuid = { version = "1.17", features = ["v4"] }
+uuid = { version = "1.17", features = ["v4", "serde"] }
+zstd = "0.13"

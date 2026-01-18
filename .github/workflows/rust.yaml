@@ -15,60 +15,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install latest Rust toolchain
-        run: |
-          rustup update --no-self-update
-          rustup component add clippy
-      - name: Install cargo-expand
-        run: |
-          cargo install cargo-expand --locked
-      - uses: Swatinem/rust-cache@v2
-      - name: Check (all targets, all features)
-        run: |
-          cargo check --workspace --all-targets --all-features
-      - name: Clippy (deny warnings)
-        run: |
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Test (all targets, all features)
-        run: |
-          cargo test --workspace --all-targets --all-features
-      - name: Doc (no deps)
-        run: |
-          cargo doc --workspace --all-features --no-deps
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install latest Rust toolchain
+      - name: Install Rust toolchains
         run: |
           rustup update --no-self-update
           rustup toolchain install nightly
+          rustup component add clippy
           rustup component add rustfmt --toolchain nightly
       - uses: Swatinem/rust-cache@v2
-      - name: Format
+      - name: Install cargo-expand
         run: |
-          cargo +nightly fmt --all --check
-
-  security:
-    name: Security (deny + audit)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install latest Rust toolchain
-        run: |
-          rustup update --no-self-update
-      - uses: Swatinem/rust-cache@v2
+          cargo install cargo-expand --locked
       - name: Install cargo-deny
         run: |
           cargo install cargo-deny --locked
       - name: Install cargo-audit
         run: |
           cargo install cargo-audit --locked
-      - name: Cargo deny
+      - name: Verify
         run: |
-          cargo deny check --deny warnings
-      - name: Cargo audit
-        run: |
-          cargo audit --deny warnings
+          ./scripts/verify.sh

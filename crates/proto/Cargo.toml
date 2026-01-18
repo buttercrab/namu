@@ -1,0 +1,10 @@
+[package]
+name = "namu-proto"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { version = "1.17", features = ["v4", "serde"] }

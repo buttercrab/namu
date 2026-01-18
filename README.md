@@ -11,7 +11,7 @@ Developers annotate compute units with `#[task]`, orchestrate them in `#[workflo
 Rust Source        ──►  namu-macros  ──►  JSON IR  ──►  namu-engine  ──►  Workers
 (tasks + workflow)         │                               ▲
                            │                               │
-                   namu-flow (graph builder)         namu-master (registry)
+                   namu-flow (graph builder)      namu-master (orchestrator)
 ```
 
 - **Compile-time**: Procedural macros rewrite user code into a Static-Single-Assignment graph and serialise it as JSON.
@@ -27,7 +27,7 @@ Rust Source        ──►  namu-macros  ──►  JSON IR  ──►  namu-e
 | **namu-macros** | Implements `#[task]` and `#[workflow]`                            |
 | **namu-flow**   | Compile-time graph builder used by macros                         |
 | **namu-engine** | Runtime interpreter; manages contexts, dispatches tasks           |
-| **namu-cli**    | Developer tooling (`compile`, `login`, `publish`)                 |
+| **namu-cli**    | Developer tooling (`build`, `publish`, `run`, `status`)           |
 | **namu-master** | HTTP + WebSocket registry / control-plane                         |
 | **namu-worker** | Lightweight node that executes tasks                              |
 
@@ -55,17 +55,18 @@ fn compute() -> i32 {
 ```
 
 ```bash
-namu compile   # type-checks every task crate with the `no-run` feature
-namu publish   # uploads sources to the registry (namu-master)
+namu build   # builds task artifacts and workflow JSON into ./dist
+namu publish # uploads artifacts + workflow IR to the orchestrator
+namu run     # starts a workflow run by id + version
 ```
 
 Workers connected to the master will now execute `compute` in parallel.
 
 ---
 
-## Design Documents
+## Local Dev Loop
 
-- **[design.mdc](design.mdc)** – strategic, high-level overview.
-- **[namu.mdc](namu.mdc)** – in-depth implementation guide.
+- `./scripts/e2e.sh` — spins up Postgres + Redis with Docker, runs master/worker, builds + publishes sample tasks, and executes a workflow.
+- Environment overrides: `PG_PORT`, `REDIS_PORT`, `BIND_PORT`, `NAMU_ORCH_URL`.
 
 For questions or contributions, please open an issue or join the discussion board.
