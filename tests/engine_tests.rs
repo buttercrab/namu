@@ -80,3 +80,24 @@ fn engine_executes_list_workflow() {
         .collect::<Vec<_>>();
     assert_eq!(vals, vec![10, 11, 12, 20, 21, 22, 30, 31, 32]);
 }
+
+#[test]
+fn engine_stream_failure_only_stops_leaf() {
+    #[workflow]
+    fn stream_failure_workflow() -> i32 {
+        let a = range(1, 4);
+        maybe_fail(a)
+    }
+
+    let graph = stream_failure_workflow();
+    let wf_ir = graph.to_serializable("stream_failure".to_string());
+
+    let result_val = run_workflow(wf_ir);
+
+    let vals = result_val
+        .iter()
+        .map(|v| *v.downcast_ref::<i32>().unwrap())
+        .sorted()
+        .collect::<Vec<_>>();
+    assert_eq!(vals, vec![10, 30]);
+}

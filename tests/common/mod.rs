@@ -86,6 +86,16 @@ pub fn panicker() -> Result<i32> {
     panic!("This should not be called!");
 }
 
+#[task(single)]
+pub fn maybe_fail(v: i32) -> Result<i32> {
+    if v == 20 {
+        anyhow::bail!("intentional failure");
+    }
+    Ok(v)
+}
+
+register_task! { method = maybe_fail, name = "maybe_fail", author = "test", version = "0.1" }
+
 /// Convenience helper to execute a workflow IR with a freshly instantiated
 /// in-process [`SimpleEngine`].
 ///

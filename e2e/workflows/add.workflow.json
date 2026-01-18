@@ -1,0 +1,25 @@
+{
+  "id": "add_workflow",
+  "version": "0.1.0",
+  "ir": {
+    "name": "add_workflow",
+    "operations": [
+      {
+        "literals": [
+          { "output": 0, "value": "1" },
+          { "output": 1, "value": "2" }
+        ],
+        "phis": [],
+        "call": {
+          "task_id": "add",
+          "inputs": [0, 1],
+          "outputs": [2]
+        },
+        "next": { "Return": { "var": 2 } }
+      }
+    ]
+  },
+  "task_versions": {
+    "add": "0.1.0"
+  }
+}

@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["tasks/*", "pipelines/*"]
+exclude = ["tasks/*", "pipelines/*", "e2e/tasks/*"]
 members = [
   "crates/cli",
   "crates/core",
@@ -7,6 +7,7 @@ members = [
   "crates/flow",
   "crates/macros",
   "crates/master",
+  "crates/proto",
   "crates/worker",
 
   "examples/simple/simple",
