@@ -36,6 +36,7 @@ pub struct AppState {
     pub redis: ConnectionManager,
     pub artifacts_dir: PathBuf,
     pub runs: Arc<RwLock<HashMap<Uuid, RunState>>>,
+    pub inline_input_limit: usize,
 }
 
 #[tokio::main]
@@ -48,6 +49,10 @@ async fn main() -> anyhow::Result<()> {
     let artifacts_dir =
         std::env::var("ARTIFACTS_DIR").unwrap_or_else(|_| "./data/artifacts".to_string());
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let inline_input_limit = std::env::var("NAMU_INLINE_INPUT_LIMIT_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(262_144);
 
     let db = PgPool::connect(&database_url).await?;
     db::init_db(&db).await?;
@@ -60,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         redis,
         artifacts_dir: PathBuf::from(artifacts_dir),
         runs: Arc::new(RwLock::new(HashMap::new())),
+        inline_input_limit,
     };
 
     let lease_state = state.clone();
