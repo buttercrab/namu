@@ -1,23 +1,14 @@
-warning: variable `x` is assigned to, but never used
- --> tests/compile-fail/01-assign-to-immutable.rs:6:9
-  |
-6 |     let x = 1;
-  |         ^
-  |
-  = note: consider using `_x` instead
-  = note: `#[warn(unused_variables)]` on by default
-
 error[E0384]: cannot assign twice to immutable variable `x`
- --> tests/compile-fail/01-assign-to-immutable.rs:4:1
+ --> tests/compile-fail/01-assign-to-immutable.rs:6:1
   |
-4 | #[workflow]
+6 | #[workflow]
   | ^^^^^^^^^^^ cannot assign twice to immutable variable
-5 | fn immutable_assign() {
-6 |     let x = 1;
+7 | fn immutable_assign() {
+8 |     let x = 1;
   |         - first assignment to `x`
   |
   = note: this error originates in the attribute macro `workflow` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider making this binding mutable
   |
-6 |     let mut x = 1;
+8 |     let mut x = 1;
   |         +++
