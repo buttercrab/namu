@@ -22,6 +22,9 @@ jobs:
       - name: Install cargo-expand
         run: |
           cargo install cargo-expand --locked
+      - name: Prime trybuild target dir
+        run: |
+          mkdir -p target/tests/target
       - uses: Swatinem/rust-cache@v2
       - name: Check (all targets, all features)
         run: |
@@ -35,9 +38,6 @@ jobs:
       - name: Doc (no deps)
         run: |
           cargo doc --workspace --all-features --no-deps
-      - name: Ensure trybuild cache dir
-        run: |
-          mkdir -p target/tests/target
 
   fmt:
     name: Format
