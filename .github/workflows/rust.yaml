@@ -19,6 +19,9 @@ jobs:
         run: |
           rustup update --no-self-update
           rustup component add clippy
+      - name: Install cargo-expand
+        run: |
+          cargo install cargo-expand --locked
       - uses: Swatinem/rust-cache@v2
       - name: Check (all targets, all features)
         run: |
