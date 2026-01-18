@@ -37,6 +37,18 @@ pub async fn get_value(
     }
 }
 
+pub async fn get_value_raw(
+    conn: &mut ConnectionManager,
+    run_id: Uuid,
+    ctx_id: usize,
+    value_id: usize,
+) -> anyhow::Result<Option<String>> {
+    let key = values_key(run_id, ctx_id);
+    let field = value_id.to_string();
+    let payload: Option<String> = conn.hget(key, field).await?;
+    Ok(payload)
+}
+
 pub async fn clone_context(
     conn: &mut ConnectionManager,
     run_id: Uuid,

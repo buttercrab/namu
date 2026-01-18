@@ -83,4 +83,19 @@ pub struct QueueMessage {
     pub task_version: String,
     pub input_ids: Vec<usize>,
     pub lease_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_values: Option<Vec<JsonValue>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_hashes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_refs: Option<Vec<Option<ValueRef>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValueRef {
+    #[serde(rename = "ref")]
+    pub ref_uri: String,
+    pub hash: Option<String>,
+    pub size: Option<u64>,
+    pub codec: Option<String>,
 }

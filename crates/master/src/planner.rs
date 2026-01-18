@@ -2,6 +2,7 @@ use namu_core::ir::{Call, Next, Operation};
 use namu_proto::{QueueMessage, TaskKind};
 use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
+use sha2::Digest;
 use uuid::Uuid;
 
 use crate::{AppState, RunState, db, redis_store};
@@ -70,6 +71,16 @@ async fn enqueue_call(
     )
     .await?;
 
+    let mut redis = state.redis.clone();
+    let (input_values, input_hashes) = resolve_inputs_for_message(
+        &mut redis,
+        run_id,
+        ctx_id,
+        &call.inputs,
+        state.inline_input_limit,
+    )
+    .await?;
+
     let msg = QueueMessage {
         run_id,
         op_id,
@@ -78,9 +89,11 @@ async fn enqueue_call(
         task_version,
         input_ids: call.inputs.clone(),
         lease_ms,
+        input_values,
+        input_hashes: Some(input_hashes),
+        input_refs: None,
     };
 
-    let mut redis = state.redis.clone();
     redis_store::queue_task(&mut redis, &manifest.resource_class, &msg).await?;
     redis_store::add_event(
         &mut redis,
@@ -95,6 +108,40 @@ async fn enqueue_call(
     .await?;
 
     Ok(())
+}
+
+async fn resolve_inputs_for_message(
+    redis: &mut ConnectionManager,
+    run_id: Uuid,
+    ctx_id: usize,
+    input_ids: &[usize],
+    inline_limit: usize,
+) -> anyhow::Result<(Option<Vec<JsonValue>>, Vec<String>)> {
+    let mut raw_values = Vec::with_capacity(input_ids.len());
+    for id in input_ids {
+        let raw = redis_store::get_value_raw(redis, run_id, ctx_id, *id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing input value"))?;
+        raw_values.push(raw);
+    }
+
+    let input_hashes = raw_values
+        .iter()
+        .map(|raw| format!("sha256:{:x}", sha2::Sha256::digest(raw.as_bytes())))
+        .collect::<Vec<_>>();
+
+    let inline_values =
+        if inline_limit > 0 && raw_values.iter().all(|raw| raw.len() <= inline_limit) {
+            let mut parsed = Vec::with_capacity(raw_values.len());
+            for raw in &raw_values {
+                parsed.push(serde_json::from_str(raw)?);
+            }
+            Some(parsed)
+        } else {
+            None
+        };
+
+    Ok((inline_values, input_hashes))
 }
 
 pub async fn apply_task_output(

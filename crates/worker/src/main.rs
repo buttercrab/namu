@@ -1,3 +1,4 @@
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,6 +10,74 @@ use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
 use tracing::{error, info};
 use uuid::Uuid;
+
+struct CachedValue {
+    value: JsonValue,
+    bytes: usize,
+    tick: u64,
+}
+
+struct ValueCache {
+    max_bytes: usize,
+    current_bytes: usize,
+    counter: u64,
+    entries: HashMap<String, CachedValue>,
+    order: VecDeque<(String, u64)>,
+}
+
+impl ValueCache {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            current_bytes: 0,
+            counter: 0,
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, hash: &str) -> Option<JsonValue> {
+        let entry = self.entries.get_mut(hash)?;
+        self.counter = self.counter.wrapping_add(1);
+        entry.tick = self.counter;
+        self.order.push_back((hash.to_string(), entry.tick));
+        Some(entry.value.clone())
+    }
+
+    fn insert(&mut self, hash: String, value: JsonValue, bytes: usize) {
+        if self.max_bytes == 0 || bytes > self.max_bytes {
+            return;
+        }
+        if let Some(existing) = self.entries.remove(&hash) {
+            self.current_bytes = self.current_bytes.saturating_sub(existing.bytes);
+        }
+        self.counter = self.counter.wrapping_add(1);
+        self.entries.insert(
+            hash.clone(),
+            CachedValue {
+                value,
+                bytes,
+                tick: self.counter,
+            },
+        );
+        self.order.push_back((hash, self.counter));
+        self.current_bytes = self.current_bytes.saturating_add(bytes);
+
+        while self.current_bytes > self.max_bytes {
+            let Some((key, tick)) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(entry) = self.entries.get(&key)
+                && entry.tick != tick
+            {
+                continue;
+            }
+            if let Some(removed) = self.entries.remove(&key) {
+                self.current_bytes = self.current_bytes.saturating_sub(removed.bytes);
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,6 +91,10 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("RESOURCE_CLASS").unwrap_or_else(|_| "cpu.small".to_string());
     let labels_json = std::env::var("LABELS_JSON").unwrap_or_else(|_| "{}".to_string());
     let cache_dir = std::env::var("ARTIFACT_CACHE").unwrap_or_else(|_| "./data/cache".to_string());
+    let value_cache_bytes = std::env::var("NAMU_VALUE_CACHE_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(268_435_456);
 
     let client = reqwest::Client::new();
     register_worker(
@@ -42,13 +115,20 @@ async fn main() -> anyhow::Result<()> {
 
     let cache_dir = PathBuf::from(cache_dir);
     tokio::fs::create_dir_all(&cache_dir).await?;
+    let mut value_cache = ValueCache::new(value_cache_bytes);
 
     loop {
         match read_one(&mut redis, &stream, &group, &worker_id).await {
             Ok(Some((message_id, payload))) => {
-                if let Err(err) =
-                    handle_message(&client, &orchestrator_url, &mut redis, &cache_dir, &payload)
-                        .await
+                if let Err(err) = handle_message(
+                    &client,
+                    &orchestrator_url,
+                    &mut redis,
+                    &cache_dir,
+                    &mut value_cache,
+                    &payload,
+                )
+                .await
                 {
                     error!("task failed: {err}");
                 }
@@ -181,6 +261,7 @@ async fn handle_message(
     orchestrator_url: &str,
     redis: &mut ConnectionManager,
     cache_dir: &Path,
+    value_cache: &mut ValueCache,
     msg: &QueueMessage,
 ) -> anyhow::Result<()> {
     start_task(client, orchestrator_url, msg).await?;
@@ -198,7 +279,7 @@ async fn handle_message(
     )
     .await?;
 
-    let inputs = fetch_inputs(redis, msg).await?;
+    let inputs = resolve_inputs(redis, value_cache, msg).await?;
     let input_json = build_input_json(&manifest, inputs)?;
 
     match call_task(&lib_path, &input_json)? {
@@ -325,18 +406,56 @@ async fn extract_library(archive_path: &Path, dir: &Path) -> anyhow::Result<Path
     lib_path.ok_or_else(|| anyhow::anyhow!("library not found in artifact"))
 }
 
-async fn fetch_inputs(
+async fn resolve_inputs(
     redis: &mut ConnectionManager,
+    value_cache: &mut ValueCache,
     msg: &QueueMessage,
 ) -> anyhow::Result<Vec<JsonValue>> {
     let key = format!("values:{}:{}", msg.run_id, msg.ctx_id);
     let mut inputs = Vec::with_capacity(msg.input_ids.len());
-    for id in &msg.input_ids {
+    let hashes = msg.input_hashes.as_ref();
+    let inline = msg.input_values.as_ref();
+
+    for (idx, id) in msg.input_ids.iter().enumerate() {
+        if let Some(hashes) = hashes
+            && let Some(hash) = hashes.get(idx)
+            && let Some(val) = value_cache.get(hash)
+        {
+            inputs.push(val);
+            continue;
+        }
+
+        if let Some(inline_vals) = inline
+            && let Some(val) = inline_vals.get(idx)
+        {
+            let value = val.clone();
+            if let Some(hashes) = hashes
+                && let Some(hash) = hashes.get(idx)
+            {
+                let bytes = estimate_json_size(&value);
+                value_cache.insert(hash.clone(), value.clone(), bytes);
+            }
+            inputs.push(value);
+            continue;
+        }
+
         let raw: Option<String> = redis.hget(&key, id.to_string()).await?;
         let raw = raw.ok_or_else(|| anyhow::anyhow!("missing input value"))?;
-        inputs.push(serde_json::from_str(&raw)?);
+        let value: JsonValue = serde_json::from_str(&raw)?;
+        if let Some(hashes) = hashes
+            && let Some(hash) = hashes.get(idx)
+        {
+            value_cache.insert(hash.clone(), value.clone(), raw.len());
+        }
+        inputs.push(value);
     }
     Ok(inputs)
+}
+
+fn estimate_json_size(value: &JsonValue) -> usize {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0)
 }
 
 fn build_input_json(manifest: &TaskManifest, inputs: Vec<JsonValue>) -> anyhow::Result<JsonValue> {
