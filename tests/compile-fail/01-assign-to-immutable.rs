@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+
 use graph::workflow;
 use namu as graph;
 

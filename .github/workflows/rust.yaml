@@ -10,27 +10,31 @@ on:
       - main
 
 jobs:
-  check:
-    name: Check & Test
+  verify:
+    name: Verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install latest Rust toolchain
         run: |
           rustup update --no-self-update
-      - uses: Swatinem/rust-cache@v2
+          rustup component add clippy
       - name: Install cargo-expand
         run: |
-          cargo install cargo-expand
-      - name: Check
+          cargo install cargo-expand --locked
+      - uses: Swatinem/rust-cache@v2
+      - name: Check (all targets, all features)
         run: |
-          cargo check --workspace
-      - name: Clippy
+          cargo check --workspace --all-targets --all-features
+      - name: Clippy (deny warnings)
         run: |
           cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Test
+      - name: Test (all targets, all features)
         run: |
-          cargo test --workspace
+          cargo test --workspace --all-targets --all-features
+      - name: Doc (no deps)
+        run: |
+          cargo doc --workspace --all-features --no-deps
 
   fmt:
     name: Format
@@ -46,3 +50,25 @@ jobs:
       - name: Format
         run: |
           cargo +nightly fmt --all --check
+
+  security:
+    name: Security (deny + audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install latest Rust toolchain
+        run: |
+          rustup update --no-self-update
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --locked
+      - name: Install cargo-audit
+        run: |
+          cargo install cargo-audit --locked
+      - name: Cargo deny
+        run: |
+          cargo deny check --deny warnings
+      - name: Cargo audit
+        run: |
+          cargo audit --deny warnings

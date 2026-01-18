@@ -2,9 +2,10 @@
 name = "add"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
-namu = { path = "../../../../" }
+namu = { path = "../../../../", version = "0.1.0" }
 
 [features]
 default = []
