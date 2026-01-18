@@ -9,6 +9,7 @@ This directory contains the canonical documentation for NAMU. Start here if you 
 - `manifests.md` — task/workflow file formats.
 - `development.md` — build, test, and verification workflow.
 - `contributing.md` — contribution guidelines and PR checklist.
+- `value-tree-acceleration.md` — worker-side caching + inline inputs plan.
 
 ## TL;DR
 ```bash
