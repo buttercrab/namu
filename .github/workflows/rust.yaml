@@ -34,3 +34,6 @@ jobs:
       - name: Verify
         run: |
           ./scripts/verify.sh
+      - name: Ensure trybuild cache dir
+        run: |
+          mkdir -p target/tests/target
