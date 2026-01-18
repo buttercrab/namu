@@ -84,9 +84,27 @@ if [[ -z "$BIND_PORT" ]]; then
   }
 fi
 
+MINIO_PORT=${MINIO_PORT:-}
+if [[ -z "$MINIO_PORT" ]]; then
+  MINIO_PORT=$(choose_port 9000 9002) || {
+    echo "minio ports 9000 and 9002 are in use; set MINIO_PORT to a free port" >&2
+    exit 1
+  }
+fi
+
+MINIO_CONSOLE_PORT=${MINIO_CONSOLE_PORT:-}
+if [[ -z "$MINIO_CONSOLE_PORT" ]]; then
+  MINIO_CONSOLE_PORT=$(choose_port 9001 9003) || {
+    echo "minio console ports 9001 and 9003 are in use; set MINIO_CONSOLE_PORT to a free port" >&2
+    exit 1
+  }
+fi
+
 export PG_PORT
 export REDIS_PORT
 export BIND_PORT
+export MINIO_PORT
+export MINIO_CONSOLE_PORT
 
 docker compose -f dev/docker-compose.yml up -d
 
@@ -95,11 +113,25 @@ export REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/"
 export ARTIFACTS_DIR="$ROOT_DIR/data/artifacts"
 export BIND_ADDR="127.0.0.1:${BIND_PORT}"
 export NAMU_ORCH_URL="http://127.0.0.1:${BIND_PORT}"
+export NAMU_OBJECT_STORE_ENDPOINT="http://127.0.0.1:${MINIO_PORT}"
+export NAMU_OBJECT_STORE_BUCKET="namu"
+export NAMU_OBJECT_STORE_ACCESS_KEY="minioadmin"
+export NAMU_OBJECT_STORE_SECRET_KEY="minioadmin"
+export NAMU_OBJECT_STORE_REGION="us-east-1"
+export NAMU_OBJECT_STORE_FORCE_PATH_STYLE="true"
+export NAMU_INLINE_INPUT_LIMIT_BYTES="0"
 
 mkdir -p "$ROOT_DIR/data/artifacts" "$ROOT_DIR/data/cache"
 
 cargo run -p namu-master >/tmp/namu-master.log 2>&1 &
 MASTER_PID=$!
+
+for _ in {1..30}; do
+  if curl -sf "http://127.0.0.1:${MINIO_PORT}/minio/health/ready" >/dev/null; then
+    break
+  fi
+  sleep 1
+done
 
 for _ in {1..30}; do
   if curl -sf "$NAMU_ORCH_URL/healthz" >/dev/null; then

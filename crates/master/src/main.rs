@@ -13,6 +13,7 @@ use tracing::info;
 use uuid::Uuid;
 
 mod db;
+mod object_store;
 mod planner;
 mod redis_store;
 mod routes;
@@ -37,6 +38,7 @@ pub struct AppState {
     pub artifacts_dir: PathBuf,
     pub runs: Arc<RwLock<HashMap<Uuid, RunState>>>,
     pub inline_input_limit: usize,
+    pub object_store: Option<object_store::ObjectStore>,
 }
 
 #[tokio::main]
@@ -53,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(262_144);
+    let object_store = object_store::ObjectStore::from_env().await?;
 
     let db = PgPool::connect(&database_url).await?;
     db::init_db(&db).await?;
@@ -66,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
         artifacts_dir: PathBuf::from(artifacts_dir),
         runs: Arc::new(RwLock::new(HashMap::new())),
         inline_input_limit,
+        object_store,
     };
 
     let lease_state = state.clone();

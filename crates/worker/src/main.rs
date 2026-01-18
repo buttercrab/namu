@@ -11,6 +11,8 @@ use serde_json::Value as JsonValue;
 use tracing::{error, info};
 use uuid::Uuid;
 
+mod object_store;
+
 struct CachedValue {
     value: JsonValue,
     bytes: usize,
@@ -95,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(268_435_456);
+    let object_store = object_store::ObjectStore::from_env().await?;
 
     let client = reqwest::Client::new();
     register_worker(
@@ -126,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
                     &mut redis,
                     &cache_dir,
                     &mut value_cache,
+                    object_store.as_ref(),
                     &payload,
                 )
                 .await
@@ -262,6 +266,7 @@ async fn handle_message(
     redis: &mut ConnectionManager,
     cache_dir: &Path,
     value_cache: &mut ValueCache,
+    object_store: Option<&object_store::ObjectStore>,
     msg: &QueueMessage,
 ) -> anyhow::Result<()> {
     start_task(client, orchestrator_url, msg).await?;
@@ -279,7 +284,7 @@ async fn handle_message(
     )
     .await?;
 
-    let inputs = resolve_inputs(redis, value_cache, msg).await?;
+    let inputs = resolve_inputs(redis, value_cache, object_store, msg).await?;
     let input_json = build_input_json(&manifest, inputs)?;
 
     match call_task(&lib_path, &input_json)? {
@@ -409,12 +414,14 @@ async fn extract_library(archive_path: &Path, dir: &Path) -> anyhow::Result<Path
 async fn resolve_inputs(
     redis: &mut ConnectionManager,
     value_cache: &mut ValueCache,
+    object_store: Option<&object_store::ObjectStore>,
     msg: &QueueMessage,
 ) -> anyhow::Result<Vec<JsonValue>> {
     let key = format!("values:{}:{}", msg.run_id, msg.ctx_id);
     let mut inputs = Vec::with_capacity(msg.input_ids.len());
     let hashes = msg.input_hashes.as_ref();
     let inline = msg.input_values.as_ref();
+    let refs = msg.input_refs.as_ref();
 
     for (idx, id) in msg.input_ids.iter().enumerate() {
         if let Some(hashes) = hashes
@@ -437,6 +444,27 @@ async fn resolve_inputs(
             }
             inputs.push(value);
             continue;
+        }
+
+        if let Some(refs) = refs
+            && let Some(Some(value_ref)) = refs.get(idx)
+            && let Some(store) = object_store
+        {
+            match store.get_json(value_ref).await {
+                Ok(bytes) => {
+                    let value: JsonValue = serde_json::from_slice(&bytes)?;
+                    if let Some(hashes) = hashes
+                        && let Some(hash) = hashes.get(idx)
+                    {
+                        value_cache.insert(hash.clone(), value.clone(), bytes.len());
+                    }
+                    inputs.push(value);
+                    continue;
+                }
+                Err(err) => {
+                    error!("object store fetch failed: {err}");
+                }
+            }
         }
 
         let raw: Option<String> = redis.hget(&key, id.to_string()).await?;
