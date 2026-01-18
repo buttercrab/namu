@@ -2,6 +2,7 @@
 name = "namu-engine"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 anyhow = { workspace = true }
@@ -10,5 +11,5 @@ hashbrown = { workspace = true }
 inventory = { workspace = true }
 itertools = { workspace = true }
 kanal = { workspace = true }
-namu-core = { path = "../core" }
+namu-core = { path = "../core", version = "0.1.0" }
 scc = "2.3"

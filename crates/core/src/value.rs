@@ -1,4 +1,4 @@
-//! Based on https://github.com/dtolnay/erased-serde/blob/650ab83dcff1908d6f1c5e902a5cac1277d51dee/src/any.rs
+//! Based on <https://github.com/dtolnay/erased-serde/blob/650ab83dcff1908d6f1c5e902a5cac1277d51dee/src/any.rs>
 
 use std::any::TypeId;
 use std::marker::PhantomData;
