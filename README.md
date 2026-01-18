@@ -1,72 +1,58 @@
-# NAMU – Composable, AI-first Pipeline Engine for Rust
+# NAMU
 
-_NAMU turns ordinary Rust functions into distributed, type-safe data pipelines._  
-Developers annotate compute units with `#[task]`, orchestrate them in `#[workflow]` functions, and let the compile-time tooling generate an immutable control-flow graph that runs efficiently on the **namu-engine** at runtime.
+Composable, AI‑first pipeline engine for Rust. NAMU turns Rust functions into distributed tasks, wires them into immutable workflow graphs at compile time, and executes them across workers at runtime.
 
----
+**Status:** experimental. APIs and runtime behavior may change.
 
-## High-Level Architecture
+## Features
+- `#[task]` and `#[workflow]` macros that emit a JSON IR graph.
+- Orchestrator + workers model with Postgres + Redis backends.
+- CLI for building artifacts, publishing workflows, and running jobs.
+- Deterministic, immutable value propagation through workflow contexts.
 
+## Architecture (high level)
 ```
-Rust Source        ──►  namu-macros  ──►  JSON IR  ──►  namu-engine  ──►  Workers
-(tasks + workflow)         │                               ▲
-                           │                               │
-                   namu-flow (graph builder)      namu-master (orchestrator)
-```
-
-- **Compile-time**: Procedural macros rewrite user code into a Static-Single-Assignment graph and serialise it as JSON.
-- **Runtime**: The engine interprets the graph, streams immutable _contexts_ through tasks, and scales out across workers under the master's supervision.
-
----
-
-## Workspace Layout (Crate Map)
-
-| Crate / Service | Role                                                              |
-| --------------- | ----------------------------------------------------------------- |
-| **namu-core**   | Public traits (`Task`, `TaskContext`) and serialisable IR structs |
-| **namu-macros** | Implements `#[task]` and `#[workflow]`                            |
-| **namu-flow**   | Compile-time graph builder used by macros                         |
-| **namu-engine** | Runtime interpreter; manages contexts, dispatches tasks           |
-| **namu-cli**    | Developer tooling (`build`, `publish`, `run`, `status`)           |
-| **namu-master** | HTTP + WebSocket registry / control-plane                         |
-| **namu-worker** | Lightweight node that executes tasks                              |
-
----
-
-## Developer Quick-Start (Illustrative)
-
-```rust
-// tasks/add/src/lib.rs
-use namu::prelude::*;
-
-#[task]
-fn add(a: i32, b: i32) -> Result<i32> { Ok(a + b) }
+Rust source  ->  namu-macros  ->  JSON IR  ->  namu-engine  ->  workers
+                                   |                          ^
+                                   +---- namu-master ----------+
 ```
 
-```rust
-// workflow/src/lib.rs
-use namu::prelude::*;
+## Quick start
+Requirements: Rust (stable), plus Docker for the local stack.
 
-#[workflow]
-fn compute() -> i32 {
-    let x = add(1, 2);
-    add(x, 40)
-}
+```bash
+# spins up Postgres + Redis, runs master/worker, builds + publishes sample tasks
+./scripts/e2e.sh
+```
+
+## Local dev loop
+```bash
+# terminal 1
+DATABASE_URL=postgres://namu:namu@127.0.0.1:5432/namu \
+REDIS_URL=redis://127.0.0.1/ \
+BIND_ADDR=127.0.0.1:8080 \
+ARTIFACTS_DIR=./data/artifacts \
+cargo run -p namu-master
+
+# terminal 2
+NAMU_ORCH_URL=http://127.0.0.1:8080 \
+REDIS_URL=redis://127.0.0.1/ \
+ARTIFACT_CACHE=./data/cache \
+cargo run -p namu-worker
 ```
 
 ```bash
-namu build   # builds task artifacts and workflow JSON into ./dist
-namu publish # uploads artifacts + workflow IR to the orchestrator
-namu run     # starts a workflow run by id + version
+# CLI
+namu build   --tasks-dir ./tasks --workflows-dir ./workflows --out-dir ./dist
+namu publish --out-dir ./dist
+namu run <workflow_id> <version>
 ```
 
-Workers connected to the master will now execute `compute` in parallel.
+## Documentation
+See `docs/README.md` for full instructions (architecture, CLI, manifests, testing, and contributing).
 
----
+## Contributing
+PRs welcome. See `docs/contributing.md` for guidelines.
 
-## Local Dev Loop
-
-- `./scripts/e2e.sh` — spins up Postgres + Redis with Docker, runs master/worker, builds + publishes sample tasks, and executes a workflow.
-- Environment overrides: `PG_PORT`, `REDIS_PORT`, `BIND_PORT`, `NAMU_ORCH_URL`.
-
-For questions or contributions, please open an issue or join the discussion board.
+## License
+MIT (see Cargo.toml).
