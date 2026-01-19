@@ -1,8 +1,8 @@
 services:
   master:
-    image: rust:1.75
+    image: rust:1.89
     working_dir: /app
-    command: ["bash", "-lc", "cargo run -p namu-master"]
+    command: ["bash", "-lc", "/usr/local/cargo/bin/cargo run -p namu-master"]
     environment:
       DATABASE_URL: postgres://namu:namu@postgres:5432/namu
       REDIS_URL: redis://redis:6379/
@@ -20,7 +20,7 @@ services:
       - cargo-git:/usr/local/cargo/git
       - target-cache:/app/target
     ports:
-      - "8080:8080"
+      - "${ORCH_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -30,9 +30,9 @@ services:
         condition: service_started
 
   worker-1:
-    image: rust:1.75
+    image: rust:1.89
     working_dir: /app
-    command: ["bash", "-lc", "cargo run -p namu-worker"]
+    command: ["bash", "-lc", "/usr/local/cargo/bin/cargo run -p namu-worker"]
     environment:
       NAMU_ORCH_URL: http://master:8080
       REDIS_URL: redis://redis:6379/
@@ -58,9 +58,9 @@ services:
         condition: service_healthy
 
   worker-2:
-    image: rust:1.75
+    image: rust:1.89
     working_dir: /app
-    command: ["bash", "-lc", "cargo run -p namu-worker"]
+    command: ["bash", "-lc", "/usr/local/cargo/bin/cargo run -p namu-worker"]
     environment:
       NAMU_ORCH_URL: http://master:8080
       REDIS_URL: redis://redis:6379/
