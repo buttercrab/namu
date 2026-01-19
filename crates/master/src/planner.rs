@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use namu_engine::engine::OrchestratorEngine;
-use namu_engine::kernel::{CallSpec, EngineKernel, JsonCodec, KernelAction, ValueStore};
+use namu_engine::kernel::{CallSpec, EngineKernel, JsonRuntime, KernelPlan, ValueStore};
+use namu_engine::traits::engine::OrchestratorEngine;
 use namu_proto::{QueueMessage, TaskKind, TaskRuntime, TaskTrust, ValueRef};
 use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
@@ -18,21 +18,21 @@ pub async fn drive_until_call(
 ) -> anyhow::Result<()> {
     let run_state = get_run_state(state, run_id).await?;
     let workflow = run_state.workflow.clone();
-    let kernel = EngineKernel::new(JsonCodec);
+    let kernel = EngineKernel::new(JsonRuntime);
     let store = RedisValueStore::new(state.redis.clone(), run_id);
 
     match kernel
         .drive_until_action(&workflow, &store, ctx_id, start_op, pred_op)
         .await?
     {
-        KernelAction::Dispatch {
+        KernelPlan::Dispatch {
             op_id,
             ctx_id,
             call,
         } => {
             enqueue_call(state, &run_state, run_id, ctx_id, op_id, &call).await?;
         }
-        KernelAction::Return { ctx_id, .. } => {
+        KernelPlan::Return { ctx_id, .. } => {
             db::finish_context(&state.db, run_id, ctx_id).await?;
         }
     }
@@ -230,7 +230,7 @@ pub async fn apply_task_output(
     let manifest = db::get_task_manifest(&state.db, &call.task_id, &task_version).await?;
 
     let mut redis = state.redis.clone();
-    let kernel = EngineKernel::new(JsonCodec);
+    let kernel = EngineKernel::new(JsonRuntime);
     let store = RedisValueStore::new(state.redis.clone(), run_id);
 
     match manifest.task_kind {
@@ -325,25 +325,25 @@ impl OrchestratorEngine for MasterOrchestrator {
         ctx_id: usize,
         start_op: usize,
         pred_op: Option<usize>,
-    ) -> anyhow::Result<KernelAction> {
+    ) -> anyhow::Result<KernelPlan> {
         let run_state = get_run_state(&self.state, run_id).await?;
         let workflow = run_state.workflow.clone();
-        let kernel = EngineKernel::new(JsonCodec);
+        let kernel = EngineKernel::new(JsonRuntime);
         let store = RedisValueStore::new(self.state.redis.clone(), run_id);
         kernel
             .drive_until_action(&workflow, &store, ctx_id, start_op, pred_op)
             .await
     }
 
-    async fn dispatch(&self, run_id: Uuid, action: KernelAction) -> anyhow::Result<()> {
+    async fn dispatch(&self, run_id: Uuid, action: KernelPlan) -> anyhow::Result<()> {
         let run_state = get_run_state(&self.state, run_id).await?;
         match action {
-            KernelAction::Dispatch {
+            KernelPlan::Dispatch {
                 op_id,
                 ctx_id,
                 call,
             } => enqueue_call(&self.state, &run_state, run_id, ctx_id, op_id, &call).await,
-            KernelAction::Return { ctx_id, .. } => {
+            KernelPlan::Return { ctx_id, .. } => {
                 db::finish_context(&self.state.db, run_id, ctx_id).await?;
                 Ok(())
             }
