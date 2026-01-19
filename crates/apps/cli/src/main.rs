@@ -141,8 +141,8 @@ fn build(
 }
 
 fn sync_config(config_path: Option<PathBuf>) -> anyhow::Result<()> {
-    let path = config::find_config(config_path)
-        .ok_or_else(|| anyhow::anyhow!("namu.toml not found"))?;
+    let path =
+        config::find_config(config_path).ok_or_else(|| anyhow::anyhow!("namu.toml not found"))?;
     let cfg = config::load_config(&path)?;
     sync::sync_config(&cfg)?;
     Ok(())
@@ -352,7 +352,10 @@ fn build_workflows_from_config(cfg: &config::NamuConfig, out_dir: &Path) -> anyh
         let entry = entry?;
         let path = entry.path();
         let file_name = path.file_name().and_then(|n| n.to_str());
-        if file_name.map(|n| !n.ends_with(".workflow.ir.json")).unwrap_or(true) {
+        if file_name
+            .map(|n| !n.ends_with(".workflow.ir.json"))
+            .unwrap_or(true)
+        {
             continue;
         }
 

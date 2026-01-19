@@ -5,8 +5,8 @@ use darling::ast::NestedMeta;
 use proc_macro::TokenStream;
 use proc_macro_error2::abort;
 use quote::{format_ident, quote};
-use syn::visit_mut::{self, VisitMut};
 use syn::punctuated::Punctuated;
+use syn::visit_mut::{self, VisitMut};
 use syn::{
     Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, Token, parse_macro_input,
     parse_quote,

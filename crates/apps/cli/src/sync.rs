@@ -28,17 +28,13 @@ fn ensure_registry_config(cfg: &NamuConfig) -> anyhow::Result<()> {
         DocumentMut::new()
     };
 
-    let registries = doc
-        .entry("registries")
-        .or_insert(Item::Table(Table::new()));
+    let registries = doc.entry("registries").or_insert(Item::Table(Table::new()));
     let registries = registries
         .as_table_mut()
         .ok_or_else(|| anyhow!("registries must be a table"))?;
 
     for (name, registry) in &cfg.registries {
-        let entry = registries
-            .entry(name)
-            .or_insert(Item::Table(Table::new()));
+        let entry = registries.entry(name).or_insert(Item::Table(Table::new()));
         let entry = entry
             .as_table_mut()
             .ok_or_else(|| anyhow!("registries.{name} must be a table"))?;

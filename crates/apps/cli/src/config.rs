@@ -202,7 +202,10 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
             .get("registry")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let path = entry.get("path").and_then(|v| v.as_str()).map(|p| root.join(p));
+        let path = entry
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| root.join(p));
 
         let kind = parse_task_kind(get_string(entry, "kind")?.as_str())?;
         let runtime = parse_task_runtime(get_string(entry, "runtime")?.as_str())?;
@@ -275,7 +278,7 @@ fn parse_workflows(doc: &toml::Value) -> anyhow::Result<WorkflowsConfig> {
             return Ok(WorkflowsConfig {
                 export: WorkflowExport::Auto,
                 entries: HashMap::new(),
-            })
+            });
         }
     };
 

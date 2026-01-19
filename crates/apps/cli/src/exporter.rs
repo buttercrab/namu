@@ -26,7 +26,10 @@ pub fn export_workflows(cfg: &NamuConfig) -> anyhow::Result<PathBuf> {
         .arg("--manifest-path")
         .arg(export_root.join("Cargo.toml"))
         .arg("--release")
-        .env("CARGO_TARGET_DIR", cfg.root.join("target/namu/exporter-target"))
+        .env(
+            "CARGO_TARGET_DIR",
+            cfg.root.join("target/namu/exporter-target"),
+        )
         .status()
         .context("run workflow exporter")?;
     if !status.success() {
@@ -70,7 +73,11 @@ fn write_exporter_manifest(
     Ok(())
 }
 
-fn write_exporter_main(export_src: &Path, workflow_name: &str, ir_dir: &Path) -> anyhow::Result<()> {
+fn write_exporter_main(
+    export_src: &Path,
+    workflow_name: &str,
+    ir_dir: &Path,
+) -> anyhow::Result<()> {
     let main_rs = format!(
         "#[allow(unused_imports)]\nuse {workflow_name} as _;\n\nfn main() {{\n    namu::export::write_all(\"{}\").expect(\"export workflows\");\n}}\n",
         ir_dir.to_string_lossy()
