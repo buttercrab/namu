@@ -25,16 +25,16 @@ fi
 
 echo "Clearing worker caches..."
 rm -rf data/cache/worker-1 data/cache/worker-2
-rm -rf e2e/tasks/*/target
+rm -rf tests/e2e/tasks/*/target
 
 echo "Building E2E tasks/workflows..."
 docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_APP" exec -T master \
-  /usr/local/cargo/bin/cargo run -p namu-cli -- build --tasks-dir e2e/tasks --workflows-dir e2e/workflows --out-dir e2e/dist
+  /usr/local/cargo/bin/cargo run -p namu-cli -- build --tasks-dir tests/e2e/tasks --workflows-dir tests/e2e/workflows --out-dir tests/e2e/dist
 
 echo "Publishing artifacts/workflows..."
 docker compose -f "$COMPOSE_BASE" -f "$COMPOSE_APP" exec -T master \
   env NAMU_ORCH_URL="http://localhost:8080" \
-  /usr/local/cargo/bin/cargo run -p namu-cli -- publish --out-dir e2e/dist
+  /usr/local/cargo/bin/cargo run -p namu-cli -- publish --out-dir tests/e2e/dist
 
 echo "Submitting run..."
 RUN_ID="$(

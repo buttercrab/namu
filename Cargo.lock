@@ -1892,6 +1892,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "namu-advanced-workflows"
+version = "0.1.0"
+dependencies = [
+ "namu",
+ "namu-core",
+ "namu-engine",
+ "namu-flow",
+ "namu-proto",
+ "namu-task-add",
+ "namu-task-embed-batch",
+ "namu-task-id-range",
+ "namu-task-is-even",
+ "namu-task-less-than",
+ "namu-task-maybe-fail",
+ "namu-task-normalize",
+ "namu-task-score",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "namu-cli"
 version = "0.1.0"
 dependencies = [
@@ -2010,6 +2031,63 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "namu-task-add"
+version = "0.1.0"
+dependencies = [
+ "namu",
+]
+
+[[package]]
+name = "namu-task-embed-batch"
+version = "0.1.0"
+dependencies = [
+ "namu",
+]
+
+[[package]]
+name = "namu-task-id-range"
+version = "0.1.0"
+dependencies = [
+ "namu",
+]
+
+[[package]]
+name = "namu-task-is-even"
+version = "0.1.0"
+dependencies = [
+ "namu",
+]
+
+[[package]]
+name = "namu-task-less-than"
+version = "0.1.0"
+dependencies = [
+ "namu",
+]
+
+[[package]]
+name = "namu-task-maybe-fail"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "namu",
+]
+
+[[package]]
+name = "namu-task-normalize"
+version = "0.1.0"
+dependencies = [
+ "namu",
+]
+
+[[package]]
+name = "namu-task-score"
+version = "0.1.0"
+dependencies = [
+ "namu",
 ]
 
 [[package]]

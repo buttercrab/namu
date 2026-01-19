@@ -1,18 +1,27 @@
 [workspace]
-exclude = ["tasks/*", "pipelines/*", "e2e/tasks/*"]
+exclude = ["tasks/*", "pipelines/*", "tests/e2e/tasks/*"]
 members = [
-  "crates/cli",
-  "crates/core",
-  "crates/engine",
-  "crates/flow",
-  "crates/macros",
-  "crates/master",
-  "crates/proto",
-  "crates/worker",
+  "crates/apps/cli",
+  "crates/apps/master",
+  "crates/apps/worker",
+  "crates/libs/core",
+  "crates/libs/engine",
+  "crates/libs/flow",
+  "crates/libs/macros",
+  "crates/libs/proto",
 
-  "examples/simple/simple",
-  "examples/simple/tasks/add",
-  "examples/simple/tasks/is_less",
+  "examples/basic/simple",
+  "examples/basic/tasks/add",
+  "examples/basic/tasks/is_less",
+  "examples/advanced/workflows",
+  "examples/advanced/tasks/add",
+  "examples/advanced/tasks/less_than",
+  "examples/advanced/tasks/is_even",
+  "examples/advanced/tasks/id_range",
+  "examples/advanced/tasks/normalize",
+  "examples/advanced/tasks/embed_batch",
+  "examples/advanced/tasks/score",
+  "examples/advanced/tasks/maybe_fail",
 ]
 resolver = "3"
 
@@ -40,10 +49,10 @@ license = "MIT"
 [dependencies]
 anyhow = { workspace = true }
 inventory = { workspace = true }
-namu-core = { path = "crates/core", version = "0.1.0" }
-namu-engine = { path = "crates/engine", version = "0.1.0" }
-namu-flow = { path = "crates/flow", version = "0.1.0" }
-namu-macros = { path = "crates/macros", version = "0.1.0" }
+namu-core = { path = "crates/libs/core", version = "0.1.0" }
+namu-engine = { path = "crates/libs/engine", version = "0.1.0" }
+namu-flow = { path = "crates/libs/flow", version = "0.1.0" }
+namu-macros = { path = "crates/libs/macros", version = "0.1.0" }
 
 [dev-dependencies]
 erased-serde = { workspace = true }

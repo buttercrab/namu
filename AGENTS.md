@@ -2,9 +2,10 @@
 
 ## Project Structure & Module Organization
 - Root workspace holds shared config and top-level crate (`Cargo.toml`, `src/`).
-- Core Rust crates live in `crates/`: `core`, `flow`, `macros`, `engine`, `cli`, `master`, `worker`.
-- Examples are under `examples/` (e.g., `examples/simple`).
-- Tests are in `tests/`, including compile-fail cases in `tests/compile-fail`.
+- Application crates live in `crates/apps/` (`cli`, `master`, `worker`).
+- Library crates live in `crates/libs/` (`core`, `engine`, `flow`, `macros`, `proto`).
+- Examples are under `examples/` (e.g., `examples/basic`, `examples/advanced`).
+- Tests are in `tests/`, including compile-fail cases in `tests/compile-fail` and e2e fixtures in `tests/e2e`.
 - CI workflows live in `.github/workflows/`.
 
 ## Build, Test, and Development Commands

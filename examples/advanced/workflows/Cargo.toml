@@ -1,0 +1,23 @@
+[package]
+name = "namu-advanced-workflows"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+namu = { path = "../../../", version = "0.1.0" }
+namu-engine = { path = "../../../crates/libs/engine", version = "0.1.0" }
+namu-flow = { path = "../../../crates/libs/flow", version = "0.1.0" }
+namu-core = { path = "../../../crates/libs/core", version = "0.1.0" }
+namu-proto = { path = "../../../crates/libs/proto", version = "0.1.0" }
+serde_json = "1"
+tokio = { version = "1.49", features = ["full"] }
+
+add = { package = "namu-task-add", path = "../tasks/add", version = "0.1.0" }
+less_than = { package = "namu-task-less-than", path = "../tasks/less_than", version = "0.1.0" }
+is_even = { package = "namu-task-is-even", path = "../tasks/is_even", version = "0.1.0" }
+id_range = { package = "namu-task-id-range", path = "../tasks/id_range", version = "0.1.0" }
+normalize = { package = "namu-task-normalize", path = "../tasks/normalize", version = "0.1.0" }
+embed_batch = { package = "namu-task-embed-batch", path = "../tasks/embed_batch", version = "0.1.0" }
+score = { package = "namu-task-score", path = "../tasks/score", version = "0.1.0" }
+maybe_fail = { package = "namu-task-maybe-fail", path = "../tasks/maybe_fail", version = "0.1.0" }
