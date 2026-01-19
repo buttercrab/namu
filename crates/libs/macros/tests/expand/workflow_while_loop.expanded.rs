@@ -251,3 +251,6 @@ pub fn while_loop_workflow() -> ::namu::__macro_exports::Graph<i32> {
     ::namu::__macro_exports::return_value(&__builder, __result);
     __builder.build()
 }
+fn __namu_build_while_loop_workflow() -> ::namu::__macro_exports::Workflow {
+    while_loop_workflow().to_serializable("while_loop_workflow".to_string())
+}

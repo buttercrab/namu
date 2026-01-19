@@ -187,3 +187,6 @@ pub fn chained_tasks_workflow() -> ::namu::__macro_exports::Graph<i32> {
     ::namu::__macro_exports::return_value(&__builder, __result);
     __builder.build()
 }
+fn __namu_build_chained_tasks_workflow() -> ::namu::__macro_exports::Workflow {
+    chained_tasks_workflow().to_serializable("chained_tasks_workflow".to_string())
+}

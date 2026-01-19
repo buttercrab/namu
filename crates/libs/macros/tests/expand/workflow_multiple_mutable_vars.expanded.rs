@@ -325,3 +325,7 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
     ::namu::__macro_exports::return_value(&__builder, __result);
     __builder.build()
 }
+fn __namu_build_multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Workflow {
+    multiple_mutable_vars_workflow()
+        .to_serializable("multiple_mutable_vars_workflow".to_string())
+}

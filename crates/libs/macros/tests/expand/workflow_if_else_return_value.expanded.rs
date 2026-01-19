@@ -216,3 +216,7 @@ pub fn if_else_return_value_workflow() -> ::namu::__macro_exports::Graph<i32> {
     ::namu::__macro_exports::return_value(&__builder, __result);
     __builder.build()
 }
+fn __namu_build_if_else_return_value_workflow() -> ::namu::__macro_exports::Workflow {
+    if_else_return_value_workflow()
+        .to_serializable("if_else_return_value_workflow".to_string())
+}

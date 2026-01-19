@@ -54,3 +54,23 @@ pub fn get_types() -> HashMap<String, TypeEntry> {
         })
         .clone()
 }
+
+#[derive(Clone, Copy)]
+pub struct WorkflowEntry {
+    pub id: &'static str,
+    pub build: fn() -> crate::ir::Workflow,
+}
+
+inventory::collect!(WorkflowEntry);
+
+pub fn get_workflows() -> HashMap<String, WorkflowEntry> {
+    static WORKFLOWS: OnceLock<HashMap<String, WorkflowEntry>> = OnceLock::new();
+    WORKFLOWS
+        .get_or_init(|| {
+            inventory::iter::<WorkflowEntry>
+                .into_iter()
+                .map(|e| (e.id.to_string(), *e))
+                .collect()
+        })
+        .clone()
+}

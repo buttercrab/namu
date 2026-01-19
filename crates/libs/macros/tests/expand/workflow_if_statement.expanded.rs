@@ -116,3 +116,6 @@ pub fn if_statement_workflow() -> ::namu::__macro_exports::Graph<()> {
     ::namu::__macro_exports::return_unit(&__builder);
     __builder.build()
 }
+fn __namu_build_if_statement_workflow() -> ::namu::__macro_exports::Workflow {
+    if_statement_workflow().to_serializable("if_statement_workflow".to_string())
+}

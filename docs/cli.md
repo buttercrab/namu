@@ -5,6 +5,10 @@ Run `namu --help` for the full command list. When working from source, use `carg
 ## Core commands
 - `namu build --tasks-dir <dir> --workflows-dir <dir> --out-dir <dir>`
   - Builds task artifacts and copies workflow IR files into the output directory.
+- `namu build --config ./namu.toml`
+  - Builds using `namu.toml` and auto-exports workflow IR.
+- `namu sync --config ./namu.toml`
+  - Syncs task dependencies into `Cargo.toml` and registry entries into `.cargo/config.toml`.
 - `namu publish --out-dir <dir>`
   - Uploads artifacts and workflow IR to the orchestrator.
 - `namu run <workflow_id> <version>`
