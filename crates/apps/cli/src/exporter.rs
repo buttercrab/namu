@@ -115,17 +115,17 @@ fn read_namu_dependency(workflow_manifest: &Path) -> anyhow::Result<Item> {
         ] {
             if let Some(item) = table.get(key) {
                 let value = item.clone();
-                if key == "path" {
-                    if let Some(path_str) = value.as_str() {
-                        let resolved = workflow_manifest
-                            .parent()
-                            .unwrap()
-                            .join(path_str)
-                            .canonicalize()
-                            .context("canonicalize namu path dependency")?;
-                        inline.insert(key, Value::from(resolved.to_string_lossy().to_string()));
-                        continue;
-                    }
+                if key == "path"
+                    && let Some(path_str) = value.as_str()
+                {
+                    let resolved = workflow_manifest
+                        .parent()
+                        .unwrap()
+                        .join(path_str)
+                        .canonicalize()
+                        .context("canonicalize namu path dependency")?;
+                    inline.insert(key, Value::from(resolved.to_string_lossy().to_string()));
+                    continue;
                 }
                 inline.insert(key, value);
             }

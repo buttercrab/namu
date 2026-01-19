@@ -65,14 +65,12 @@ fn update_workflow_cargo(cfg: &NamuConfig) -> anyhow::Result<()> {
         if let Some(registry) = registry {
             inline.insert("registry", Value::from(registry));
         }
-        if let Some(existing) = existing {
-            if let Item::Value(Value::InlineTable(table)) = existing {
-                if let Some(features) = table.get("features") {
-                    inline.insert("features", features.clone());
-                }
-                if let Some(default_features) = table.get("default-features") {
-                    inline.insert("default-features", default_features.clone());
-                }
+        if let Some(Item::Value(Value::InlineTable(table))) = existing {
+            if let Some(features) = table.get("features") {
+                inline.insert("features", features.clone());
+            }
+            if let Some(default_features) = table.get("default-features") {
+                inline.insert("default-features", default_features.clone());
             }
         }
 
