@@ -101,14 +101,3 @@ pub fn triple<G: 'static>(
         <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
     )
 }
-
-fn __namu_build_pack() -> ::namu::__macro_exports::Workflow {
-    pack().to_serializable("pack".to_string())
-}
-
-::namu::__macro_exports::inventory::submit! {
-    ::namu::__macro_exports::WorkflowEntry {
-        id: "pack",
-        build: __namu_build_pack,
-    }
-}
