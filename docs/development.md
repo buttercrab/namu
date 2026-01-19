@@ -43,6 +43,7 @@ Use `PG_PORT`, `REDIS_PORT`, and `BIND_PORT` to avoid port conflicts.
 - `REDIS_URL` (optional): defaults to `redis://127.0.0.1/`
 - `WORKER_ID` (optional): auto-generated UUID
 - `RESOURCE_CLASS` (optional): defaults to `cpu.small`
+- `WORKER_POOL` (optional): execution pool (`trusted`, `restricted`, `wasm`, `gpu`), default `trusted`
 - `LABELS_JSON` (optional): JSON map of labels
 - `ARTIFACT_CACHE` (optional): defaults to `./data/cache`
 - `NAMU_VALUE_CACHE_BYTES` (optional): value cache size (default: 268435456)

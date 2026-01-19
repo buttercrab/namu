@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
-use namu_proto::{RunCreateRequest, WorkflowUploadRequest};
+use namu_proto::{RunCreateRequest, TaskRuntime, WorkflowUploadRequest};
 use reqwest::multipart;
 use serde_json::Value as JsonValue;
 use sha2::Digest;
@@ -122,10 +122,13 @@ fn build_tasks(tasks_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {
         let mut manifest: namu_proto::TaskManifest = serde_json::from_str(&manifest_raw)?;
 
         if task_dir.join("Cargo.toml").exists() {
-            let status = Command::new("cargo")
-                .args(["build", "--release", "--manifest-path"])
-                .arg(task_dir.join("Cargo.toml"))
-                .status()?;
+            let mut cmd = Command::new("cargo");
+            cmd.args(["build", "--release", "--manifest-path"])
+                .arg(task_dir.join("Cargo.toml"));
+            if manifest.runtime == TaskRuntime::Wasm {
+                cmd.args(["--target", "wasm32-wasip1"]);
+            }
+            let status = cmd.status()?;
             if !status.success() {
                 return Err(anyhow::anyhow!(
                     "cargo build failed for {}",
@@ -134,45 +137,47 @@ fn build_tasks(tasks_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {
             }
         }
 
-        let lib_path = find_library(task_dir)?;
-        let lib_bytes = fs::read(&lib_path)?;
-        let checksum = sha2::Sha256::digest(&lib_bytes);
+        let artifact_path = find_artifact(task_dir, &manifest.runtime)?;
+        let artifact_bytes = fs::read(&artifact_path)?;
+        let checksum = sha2::Sha256::digest(&artifact_bytes);
         manifest.checksum = format!("sha256:{:x}", checksum);
 
         let tar_path = out_dir.join(format!("{}-{}.tar.zst", manifest.task_id, manifest.version));
-        package_task(&tar_path, &manifest, &lib_path)?;
+        package_task(&tar_path, &manifest, &artifact_path)?;
         println!("Built {}", tar_path.display());
     }
     Ok(())
 }
 
+fn find_artifact(task_dir: &Path, runtime: &TaskRuntime) -> anyhow::Result<PathBuf> {
+    match runtime {
+        TaskRuntime::Native => find_library(task_dir),
+        TaskRuntime::Wasm => find_wasm(task_dir),
+    }
+}
+
 fn find_library(task_dir: &Path) -> anyhow::Result<PathBuf> {
     let target_dir = task_dir.join("target/release");
-    let mut candidates = Vec::new();
-    if target_dir.exists() {
-        for entry in fs::read_dir(&target_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let name = path.file_name().unwrap().to_string_lossy();
-            if name.ends_with(".so") || name.ends_with(".dylib") || name.ends_with(".dll") {
-                candidates.push(path);
-            }
-        }
+    find_single_artifact(&target_dir, |name| {
+        name.ends_with(".so") || name.ends_with(".dylib") || name.ends_with(".dll")
+    })
+    .ok_or_else(|| anyhow::anyhow!("expected 1 library in {}", target_dir.display()))
+}
+
+fn find_wasm(task_dir: &Path) -> anyhow::Result<PathBuf> {
+    let wasip1 = task_dir.join("target/wasm32-wasip1/release");
+    if let Some(found) = find_single_artifact(&wasip1, |name| name.ends_with(".wasm")) {
+        return Ok(found);
     }
-    if candidates.len() == 1 {
-        Ok(candidates.remove(0))
-    } else {
-        Err(anyhow::anyhow!(
-            "expected 1 library, found {}",
-            candidates.len()
-        ))
-    }
+    let wasi = task_dir.join("target/wasm32-wasi/release");
+    find_single_artifact(&wasi, |name| name.ends_with(".wasm"))
+        .ok_or_else(|| anyhow::anyhow!("expected 1 wasm module in {}", wasip1.display()))
 }
 
 fn package_task(
     path: &Path,
     manifest: &namu_proto::TaskManifest,
-    lib_path: &Path,
+    artifact_path: &Path,
 ) -> anyhow::Result<()> {
     let mut encoder = zstd::Encoder::new(fs::File::create(path)?, 3)?;
     {
@@ -184,17 +189,37 @@ fn package_task(
         header.set_cksum();
         tar.append_data(&mut header, "manifest.json", manifest_json.as_slice())?;
 
-        let lib_bytes = fs::read(lib_path)?;
+        let lib_bytes = fs::read(artifact_path)?;
         let mut header = tar::Header::new_gnu();
         header.set_size(lib_bytes.len() as u64);
         header.set_cksum();
-        let lib_name = lib_path.file_name().unwrap().to_string_lossy();
+        let lib_name = artifact_path.file_name().unwrap().to_string_lossy();
         tar.append_data(&mut header, lib_name.as_ref(), lib_bytes.as_slice())?;
 
         tar.finish()?;
     }
     encoder.finish()?;
     Ok(())
+}
+
+fn find_single_artifact(dir: &Path, matcher: impl Fn(&str) -> bool) -> Option<PathBuf> {
+    if !dir.exists() {
+        return None;
+    }
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(dir).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        if matcher(&name) {
+            candidates.push(path);
+        }
+    }
+    if candidates.len() == 1 {
+        Some(candidates.remove(0))
+    } else {
+        None
+    }
 }
 
 fn build_workflows(workflows_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {

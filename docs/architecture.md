@@ -24,4 +24,4 @@ NAMU compiles Rust workflows into an immutable JSON IR and executes the graph ac
 
 ## Persistence model (high level)
 - **Postgres**: tasks, artifacts, workflows, runs, contexts, run nodes, workers.
-- **Redis**: queue, run values, run events.
+- **Redis**: queue, run events, context metadata (parent pointers), per-context value deltas.

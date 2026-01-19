@@ -24,4 +24,6 @@ tokio = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
 uuid = { version = "1.17", features = ["v4", "serde"] }
+wasmtime = "40.0.2"
+wasmtime-wasi = { version = "40.0.2", default-features = false, features = ["p1"] }
 zstd = "0.13"

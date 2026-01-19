@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use libloading::Library;
-use namu_proto::{QueueMessage, TaskCompleteRequest, TaskManifest, TaskStartRequest};
+use namu_proto::{QueueMessage, TaskCompleteRequest, TaskManifest, TaskRuntime, TaskStartRequest};
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
@@ -12,6 +12,9 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 mod object_store;
+mod wasm_executor;
+
+const MAX_PARENT_HOPS: usize = 10_000;
 
 struct CachedValue {
     value: JsonValue,
@@ -91,6 +94,8 @@ async fn main() -> anyhow::Result<()> {
     let worker_id = std::env::var("WORKER_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
     let resource_class =
         std::env::var("RESOURCE_CLASS").unwrap_or_else(|_| "cpu.small".to_string());
+    let worker_pool =
+        normalize_pool(&std::env::var("WORKER_POOL").unwrap_or_else(|_| "trusted".to_string()))?;
     let labels_json = std::env::var("LABELS_JSON").unwrap_or_else(|_| "{}".to_string());
     let cache_dir = std::env::var("ARTIFACT_CACHE").unwrap_or_else(|_| "./data/cache".to_string());
     let value_cache_bytes = std::env::var("NAMU_VALUE_CACHE_BYTES")
@@ -104,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
         &client,
         &orchestrator_url,
         &worker_id,
+        &worker_pool,
         &resource_class,
         &labels_json,
     )
@@ -112,8 +118,8 @@ async fn main() -> anyhow::Result<()> {
     let redis_client = redis::Client::open(redis_url)?;
     let mut redis = ConnectionManager::new(redis_client).await?;
 
-    let stream = format!("queue:{resource_class}");
-    let group = format!("workers:{resource_class}");
+    let stream = format!("queue:{worker_pool}:{resource_class}");
+    let group = format!("workers:{worker_pool}:{resource_class}");
     ensure_group(&mut redis, &stream, &group).await?;
 
     let cache_dir = PathBuf::from(cache_dir);
@@ -156,6 +162,7 @@ async fn register_worker(
     client: &reqwest::Client,
     orchestrator_url: &str,
     worker_id: &str,
+    worker_pool: &str,
     resource_class: &str,
     labels_json: &str,
 ) -> anyhow::Result<()> {
@@ -164,6 +171,7 @@ async fn register_worker(
         .post(format!("{orchestrator_url}/workers/register"))
         .json(&serde_json::json!({
             "worker_id": worker_id,
+            "pool": worker_pool,
             "resource_class": resource_class,
             "labels": labels
         }))
@@ -172,6 +180,16 @@ async fn register_worker(
         .error_for_status()?;
     info!("worker registered: {worker_id}");
     Ok(())
+}
+
+fn normalize_pool(value: &str) -> anyhow::Result<String> {
+    let pool = value.trim().to_ascii_lowercase();
+    match pool.as_str() {
+        "trusted" | "restricted" | "wasm" | "gpu" => Ok(pool),
+        _ => Err(anyhow::anyhow!(
+            "invalid WORKER_POOL '{value}' (expected trusted|restricted|wasm|gpu)"
+        )),
+    }
 }
 
 async fn ensure_group(
@@ -275,19 +293,20 @@ async fn handle_message(
         .await
         .context("fetch manifest")?;
 
-    let lib_path = ensure_artifact(
+    let artifact_path = ensure_artifact(
         client,
         orchestrator_url,
         cache_dir,
         &msg.task_id,
         &msg.task_version,
+        &manifest.runtime,
     )
     .await?;
 
     let inputs = resolve_inputs(redis, value_cache, object_store, msg).await?;
     let input_json = build_input_json(&manifest, inputs)?;
 
-    match call_task(&lib_path, &input_json)? {
+    match call_task(&manifest.runtime, &artifact_path, &input_json)? {
         Ok(output) => {
             complete_task(client, orchestrator_url, msg, true, Some(output), None).await?;
         }
@@ -368,12 +387,13 @@ async fn ensure_artifact(
     cache_dir: &Path,
     task_id: &str,
     version: &str,
+    runtime: &TaskRuntime,
 ) -> anyhow::Result<PathBuf> {
     let dir = cache_dir.join(task_id).join(version);
     tokio::fs::create_dir_all(&dir).await?;
     let archive_path = dir.join("artifact.tar.zst");
     if archive_path.exists() {
-        return extract_library(&archive_path, &dir).await;
+        return extract_artifact(&archive_path, &dir, runtime).await;
     }
 
     let bytes = client
@@ -386,29 +406,43 @@ async fn ensure_artifact(
         .bytes()
         .await?;
     tokio::fs::write(&archive_path, &bytes).await?;
-    extract_library(&archive_path, &dir).await
+    extract_artifact(&archive_path, &dir, runtime).await
 }
 
-async fn extract_library(archive_path: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
+async fn extract_artifact(
+    archive_path: &Path,
+    dir: &Path,
+    runtime: &TaskRuntime,
+) -> anyhow::Result<PathBuf> {
     let data = tokio::fs::read(archive_path).await?;
     let mut decoder = zstd::stream::read::Decoder::new(std::io::Cursor::new(data))?;
     let mut archive = tar::Archive::new(&mut decoder);
-    let mut lib_path = None;
+    let mut artifact_path = None;
 
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?.to_path_buf();
         if path.file_name().is_some() {
             let name = path.file_name().unwrap().to_string_lossy();
-            if name.ends_with(".so") || name.ends_with(".dylib") || name.ends_with(".dll") {
+            let is_match = match runtime {
+                TaskRuntime::Native => {
+                    name.ends_with(".so") || name.ends_with(".dylib") || name.ends_with(".dll")
+                }
+                TaskRuntime::Wasm => name.ends_with(".wasm"),
+            };
+            if is_match {
                 let out_path = dir.join(name.as_ref());
                 entry.unpack(&out_path)?;
-                lib_path = Some(out_path);
+                artifact_path = Some(out_path);
             }
         }
     }
 
-    lib_path.ok_or_else(|| anyhow::anyhow!("library not found in artifact"))
+    let kind = match runtime {
+        TaskRuntime::Native => "native library",
+        TaskRuntime::Wasm => "wasm module",
+    };
+    artifact_path.ok_or_else(|| anyhow::anyhow!("{kind} not found in artifact"))
 }
 
 async fn resolve_inputs(
@@ -417,7 +451,6 @@ async fn resolve_inputs(
     object_store: Option<&object_store::ObjectStore>,
     msg: &QueueMessage,
 ) -> anyhow::Result<Vec<JsonValue>> {
-    let key = format!("values:{}:{}", msg.run_id, msg.ctx_id);
     let mut inputs = Vec::with_capacity(msg.input_ids.len());
     let hashes = msg.input_hashes.as_ref();
     let inline = msg.input_values.as_ref();
@@ -467,7 +500,7 @@ async fn resolve_inputs(
             }
         }
 
-        let raw: Option<String> = redis.hget(&key, id.to_string()).await?;
+        let raw = get_value_raw(redis, msg.run_id, msg.ctx_id, *id).await?;
         let raw = raw.ok_or_else(|| anyhow::anyhow!("missing input value"))?;
         let value: JsonValue = serde_json::from_str(&raw)?;
         if let Some(hashes) = hashes
@@ -486,6 +519,54 @@ fn estimate_json_size(value: &JsonValue) -> usize {
         .unwrap_or(0)
 }
 
+fn context_key(run_id: Uuid, ctx_id: usize) -> String {
+    format!("context:{run_id}:{ctx_id}")
+}
+
+async fn get_parent(
+    redis: &mut ConnectionManager,
+    run_id: Uuid,
+    ctx_id: usize,
+) -> anyhow::Result<Option<usize>> {
+    let key = context_key(run_id, ctx_id);
+    let raw: Option<String> = redis.hget(key, "parent").await?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.is_empty() || raw == "-1" {
+        return Ok(None);
+    }
+    let parent = raw
+        .parse::<usize>()
+        .map_err(|_| anyhow::anyhow!("invalid parent ctx id {raw}"))?;
+    Ok(Some(parent))
+}
+
+async fn get_value_raw(
+    redis: &mut ConnectionManager,
+    run_id: Uuid,
+    ctx_id: usize,
+    value_id: usize,
+) -> anyhow::Result<Option<String>> {
+    let field = value_id.to_string();
+    let mut current_ctx = Some(ctx_id);
+    let mut hops = 0usize;
+    while let Some(ctx) = current_ctx {
+        let key = format!("values:{run_id}:{ctx}");
+        if let Some(payload) = redis.hget::<_, _, Option<String>>(key, &field).await? {
+            return Ok(Some(payload));
+        }
+        current_ctx = get_parent(redis, run_id, ctx).await?;
+        hops = hops.saturating_add(1);
+        if hops > MAX_PARENT_HOPS {
+            return Err(anyhow::anyhow!(
+                "context parent chain exceeded {MAX_PARENT_HOPS} hops"
+            ));
+        }
+    }
+    Ok(None)
+}
+
 fn build_input_json(manifest: &TaskManifest, inputs: Vec<JsonValue>) -> anyhow::Result<JsonValue> {
     if manifest.input_arity == 1 {
         Ok(inputs.into_iter().next().unwrap_or(JsonValue::Null))
@@ -494,7 +575,21 @@ fn build_input_json(manifest: &TaskManifest, inputs: Vec<JsonValue>) -> anyhow::
     }
 }
 
-fn call_task(lib_path: &Path, input_json: &JsonValue) -> anyhow::Result<Result<JsonValue, String>> {
+fn call_task(
+    runtime: &TaskRuntime,
+    artifact_path: &Path,
+    input_json: &JsonValue,
+) -> anyhow::Result<Result<JsonValue, String>> {
+    match runtime {
+        TaskRuntime::Native => call_task_native(artifact_path, input_json),
+        TaskRuntime::Wasm => wasm_executor::call_task(artifact_path, input_json),
+    }
+}
+
+fn call_task_native(
+    lib_path: &Path,
+    input_json: &JsonValue,
+) -> anyhow::Result<Result<JsonValue, String>> {
     unsafe {
         let lib = Library::new(lib_path)?;
         let create: libloading::Symbol<unsafe extern "C" fn() -> *mut std::ffi::c_void> =

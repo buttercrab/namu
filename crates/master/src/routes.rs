@@ -122,11 +122,17 @@ pub async fn create_run(
 ) -> Result<Json<RunCreateResponse>, StatusCode> {
     let run_id = db::create_run(&state.db, &req.workflow_id, &req.version)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            tracing::error!("create_run: create_run failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let (workflow, task_versions) = db::get_workflow(&state.db, &req.workflow_id, &req.version)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|err| {
+            tracing::error!("create_run: get_workflow failed: {err}");
+            StatusCode::NOT_FOUND
+        })?;
 
     let run_state = RunState {
         workflow,
@@ -137,17 +143,36 @@ pub async fn create_run(
     state.runs.write().await.insert(run_id, run_state);
     db::set_run_status(&state.db, run_id, "running")
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            tracing::error!("create_run: set_run_status failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     db::create_context(&state.db, run_id, 0, None)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            tracing::error!("create_run: create_context failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let mut redis = state.redis.clone();
+    redis_store::create_context(&mut redis, run_id, 0, None)
+        .await
+        .map_err(|err| {
+            tracing::error!("create_run: redis create_context failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     planner::drive_until_call(&state, run_id, 0, 0, None)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            tracing::error!("create_run: drive_until_call failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     update_run_status_if_complete(&state, run_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            tracing::error!("create_run: update_run_status failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(RunCreateResponse { run_id }))
 }
@@ -296,20 +321,29 @@ pub struct RegisterWorkerRequest {
     pub worker_id: String,
     pub labels: JsonValue,
     pub resource_class: String,
+    pub pool: String,
 }
 
 pub async fn register_worker(
     State(state): State<AppState>,
     Json(req): Json<RegisterWorkerRequest>,
 ) -> Result<Json<JsonValue>, StatusCode> {
+    if !is_valid_pool(&req.pool) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let mut labels = req.labels;
     if labels.is_object() {
         labels["resource_class"] = JsonValue::String(req.resource_class);
+        labels["pool"] = JsonValue::String(req.pool);
     }
     db::register_worker(&state.db, &req.worker_id, &labels, "ok")
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({"status": "ok"})))
+}
+
+fn is_valid_pool(pool: &str) -> bool {
+    matches!(pool, "trusted" | "restricted" | "wasm" | "gpu")
 }
 
 pub async fn expire_leases(state: &AppState) -> anyhow::Result<()> {

@@ -1,10 +1,10 @@
 use std::net::IpAddr;
 
 use namu_proto::ValueRef;
-use reqsign_aws_v4::{Credential, RequestSigner, StaticCredentialProvider};
+use reqsign_aws_v4::{Credential, EMPTY_STRING_SHA256, RequestSigner, StaticCredentialProvider};
 use reqsign_core::{Context as SignContext, Signer};
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
-use reqwest::{Client, Url};
+use reqwest::{Client, StatusCode, Url};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
@@ -48,13 +48,15 @@ impl ObjectStore {
             ))
         };
 
-        Ok(Some(Self {
+        let store = Self {
             client: Client::new(),
             endpoint,
             bucket,
             force_path_style,
             signer,
-        }))
+        };
+        store.ensure_bucket().await?;
+        Ok(Some(store))
     }
 
     pub async fn put_value(&self, hash: &str, bytes: &[u8]) -> anyhow::Result<ValueRef> {
@@ -84,6 +86,39 @@ impl ObjectStore {
         })
     }
 
+    async fn ensure_bucket(&self) -> anyhow::Result<()> {
+        let url = self.bucket_url()?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-amz-content-sha256",
+            HeaderValue::from_static(EMPTY_STRING_SHA256),
+        );
+        let headers = self.signed_headers("HEAD", &url, headers).await?;
+        let response = self
+            .client
+            .head(url.clone())
+            .headers(headers)
+            .send()
+            .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-amz-content-sha256",
+                HeaderValue::from_static(EMPTY_STRING_SHA256),
+            );
+            let headers = self.signed_headers("PUT", &url, headers).await?;
+            self.client
+                .put(url)
+                .headers(headers)
+                .send()
+                .await?
+                .error_for_status()?;
+        } else {
+            response.error_for_status()?;
+        }
+        Ok(())
+    }
+
     async fn signed_headers(
         &self,
         method: &str,
@@ -101,6 +136,10 @@ impl ObjectStore {
         parts.headers = headers;
         signer.sign(&mut parts, None).await?;
         Ok(parts.headers)
+    }
+
+    fn bucket_url(&self) -> anyhow::Result<Url> {
+        self.object_url("")
     }
 
     fn object_url(&self, key: &str) -> anyhow::Result<Url> {

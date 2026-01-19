@@ -10,11 +10,29 @@ pub enum TaskKind {
     Stream,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskTrust {
+    Trusted,
+    Restricted,
+    Untrusted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRuntime {
+    Native,
+    Wasm,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskManifest {
     pub task_id: String,
     pub version: String,
     pub task_kind: TaskKind,
+    pub trust: TaskTrust,
+    pub runtime: TaskRuntime,
+    pub requires_gpu: bool,
     pub resource_class: String,
     pub capabilities: Vec<String>,
     pub input_arity: usize,

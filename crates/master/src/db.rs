@@ -384,6 +384,28 @@ pub async fn list_workers(pool: &PgPool) -> anyhow::Result<Vec<JsonValue>> {
     Ok(workers)
 }
 
+pub async fn has_worker(
+    pool: &PgPool,
+    worker_pool: &str,
+    resource_class: &str,
+) -> anyhow::Result<bool> {
+    let row = sqlx_core::query::query::<Postgres>(
+        r#"
+        SELECT 1
+        FROM workers
+        WHERE status = 'ok'
+          AND labels_json->>'pool' = $1
+          AND labels_json->>'resource_class' = $2
+        LIMIT 1
+        "#,
+    )
+    .bind(worker_pool)
+    .bind(resource_class)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn register_worker(
     pool: &PgPool,
     worker_id: &str,
