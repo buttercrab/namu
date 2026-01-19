@@ -24,7 +24,9 @@ fn task_versions() -> HashMap<String, String> {
 fn out_dir_from_args() -> PathBuf {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--out" && let Some(path) = args.next() {
+        if arg == "--out"
+            && let Some(path) = args.next()
+        {
             return PathBuf::from(path);
         }
     }
