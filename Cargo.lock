@@ -1887,6 +1887,7 @@ dependencies = [
  "namu-macros",
  "serde",
  "serde_json",
+ "tokio",
  "trybuild",
 ]
 
@@ -1927,13 +1928,18 @@ name = "namu-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "erased-serde",
  "hashbrown 0.15.5",
  "inventory",
  "itertools 0.14.0",
  "kanal",
  "namu-core",
+ "namu-proto",
  "scc",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1969,11 +1975,13 @@ name = "namu-master"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "bytes",
  "chrono",
  "http",
  "namu-core",
+ "namu-engine",
  "namu-proto",
  "redis",
  "reqsign-aws-v4",
@@ -2009,8 +2017,10 @@ name = "namu-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "http",
  "libloading",
+ "namu-engine",
  "namu-proto",
  "redis",
  "reqsign-aws-v4",
@@ -2918,6 +2928,7 @@ dependencies = [
  "namu-core",
  "namu-engine",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

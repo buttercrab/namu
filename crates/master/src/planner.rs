@@ -1,4 +1,6 @@
-use namu_core::ir::{Call, Next, Operation};
+use async_trait::async_trait;
+use namu_engine::engine::OrchestratorEngine;
+use namu_engine::kernel::{CallSpec, EngineKernel, JsonCodec, KernelAction, ValueStore};
 use namu_proto::{QueueMessage, TaskKind, TaskRuntime, TaskTrust, ValueRef};
 use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
@@ -16,32 +18,25 @@ pub async fn drive_until_call(
 ) -> anyhow::Result<()> {
     let run_state = get_run_state(state, run_id).await?;
     let workflow = run_state.workflow.clone();
-    let mut op_id = start_op;
-    let mut pred = pred_op;
+    let kernel = EngineKernel::new(JsonCodec);
+    let store = RedisValueStore::new(state.redis.clone(), run_id);
 
-    let mut redis = state.redis.clone();
-
-    loop {
-        let operation = &workflow.operations[op_id];
-        apply_literals(&mut redis, run_id, ctx_id, operation).await?;
-        apply_phis(&mut redis, run_id, ctx_id, operation, pred).await?;
-
-        if let Some(call) = &operation.call {
-            enqueue_call(state, &run_state, run_id, ctx_id, op_id, call).await?;
-            return Ok(());
+    match kernel
+        .drive_until_action(&workflow, &store, ctx_id, start_op, pred_op)
+        .await?
+    {
+        KernelAction::Dispatch {
+            op_id,
+            ctx_id,
+            call,
+        } => {
+            enqueue_call(state, &run_state, run_id, ctx_id, op_id, &call).await?;
         }
-
-        match next_op_id(&mut redis, run_id, ctx_id, &operation.next).await? {
-            Some(next) => {
-                pred = Some(op_id);
-                op_id = next;
-            }
-            None => {
-                db::finish_context(&state.db, run_id, ctx_id).await?;
-                return Ok(());
-            }
+        KernelAction::Return { ctx_id, .. } => {
+            db::finish_context(&state.db, run_id, ctx_id).await?;
         }
     }
+    Ok(())
 }
 
 async fn enqueue_call(
@@ -50,7 +45,7 @@ async fn enqueue_call(
     run_id: Uuid,
     ctx_id: usize,
     op_id: usize,
-    call: &Call,
+    call: &CallSpec,
 ) -> anyhow::Result<()> {
     let task_version = run_state
         .task_versions
@@ -235,6 +230,8 @@ pub async fn apply_task_output(
     let manifest = db::get_task_manifest(&state.db, &call.task_id, &task_version).await?;
 
     let mut redis = state.redis.clone();
+    let kernel = EngineKernel::new(JsonCodec);
+    let store = RedisValueStore::new(state.redis.clone(), run_id);
 
     match manifest.task_kind {
         TaskKind::Stream => {
@@ -249,9 +246,9 @@ pub async fn apply_task_output(
                 db::create_context(&state.db, run_id, child_ctx, Some(ctx_id)).await?;
                 redis_store::create_context(&mut redis, run_id, child_ctx, Some(ctx_id)).await?;
                 store_outputs(&mut redis, run_id, child_ctx, &call.outputs, item).await?;
-
-                if let Some(next) =
-                    next_op_id(&mut redis, run_id, child_ctx, &operation.next).await?
+                if let Some(next) = kernel
+                    .resolve_next(&store, child_ctx, &operation.next)
+                    .await?
                 {
                     drive_until_call(state, run_id, child_ctx, next, Some(op_id)).await?;
                 }
@@ -260,7 +257,7 @@ pub async fn apply_task_output(
         }
         _ => {
             store_outputs(&mut redis, run_id, ctx_id, &call.outputs, &output_json).await?;
-            if let Some(next) = next_op_id(&mut redis, run_id, ctx_id, &operation.next).await? {
+            if let Some(next) = kernel.resolve_next(&store, ctx_id, &operation.next).await? {
                 drive_until_call(state, run_id, ctx_id, next, Some(op_id)).await?;
             } else {
                 db::finish_context(&state.db, run_id, ctx_id).await?;
@@ -299,87 +296,116 @@ async fn store_outputs(
     Ok(())
 }
 
-async fn apply_literals(
-    redis: &mut ConnectionManager,
-    run_id: Uuid,
-    ctx_id: usize,
-    op: &Operation,
-) -> anyhow::Result<()> {
-    for lit in &op.literals {
-        let value = parse_literal(&lit.value);
-        redis_store::set_value(redis, run_id, ctx_id, lit.output, &value).await?;
-    }
-    Ok(())
-}
-
-async fn apply_phis(
-    redis: &mut ConnectionManager,
-    run_id: Uuid,
-    ctx_id: usize,
-    op: &Operation,
-    pred: Option<usize>,
-) -> anyhow::Result<()> {
-    let Some(pred) = pred else {
-        return Ok(());
-    };
-    for phi in &op.phis {
-        let entry = phi
-            .from
-            .iter()
-            .find(|(from_op, _)| *from_op == pred)
-            .ok_or_else(|| anyhow::anyhow!("phi missing predecessor"))?;
-        let val_id = entry.1;
-        let val = redis_store::get_value(redis, run_id, ctx_id, val_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("missing value for phi"))?;
-        redis_store::set_value(redis, run_id, ctx_id, phi.output, &val).await?;
-    }
-    Ok(())
-}
-
-async fn next_op_id(
-    redis: &mut ConnectionManager,
-    run_id: Uuid,
-    ctx_id: usize,
-    next: &Next,
-) -> anyhow::Result<Option<usize>> {
-    match next {
-        Next::Jump { next } => Ok(Some(*next)),
-        Next::Branch {
-            var,
-            true_next,
-            false_next,
-        } => {
-            let cond = redis_store::get_value(redis, run_id, ctx_id, *var)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("missing branch value"))?;
-            let cond_bool = cond
-                .as_bool()
-                .ok_or_else(|| anyhow::anyhow!("branch value not bool"))?;
-            Ok(Some(if cond_bool { *true_next } else { *false_next }))
-        }
-        Next::Return { var: _ } => Ok(None),
-    }
-}
-
-fn parse_literal(raw: &str) -> JsonValue {
-    match raw {
-        "true" => JsonValue::Bool(true),
-        "false" => JsonValue::Bool(false),
-        "()" => JsonValue::Null,
-        _ => {
-            if let Ok(n) = raw.parse::<i32>() {
-                JsonValue::Number(n.into())
-            } else {
-                JsonValue::String(raw.trim_matches('"').to_string())
-            }
-        }
-    }
-}
-
 async fn get_run_state(state: &AppState, run_id: Uuid) -> anyhow::Result<RunState> {
     let runs = state.runs.read().await;
     runs.get(&run_id)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("run state not found"))
+}
+
+#[allow(dead_code)]
+pub struct MasterOrchestrator {
+    state: AppState,
+}
+
+#[allow(dead_code)]
+impl MasterOrchestrator {
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl OrchestratorEngine for MasterOrchestrator {
+    type Value = JsonValue;
+
+    async fn drive(
+        &self,
+        run_id: Uuid,
+        ctx_id: usize,
+        start_op: usize,
+        pred_op: Option<usize>,
+    ) -> anyhow::Result<KernelAction> {
+        let run_state = get_run_state(&self.state, run_id).await?;
+        let workflow = run_state.workflow.clone();
+        let kernel = EngineKernel::new(JsonCodec);
+        let store = RedisValueStore::new(self.state.redis.clone(), run_id);
+        kernel
+            .drive_until_action(&workflow, &store, ctx_id, start_op, pred_op)
+            .await
+    }
+
+    async fn dispatch(&self, run_id: Uuid, action: KernelAction) -> anyhow::Result<()> {
+        let run_state = get_run_state(&self.state, run_id).await?;
+        match action {
+            KernelAction::Dispatch {
+                op_id,
+                ctx_id,
+                call,
+            } => enqueue_call(&self.state, &run_state, run_id, ctx_id, op_id, &call).await,
+            KernelAction::Return { ctx_id, .. } => {
+                db::finish_context(&self.state.db, run_id, ctx_id).await?;
+                Ok(())
+            }
+        }
+    }
+
+    async fn apply_task_output(
+        &self,
+        run_id: Uuid,
+        op_id: usize,
+        ctx_id: usize,
+        output: Self::Value,
+    ) -> anyhow::Result<()> {
+        apply_task_output(&self.state, run_id, op_id, ctx_id, output).await
+    }
+}
+
+struct RedisValueStore {
+    redis: tokio::sync::Mutex<ConnectionManager>,
+    run_id: Uuid,
+}
+
+impl RedisValueStore {
+    fn new(redis: ConnectionManager, run_id: Uuid) -> Self {
+        Self {
+            redis: tokio::sync::Mutex::new(redis),
+            run_id,
+        }
+    }
+}
+
+#[async_trait]
+impl ValueStore for RedisValueStore {
+    type Value = JsonValue;
+
+    async fn get_value(&self, ctx_id: usize, val_id: usize) -> anyhow::Result<Self::Value> {
+        let mut redis = self.redis.lock().await;
+        redis_store::get_value(&mut redis, self.run_id, ctx_id, val_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing value {val_id} in ctx {ctx_id}"))
+    }
+
+    async fn get_values(
+        &self,
+        ctx_id: usize,
+        val_ids: &[usize],
+    ) -> anyhow::Result<Vec<Self::Value>> {
+        let mut out = Vec::with_capacity(val_ids.len());
+        for &val_id in val_ids {
+            out.push(self.get_value(ctx_id, val_id).await?);
+        }
+        Ok(out)
+    }
+
+    async fn set_value(
+        &self,
+        ctx_id: usize,
+        val_id: usize,
+        value: Self::Value,
+    ) -> anyhow::Result<usize> {
+        let mut redis = self.redis.lock().await;
+        redis_store::set_value(&mut redis, self.run_id, ctx_id, val_id, &value).await?;
+        Ok(ctx_id)
+    }
 }
