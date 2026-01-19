@@ -2,27 +2,28 @@
 
 Thanks for helping improve NAMU.
 
-## Development setup
-1. Install Rust (stable).
-2. Optional: Docker for local Postgres + Redis.
-3. Run `./scripts/e2e.sh` to validate the full pipeline locally.
+## Before you start
+- Use Rust stable for development.
+- Run the end-to-end pipeline once: `./scripts/e2e.sh`.
 
 ## Code style
-- Run `cargo +nightly fmt --all --check` before submitting.
-- Treat clippy warnings as errors: `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+- Format: `cargo +nightly fmt --all --check`
+- Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 
 ## Tests
-- Run the full suite: `cargo test --workspace --all-targets --all-features`.
-- CI parity: `./scripts/verify.sh`.
+- Unit + integration: `cargo test --workspace --all-targets --all-features`
+- CI parity: `./scripts/verify.sh`
 
 ## Commit messages
-- Keep messages short and imperative (e.g., `fix ci`, `add worker metrics`).
+- Short, imperative, and lowercase (example: `add worker cache`).
 
 ## Pull requests
 Include:
-- A short summary of changes
-- Tests run (copy/paste the commands)
-- Notes on behavior changes or migrations (if any)
+- Summary of changes
+- Tests run (copy the command output)
+- Behavior changes or migrations
 
-## Automation notes
-- `AGENTS.md` contains repository-specific instructions for coding agents.
+## Repo conventions
+- Docs live in `docs/`.
+- Task/workflow fixtures for e2e live in `tests/e2e/`.
+- See `AGENTS.md` for agent-specific instructions.
