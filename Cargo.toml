@@ -53,6 +53,7 @@ namu-core = { path = "crates/libs/core", version = "0.1.0" }
 namu-engine = { path = "crates/libs/engine", version = "0.1.0" }
 namu-flow = { path = "crates/libs/flow", version = "0.1.0" }
 namu-macros = { path = "crates/libs/macros", version = "0.1.0" }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 erased-serde = { workspace = true }

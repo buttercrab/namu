@@ -1,10 +1,14 @@
+mod config;
+mod exporter;
+mod sync;
+
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
-use namu_proto::{RunCreateRequest, TaskRuntime, WorkflowUploadRequest};
+use namu_proto::{RunCreateRequest, TaskManifest, TaskRuntime, WorkflowUploadRequest};
 use reqwest::multipart;
 use serde_json::Value as JsonValue;
 use sha2::Digest;
@@ -31,6 +35,15 @@ enum Commands {
         /// Output directory (default: ./dist)
         #[arg(short, long, default_value = "./dist")]
         out_dir: PathBuf,
+        /// Path to namu.toml (default: ./namu.toml if present)
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Sync namu.toml into Cargo.toml and registry config
+    Sync {
+        /// Path to namu.toml (default: ./namu.toml)
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     /// Publish built artifacts and workflows to orchestrator
     Publish {
@@ -68,9 +81,16 @@ async fn main() {
             tasks_dir,
             workflows_dir,
             out_dir,
+            config,
         } => {
-            if let Err(err) = build(&tasks_dir, &workflows_dir, &out_dir) {
+            if let Err(err) = build(&tasks_dir, &workflows_dir, &out_dir, config) {
                 eprintln!("Build failed: {err}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Sync { config } => {
+            if let Err(err) = sync_config(config) {
+                eprintln!("Sync failed: {err}");
                 std::process::exit(1);
             }
         }
@@ -101,12 +121,40 @@ async fn main() {
     }
 }
 
-fn build(tasks_dir: &Path, workflows_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {
+fn build(
+    tasks_dir: &Path,
+    workflows_dir: &Path,
+    out_dir: &Path,
+    config_path: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    if let Some(path) = config::find_config(config_path) {
+        let cfg = config::load_config(&path)?;
+        return build_from_config(&cfg);
+    }
+
     fs::create_dir_all(out_dir.join("tasks"))?;
     fs::create_dir_all(out_dir.join("workflows"))?;
 
     build_tasks(tasks_dir, &out_dir.join("tasks"))?;
     build_workflows(workflows_dir, &out_dir.join("workflows"))?;
+    Ok(())
+}
+
+fn sync_config(config_path: Option<PathBuf>) -> anyhow::Result<()> {
+    let path = config::find_config(config_path)
+        .ok_or_else(|| anyhow::anyhow!("namu.toml not found"))?;
+    let cfg = config::load_config(&path)?;
+    sync::sync_config(&cfg)?;
+    Ok(())
+}
+
+fn build_from_config(cfg: &config::NamuConfig) -> anyhow::Result<()> {
+    let out_dir = &cfg.build.out_dir;
+    fs::create_dir_all(out_dir.join("tasks"))?;
+    fs::create_dir_all(out_dir.join("workflows"))?;
+
+    build_tasks_from_config(cfg, &out_dir.join("tasks"))?;
+    build_workflows_from_config(cfg, &out_dir.join("workflows"))?;
     Ok(())
 }
 
@@ -147,6 +195,63 @@ fn build_tasks(tasks_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {
         println!("Built {}", tar_path.display());
     }
     Ok(())
+}
+
+fn build_tasks_from_config(cfg: &config::NamuConfig, out_dir: &Path) -> anyhow::Result<()> {
+    for task in cfg.tasks.values() {
+        let task_dir = task
+            .path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("task {} missing path", task.id))?;
+        let mut manifest = task_manifest_from_config(task);
+
+        if task_dir.join("Cargo.toml").exists() {
+            let mut cmd = Command::new("cargo");
+            cmd.args(["build", "--release", "--manifest-path"])
+                .arg(task_dir.join("Cargo.toml"));
+            if task.runtime == TaskRuntime::Wasm {
+                cmd.args(["--target", "wasm32-wasip1"]);
+            }
+            let status = cmd.status()?;
+            if !status.success() {
+                return Err(anyhow::anyhow!(
+                    "cargo build failed for {}",
+                    task_dir.display()
+                ));
+            }
+        }
+
+        let artifact_path = find_artifact(task_dir, &task.runtime)?;
+        let artifact_bytes = fs::read(&artifact_path)?;
+        let checksum = sha2::Sha256::digest(&artifact_bytes);
+        manifest.checksum = format!("sha256:{:x}", checksum);
+
+        let tar_path = out_dir.join(format!("{}-{}.tar.zst", task.id, task.version));
+        package_task(&tar_path, &manifest, &artifact_path)?;
+        println!("Built {}", tar_path.display());
+    }
+    Ok(())
+}
+
+fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
+    TaskManifest {
+        task_id: task.id.clone(),
+        version: task.version.clone(),
+        task_kind: task.kind.clone(),
+        trust: task.trust.clone(),
+        runtime: task.runtime.clone(),
+        requires_gpu: task.requires_gpu,
+        resource_class: task.resource_class.clone(),
+        capabilities: task.capabilities.clone(),
+        input_arity: task.input_arity,
+        output_arity: task.output_arity,
+        input_schema: task.input_schema.clone(),
+        output_schema: task.output_schema.clone(),
+        checksum: String::new(),
+        abi_version: "1".to_string(),
+        build_toolchain: "unknown".to_string(),
+        created_at: "unknown".to_string(),
+    }
 }
 
 fn find_artifact(task_dir: &Path, runtime: &TaskRuntime) -> anyhow::Result<PathBuf> {
@@ -237,6 +342,73 @@ fn build_workflows(workflows_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {
         println!("Copied workflow {}", out_path.display());
     }
     Ok(())
+}
+
+fn build_workflows_from_config(cfg: &config::NamuConfig, out_dir: &Path) -> anyhow::Result<()> {
+    let ir_dir = exporter::export_workflows(cfg)?;
+    let mut written = 0;
+
+    for entry in fs::read_dir(&ir_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str());
+        if file_name.map(|n| !n.ends_with(".workflow.ir.json")).unwrap_or(true) {
+            continue;
+        }
+
+        let raw = fs::read_to_string(&path)?;
+        let workflow: namu_core::ir::Workflow = serde_json::from_str(&raw)?;
+        let id = workflow.name.clone();
+
+        let wf_cfg = cfg
+            .workflows
+            .entries
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("missing workflows.{id}.version"))?;
+
+        let task_versions = task_versions_for_workflow(cfg, &workflow)?;
+
+        let payload = WorkflowUploadRequest {
+            id: id.clone(),
+            version: wf_cfg.version.clone(),
+            ir: serde_json::to_value(workflow)?,
+            task_versions,
+        };
+
+        let json = serde_json::to_string_pretty(&payload)?;
+        let file_path = out_dir.join(format!("{id}.workflow.json"));
+        fs::write(&file_path, json)?;
+        written += 1;
+    }
+
+    if written == 0 {
+        return Err(anyhow::anyhow!("no workflows exported"));
+    }
+
+    Ok(())
+}
+
+fn task_versions_for_workflow(
+    cfg: &config::NamuConfig,
+    workflow: &namu_core::ir::Workflow,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    let mut task_ids = std::collections::BTreeSet::new();
+    for op in &workflow.operations {
+        if let Some(call) = &op.call {
+            task_ids.insert(call.task_id.clone());
+        }
+    }
+
+    let mut versions = std::collections::HashMap::new();
+    for id in task_ids {
+        let task = cfg
+            .tasks
+            .get(&id)
+            .ok_or_else(|| anyhow::anyhow!("task {id} missing from namu.toml"))?;
+        versions.insert(id, task.version.clone());
+    }
+
+    Ok(versions)
 }
 
 async fn publish(out_dir: &Path) {

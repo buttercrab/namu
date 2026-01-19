@@ -17,6 +17,14 @@ fn demo() -> i32 {
 }
 ```
 
+## Workflow ids
+By default the workflow id is the function name. You can override it:
+
+```rust
+#[workflow(id = "etl_pipeline")]
+fn pipeline() -> i32 { /* ... */ }
+```
+
 ## Supported control flow
 - `if` / `if-else`
 - `while` loops

@@ -1,11 +1,15 @@
 use std::collections::BTreeSet;
 
+use darling::FromMeta;
+use darling::ast::NestedMeta;
 use proc_macro::TokenStream;
 use proc_macro_error2::abort;
 use quote::{format_ident, quote};
 use syn::visit_mut::{self, VisitMut};
+use syn::punctuated::Punctuated;
 use syn::{
-    Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, parse_macro_input, parse_quote,
+    Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, Token, parse_macro_input,
+    parse_quote,
 };
 
 struct WorkflowVisitor {
@@ -14,6 +18,11 @@ struct WorkflowVisitor {
     next_control_flow_id: usize,
     builder_ident: Ident,
     last_expr_has_value: bool,
+}
+
+#[derive(Debug, Default, FromMeta)]
+struct WorkflowArgs {
+    id: Option<String>,
 }
 
 impl WorkflowVisitor {
@@ -396,7 +405,7 @@ impl WorkflowVisitor {
     }
 }
 
-pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
     let func = parse_macro_input!(item as ItemFn);
     let func_name = &func.sig.ident;
     let mut func_body = func.block.clone();
@@ -411,6 +420,20 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
     visitor.enter_scope();
     visitor.visit_block_mut(&mut func_body);
     visitor.exit_scope();
+
+    let args = if attr.is_empty() {
+        WorkflowArgs::default()
+    } else {
+        let meta: Punctuated<NestedMeta, Token![,]> =
+            parse_macro_input!(attr with Punctuated::<NestedMeta, Token![,]>::parse_terminated);
+        let meta_vec: Vec<NestedMeta> = meta.into_iter().collect();
+        match WorkflowArgs::from_list(&meta_vec) {
+            Ok(v) => v,
+            Err(e) => return e.write_errors().into(),
+        }
+    };
+    let workflow_id = args.id.unwrap_or_else(|| func_name.to_string());
+    let build_ident = format_ident!("__namu_build_{}", func_name);
 
     let body_and_seal = if visitor.last_expr_has_value {
         quote! {
@@ -433,6 +456,17 @@ pub fn workflow(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #body_and_seal
 
             #builder_ident.build()
+        }
+
+        fn #build_ident() -> ::namu::__macro_exports::Workflow {
+            #func_name().to_serializable(#workflow_id.to_string())
+        }
+
+        ::namu::__macro_exports::inventory::submit! {
+            ::namu::__macro_exports::WorkflowEntry {
+                id: #workflow_id,
+                build: #build_ident,
+            }
         }
     };
 

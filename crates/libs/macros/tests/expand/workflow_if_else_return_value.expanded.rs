@@ -216,3 +216,14 @@ pub fn if_else_return_value_workflow() -> ::namu::__macro_exports::Graph<i32> {
     ::namu::__macro_exports::return_value(&__builder, __result);
     __builder.build()
 }
+
+fn __namu_build_pack() -> ::namu::__macro_exports::Workflow {
+    pack().to_serializable("pack".to_string())
+}
+
+::namu::__macro_exports::inventory::submit! {
+    ::namu::__macro_exports::WorkflowEntry {
+        id: "pack",
+        build: __namu_build_pack,
+    }
+}

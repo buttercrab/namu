@@ -184,3 +184,14 @@ pub fn if_with_task_in_condition_workflow() -> ::namu::__macro_exports::Graph<()
     ::namu::__macro_exports::return_unit(&__builder);
     __builder.build()
 }
+
+fn __namu_build_pack() -> ::namu::__macro_exports::Workflow {
+    pack().to_serializable("pack".to_string())
+}
+
+::namu::__macro_exports::inventory::submit! {
+    ::namu::__macro_exports::WorkflowEntry {
+        id: "pack",
+        build: __namu_build_pack,
+    }
+}
