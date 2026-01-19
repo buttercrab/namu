@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context;
+use async_trait::async_trait;
 use libloading::Library;
+use namu_engine::engine::WorkerEngine;
 use namu_proto::{QueueMessage, TaskCompleteRequest, TaskManifest, TaskRuntime, TaskStartRequest};
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
@@ -81,6 +83,22 @@ impl ValueCache {
                 self.current_bytes = self.current_bytes.saturating_sub(removed.bytes);
             }
         }
+    }
+}
+
+struct WorkerExecutor;
+
+#[async_trait]
+impl WorkerEngine for WorkerExecutor {
+    type Value = JsonValue;
+
+    async fn execute(
+        &self,
+        manifest: &TaskManifest,
+        artifact_path: &Path,
+        input: &Self::Value,
+    ) -> anyhow::Result<Result<Self::Value, String>> {
+        call_task(&manifest.runtime, artifact_path, input)
     }
 }
 
@@ -306,7 +324,11 @@ async fn handle_message(
     let inputs = resolve_inputs(redis, value_cache, object_store, msg).await?;
     let input_json = build_input_json(&manifest, inputs)?;
 
-    match call_task(&manifest.runtime, &artifact_path, &input_json)? {
+    let executor = WorkerExecutor;
+    match executor
+        .execute(&manifest, &artifact_path, &input_json)
+        .await?
+    {
         Ok(output) => {
             complete_task(client, orchestrator_url, msg, true, Some(output), None).await?;
         }

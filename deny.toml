@@ -18,7 +18,7 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow = []
 deny = []
-skip = []
+skip = ["windows-sys"]
 skip-tree = []
 
 [sources]

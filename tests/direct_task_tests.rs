@@ -1,11 +1,8 @@
-use std::thread;
-
 // New test for direct task implementation
 use namu::prelude::*;
 use namu_core::{Task, TaskContext};
-use namu_engine::context::dynamic_context::DynamicContextManager;
 use namu_engine::engine::Engine;
-use namu_engine::engine::simple_engine::SimpleEngine;
+use namu_engine::simple_engine::SimpleEngine;
 use namu_macros::task_bridge;
 
 #[task]
@@ -46,22 +43,17 @@ fn wf() -> i32 {
     double_direct(x)
 }
 
-#[test]
-fn direct_task_workflow_builds() {
+#[tokio::test]
+async fn direct_task_workflow_builds() {
     let graph = wf().to_serializable("workflow".to_string());
-    let engine = SimpleEngine::with_registered(DynamicContextManager::new());
-    let workflow_id = engine.create_workflow(graph);
-    let run_id = engine.create_run(workflow_id);
+    let engine = SimpleEngine::with_registered();
+    let workflow_id = engine.create_workflow(graph).await;
+    let run_id = engine.create_run(workflow_id).await;
     let engine_clone = engine.clone();
-    let handle = thread::spawn(move || {
-        engine_clone.run(run_id);
-    });
-    let result = *engine
-        .get_result(run_id)
-        .next()
-        .unwrap()
-        .downcast_ref::<i32>()
-        .unwrap();
-    handle.join().unwrap();
+    let handle = tokio::spawn(async move { engine_clone.run(run_id).await });
+    let rx = engine.get_result(run_id);
+    let rx = rx.as_async();
+    let result = *rx.recv().await.unwrap().downcast_ref::<i32>().unwrap();
+    handle.await.unwrap().unwrap();
     assert_eq!(result, 8);
 }

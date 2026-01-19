@@ -11,3 +11,4 @@ namu = { path = "../../../", version = "0.1.0" }
 namu-core = { path = "../../../crates/core", version = "0.1.0" }
 namu-engine = { path = "../../../crates/engine", version = "0.1.0" }
 serde_json = "1.0"
+tokio = { workspace = true }

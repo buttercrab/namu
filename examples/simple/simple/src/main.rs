@@ -1,8 +1,5 @@
-use std::thread;
-
-use namu_engine::context::dynamic_context::DynamicContextManager;
 use namu_engine::engine::Engine;
-use namu_engine::engine::simple_engine::SimpleEngine;
+use namu_engine::simple_engine::SimpleEngine;
 use simple::simple;
 
 fn main() {
@@ -12,15 +9,17 @@ fn main() {
     let json = serde_json::to_string_pretty(&serialized).unwrap();
     println!("{}", json);
 
-    let engine = SimpleEngine::with_registered(DynamicContextManager::new());
-    let wf_id = engine.create_workflow(serialized);
-    let run_id = engine.create_run(wf_id);
-    let engine_clone = engine.clone();
-    let handle = thread::spawn(move || engine_clone.run(run_id));
-    let result = engine.get_result(run_id);
-    println!(
-        "result: {:?}",
-        result.recv().unwrap().downcast_ref::<i32>().unwrap()
-    );
-    handle.join().unwrap();
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    runtime.block_on(async {
+        let engine = SimpleEngine::with_registered();
+        let wf_id = engine.create_workflow(serialized).await;
+        let run_id = engine.create_run(wf_id).await;
+        let engine_clone = engine.clone();
+        let handle = tokio::spawn(async move { engine_clone.run(run_id).await });
+        let rx = engine.get_result(run_id);
+        let rx = rx.as_async();
+        let result = rx.recv().await.unwrap();
+        println!("result: {:?}", result.downcast_ref::<i32>().unwrap());
+        handle.await.unwrap().unwrap();
+    });
 }
