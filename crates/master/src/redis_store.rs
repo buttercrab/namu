@@ -4,8 +4,47 @@ use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+const MAX_PARENT_HOPS: usize = 10_000;
+
 fn values_key(run_id: Uuid, ctx_id: usize) -> String {
     format!("values:{run_id}:{ctx_id}")
+}
+
+fn context_key(run_id: Uuid, ctx_id: usize) -> String {
+    format!("context:{run_id}:{ctx_id}")
+}
+
+pub async fn create_context(
+    conn: &mut ConnectionManager,
+    run_id: Uuid,
+    ctx_id: usize,
+    parent_ctx_id: Option<usize>,
+) -> anyhow::Result<()> {
+    let key = context_key(run_id, ctx_id);
+    let parent = parent_ctx_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "-1".to_string());
+    let _: () = conn.hset(key, "parent", parent).await?;
+    Ok(())
+}
+
+async fn get_parent(
+    conn: &mut ConnectionManager,
+    run_id: Uuid,
+    ctx_id: usize,
+) -> anyhow::Result<Option<usize>> {
+    let key = context_key(run_id, ctx_id);
+    let raw: Option<String> = conn.hget(key, "parent").await?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.is_empty() || raw == "-1" {
+        return Ok(None);
+    }
+    let parent = raw
+        .parse::<usize>()
+        .map_err(|_| anyhow::anyhow!("invalid parent ctx id {raw}"))?;
+    Ok(Some(parent))
 }
 
 pub async fn set_value(
@@ -28,9 +67,7 @@ pub async fn get_value(
     ctx_id: usize,
     value_id: usize,
 ) -> anyhow::Result<Option<JsonValue>> {
-    let key = values_key(run_id, ctx_id);
-    let field = value_id.to_string();
-    let payload: Option<String> = conn.hget(key, field).await?;
+    let payload = get_value_raw(conn, run_id, ctx_id, value_id).await?;
     match payload {
         Some(raw) => Ok(Some(serde_json::from_str(&raw)?)),
         None => Ok(None),
@@ -43,34 +80,34 @@ pub async fn get_value_raw(
     ctx_id: usize,
     value_id: usize,
 ) -> anyhow::Result<Option<String>> {
-    let key = values_key(run_id, ctx_id);
     let field = value_id.to_string();
-    let payload: Option<String> = conn.hget(key, field).await?;
-    Ok(payload)
-}
+    let mut current_ctx = Some(ctx_id);
+    let mut hops = 0usize;
 
-pub async fn clone_context(
-    conn: &mut ConnectionManager,
-    run_id: Uuid,
-    src_ctx_id: usize,
-    dst_ctx_id: usize,
-) -> anyhow::Result<()> {
-    let src_key = values_key(run_id, src_ctx_id);
-    let dst_key = values_key(run_id, dst_ctx_id);
-    let entries: Vec<(String, String)> = conn.hgetall(src_key).await?;
-    if entries.is_empty() {
-        return Ok(());
+    while let Some(ctx) = current_ctx {
+        let key = values_key(run_id, ctx);
+        if let Some(payload) = conn.hget::<_, _, Option<String>>(key, &field).await? {
+            return Ok(Some(payload));
+        }
+        current_ctx = get_parent(conn, run_id, ctx).await?;
+        hops = hops.saturating_add(1);
+        if hops > MAX_PARENT_HOPS {
+            return Err(anyhow::anyhow!(
+                "context parent chain exceeded {MAX_PARENT_HOPS} hops"
+            ));
+        }
     }
-    let _: () = conn.hset_multiple(dst_key, &entries).await?;
-    Ok(())
+
+    Ok(None)
 }
 
 pub async fn queue_task(
     conn: &mut ConnectionManager,
+    pool: &str,
     resource_class: &str,
     msg: &QueueMessage,
 ) -> anyhow::Result<()> {
-    let key = format!("queue:{resource_class}");
+    let key = format!("queue:{pool}:{resource_class}");
     let payload = serde_json::to_string(msg)?;
     let _: String = redis::cmd("XADD")
         .arg(&key)

@@ -1,5 +1,5 @@
 use namu_core::ir::{Call, Next, Operation};
-use namu_proto::{QueueMessage, TaskKind, ValueRef};
+use namu_proto::{QueueMessage, TaskKind, TaskRuntime, TaskTrust, ValueRef};
 use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
 use sha2::Digest;
@@ -59,6 +59,8 @@ async fn enqueue_call(
         .to_string();
     let manifest = db::get_task_manifest(&state.db, &call.task_id, &task_version).await?;
 
+    validate_manifest(&manifest)?;
+
     let lease_ms = 60_000u64;
     let lease_expires_at = chrono::Utc::now() + chrono::Duration::milliseconds(lease_ms as i64);
     db::upsert_run_node(
@@ -82,6 +84,14 @@ async fn enqueue_call(
     )
     .await?;
 
+    let pool = pool_for_manifest(&manifest);
+    if !db::has_worker(&state.db, &pool, &manifest.resource_class).await? {
+        return Err(anyhow::anyhow!(
+            "no workers available for pool {pool} resource_class {}",
+            manifest.resource_class
+        ));
+    }
+
     let msg = QueueMessage {
         run_id,
         op_id,
@@ -94,8 +104,7 @@ async fn enqueue_call(
         input_hashes: Some(input_hashes),
         input_refs,
     };
-
-    redis_store::queue_task(&mut redis, &manifest.resource_class, &msg).await?;
+    redis_store::queue_task(&mut redis, &pool, &manifest.resource_class, &msg).await?;
     redis_store::add_event(
         &mut redis,
         run_id,
@@ -171,6 +180,35 @@ async fn resolve_inputs_for_message(
     Ok((inline_values, input_hashes, input_refs))
 }
 
+fn pool_for_manifest(manifest: &namu_proto::TaskManifest) -> String {
+    if manifest.requires_gpu {
+        return "gpu".to_string();
+    }
+    match manifest.trust {
+        TaskTrust::Trusted => "trusted".to_string(),
+        TaskTrust::Restricted => "restricted".to_string(),
+        TaskTrust::Untrusted => "wasm".to_string(),
+    }
+}
+
+fn validate_manifest(manifest: &namu_proto::TaskManifest) -> anyhow::Result<()> {
+    if manifest.trust == TaskTrust::Untrusted && manifest.runtime != TaskRuntime::Wasm {
+        return Err(anyhow::anyhow!("untrusted tasks must use wasm runtime"));
+    }
+    if manifest.runtime == TaskRuntime::Wasm && manifest.trust != TaskTrust::Untrusted {
+        return Err(anyhow::anyhow!("wasm runtime requires trust=untrusted"));
+    }
+    if manifest.requires_gpu {
+        if manifest.runtime == TaskRuntime::Wasm {
+            return Err(anyhow::anyhow!("gpu tasks must use native runtime"));
+        }
+        if manifest.trust == TaskTrust::Untrusted {
+            return Err(anyhow::anyhow!("gpu tasks cannot be marked untrusted"));
+        }
+    }
+    Ok(())
+}
+
 pub async fn apply_task_output(
     state: &AppState,
     run_id: Uuid,
@@ -209,7 +247,7 @@ pub async fn apply_task_output(
                     .next_ctx_id
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 db::create_context(&state.db, run_id, child_ctx, Some(ctx_id)).await?;
-                redis_store::clone_context(&mut redis, run_id, ctx_id, child_ctx).await?;
+                redis_store::create_context(&mut redis, run_id, child_ctx, Some(ctx_id)).await?;
                 store_outputs(&mut redis, run_id, child_ctx, &call.outputs, item).await?;
 
                 if let Some(next) =

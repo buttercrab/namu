@@ -38,6 +38,7 @@ NAMU_ORCH_URL=http://127.0.0.1:8080 \
 REDIS_URL=redis://127.0.0.1/ \
 ARTIFACT_CACHE=./data/cache \
 RESOURCE_CLASS=cpu.small \
+WORKER_POOL=trusted \
 cargo run -p namu-worker
 ```
 
