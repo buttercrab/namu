@@ -51,6 +51,10 @@ namu run <workflow_id> <version>
 ## Documentation
 See `docs/README.md` for full instructions (architecture, CLI, manifests, testing, and contributing).
 
+## Examples
+- `examples/basic` — minimal workflow + tasks.
+- `examples/advanced` — three themed pipelines (ETL/ML/Media) with stream, batch, branching, loops, and failure handling.
+
 ## Contributing
 PRs welcome. See `docs/contributing.md` for guidelines.
 

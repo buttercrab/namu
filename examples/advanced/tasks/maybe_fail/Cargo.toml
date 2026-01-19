@@ -1,0 +1,12 @@
+[package]
+name = "namu-task-maybe-fail"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+namu = { path = "../../../../", version = "0.1.0" }
+anyhow = "1"

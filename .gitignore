@@ -3,4 +3,8 @@ target/
 outputs/
 data/
 dev/data/
-e2e/dist/
+tests/e2e/dist/
+tests/e2e/tasks/*/target/
+examples/advanced/dist/
+examples/advanced/tasks/*/target/
+examples/basic/tasks/*/target/

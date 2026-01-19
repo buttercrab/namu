@@ -144,8 +144,8 @@ done
 cargo run -p namu-worker >/tmp/namu-worker.log 2>&1 &
 WORKER_PID=$!
 
-cargo run -p namu-cli -- build --tasks-dir e2e/tasks --workflows-dir e2e/workflows --out-dir e2e/dist
-cargo run -p namu-cli -- publish --out-dir e2e/dist
+cargo run -p namu-cli -- build --tasks-dir tests/e2e/tasks --workflows-dir tests/e2e/workflows --out-dir tests/e2e/dist
+cargo run -p namu-cli -- publish --out-dir tests/e2e/dist
 
 RUN_ID=$(curl -sf -X POST "$NAMU_ORCH_URL/runs" \
   -H 'content-type: application/json' \
