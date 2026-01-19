@@ -1,14 +1,14 @@
 # CLI
 
-Run `namu --help` for the full command list. The CLI is oriented around three core phases: build, publish, run.
+Run `namu --help` for the full command list. When working from source, use `cargo run -p namu-cli -- <args>`.
 
-## Commands
-- `namu build --tasks-dir ./tasks --workflows-dir ./workflows --out-dir ./dist`
+## Core commands
+- `namu build --tasks-dir <dir> --workflows-dir <dir> --out-dir <dir>`
   - Builds task artifacts and copies workflow IR files into the output directory.
-- `namu publish --out-dir ./dist`
-  - Uploads artifacts + workflow IR to the orchestrator.
+- `namu publish --out-dir <dir>`
+  - Uploads artifacts and workflow IR to the orchestrator.
 - `namu run <workflow_id> <version>`
-  - Creates a new workflow run.
+  - Creates a run for a workflow version.
 - `namu status <run_id>`
   - Returns run status and progress counts.
 - `namu logs <run_id> --limit 100`
@@ -17,17 +17,17 @@ Run `namu --help` for the full command list. The CLI is oriented around three co
   - Lists registered workers.
 - `namu login`
   - Stores orchestrator URL after a health check.
-- `namu version`
-  - Prints CLI version.
 
-## Environment variables
-- `NAMU_ORCH_URL`: orchestrator base URL (used by CLI and worker).
-
-## Example session
+## Example: build and publish the e2e fixtures
 ```bash
-namu build   --tasks-dir ./tasks --workflows-dir ./workflows --out-dir ./dist
-namu publish --out-dir ./dist
-namu run add_workflow 0.1.0
-namu status <run_id>
-namu logs <run_id> --limit 200
+cargo run -p namu-cli -- build --tasks-dir tests/e2e/tasks --workflows-dir tests/e2e/workflows --out-dir tests/e2e/dist
+cargo run -p namu-cli -- publish --out-dir tests/e2e/dist
+```
+
+## Example: advanced workflows
+The advanced example exports workflow IR from Rust code.
+```bash
+cargo run -p namu-advanced-workflows --bin export -- --out examples/advanced/dist/workflows
+cargo run -p namu-cli -- build --tasks-dir examples/advanced/tasks --workflows-dir examples/advanced/dist/workflows --out-dir examples/advanced/dist
+cargo run -p namu-cli -- publish --out-dir examples/advanced/dist
 ```

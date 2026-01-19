@@ -1,62 +1,39 @@
 # NAMU
 
-Composable, AI‑first pipeline engine for Rust. NAMU turns Rust functions into distributed tasks, wires them into immutable workflow graphs at compile time, and executes them across workers at runtime.
+Composable pipeline engine for Rust. NAMU turns Rust workflows into a JSON IR at compile time and executes them across workers at runtime.
 
-**Status:** experimental. APIs and runtime behavior may change.
+Status: experimental. APIs and runtime behavior may change.
 
-## Features
-- `#[task]` and `#[workflow]` macros that emit a JSON IR graph.
-- Orchestrator + workers model with Postgres + Redis backends.
-- CLI for building artifacts, publishing workflows, and running jobs.
-- Deterministic, immutable value propagation through workflow contexts.
-
-## Architecture (high level)
-```
-Rust source  ->  namu-macros  ->  JSON IR  ->  namu-engine  ->  workers
-                                   |                          ^
-                                   +---- namu-master ----------+
-```
+## What you get
+- `#[task]` and `#[workflow]` macros that generate an immutable workflow graph.
+- Orchestrator + worker runtime backed by Postgres and Redis.
+- CLI to build artifacts, publish workflows, and run jobs.
+- Deterministic, immutable value propagation with worker-side caching.
 
 ## Quick start
-Requirements: Rust (stable), plus Docker for the local stack.
+Requirements: Rust (stable) and Docker.
 
 ```bash
-# spins up Postgres + Redis, runs master/worker, builds + publishes sample tasks
 ./scripts/e2e.sh
 ```
+This boots the local stack, publishes fixtures from `tests/e2e`, and runs a workflow end-to-end.
 
-## Local dev loop
-```bash
-# terminal 1
-DATABASE_URL=postgres://namu:namu@127.0.0.1:5432/namu \
-REDIS_URL=redis://127.0.0.1/ \
-BIND_ADDR=127.0.0.1:8080 \
-ARTIFACTS_DIR=./data/artifacts \
-cargo run -p namu-master
-
-# terminal 2
-NAMU_ORCH_URL=http://127.0.0.1:8080 \
-REDIS_URL=redis://127.0.0.1/ \
-ARTIFACT_CACHE=./data/cache \
-cargo run -p namu-worker
+## How it works (high level)
 ```
-
-```bash
-# CLI
-namu build   --tasks-dir ./tasks --workflows-dir ./workflows --out-dir ./dist
-namu publish --out-dir ./dist
-namu run <workflow_id> <version>
+Rust source -> namu-macros -> JSON IR -> namu-engine -> workers
+                                  |                     ^
+                                  +---- namu-master -----+
 ```
-
-## Documentation
-See `docs/README.md` for full instructions (architecture, CLI, manifests, testing, and contributing).
 
 ## Examples
-- `examples/basic` — minimal workflow + tasks.
-- `examples/advanced` — three themed pipelines (ETL/ML/Media) with stream, batch, branching, loops, and failure handling.
+- `examples/basic` - minimal tasks + workflow.
+- `examples/advanced` - ETL, ML, and media pipelines with batch, stream, and branching.
+
+## Documentation
+Start with `docs/README.md` for the doc index.
 
 ## Contributing
-PRs welcome. See `docs/contributing.md` for guidelines.
+PRs welcome. See `docs/contributing.md`.
 
 ## License
 MIT (see Cargo.toml).
