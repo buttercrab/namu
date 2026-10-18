@@ -1,0 +1,7 @@
+package namu:task@0.1.0;
+
+/// A NAMU task. Inputs and outputs are JSON documents: no arguments is `null`, one argument is
+/// the value itself, and several arguments are a JSON array.
+world task {
+  export call: func(input: string) -> result<string, string>;
+}

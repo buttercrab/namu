@@ -25,5 +25,5 @@ Include:
 
 ## Repo conventions
 - Docs live in `docs/`.
-- Task/workflow fixtures for e2e live in `tests/e2e/`.
+- Tasks and workflows for e2e live in `examples/distributed/`.
 - See `AGENTS.md` for agent-specific instructions.

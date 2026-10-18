@@ -1,3 +1,7 @@
+// `#[async_trait]` expansions trip this lint on recent clippy; the code itself has no
+// `#[must_use]`.
+#![allow(clippy::double_must_use)]
+
 mod context;
 pub mod ir;
 pub mod registry;

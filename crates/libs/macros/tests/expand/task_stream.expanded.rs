@@ -10,6 +10,10 @@ pub mod stream_task {
     #[allow(non_camel_case_types)]
     pub struct Task;
     #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
+    #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
         #[inline]
@@ -47,7 +51,24 @@ pub mod stream_task {
             input: Self::Input,
         ) -> impl Iterator<Item = ::namu::__macro_exports::Result<Self::Output>> {
             let input = input;
-            task_impl(input).unwrap()
+            match task_impl(input) {
+                Ok(iter) => {
+                    Box::new(iter)
+                        as Box<
+                            dyn Iterator<
+                                Item = ::namu::__macro_exports::Result<Self::Output>,
+                            >,
+                        >
+                }
+                Err(err) => {
+                    Box::new(::std::iter::once(Err(err)))
+                        as Box<
+                            dyn Iterator<
+                                Item = ::namu::__macro_exports::Result<Self::Output>,
+                            >,
+                        >
+                }
+            }
         }
     }
     #[allow(dead_code)]
@@ -55,16 +76,18 @@ pub mod stream_task {
         mut inputs: Vec<::namu::__macro_exports::Value>,
     ) -> ::namu::__macro_exports::Value {
         if true {
-            match (&inputs.len(), &1) {
-                (left_val, right_val) => {
-                    if !(*left_val == *right_val) {
-                        let kind = ::core::panicking::AssertKind::Eq;
-                        ::core::panicking::assert_failed(
-                            kind,
-                            &*left_val,
-                            &*right_val,
-                            ::core::option::Option::None,
-                        );
+            {
+                match (&inputs.len(), &1) {
+                    (left_val, right_val) => {
+                        if !(*left_val == *right_val) {
+                            let kind = ::core::panicking::AssertKind::Eq;
+                            ::core::panicking::assert_failed(
+                                kind,
+                                &*left_val,
+                                &*right_val,
+                                ::core::option::Option::None,
+                            );
+                        }
                     }
                 }
             };
@@ -75,17 +98,24 @@ pub mod stream_task {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        <[_]>::into_vec(::alloc::boxed::box_new([val]))
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [val],
+            ),
+        )
     }
 }
 #[allow(non_snake_case)]
 pub fn stream_task<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
-    input: ::namu::__macro_exports::TracedValue<i32>,
+    input: impl ::namu::__macro_exports::IntoArg<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "stream_task",
-        <[_]>::into_vec(::alloc::boxed::box_new([input.id])),
-    )
+    let __namu_inputs = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+        ::alloc::intrinsics::write_box_via_move(
+            ::alloc::boxed::Box::new_uninit(),
+            [::namu::__macro_exports::IntoArg::into_arg(input, builder)],
+        ),
+    );
+    ::namu::__macro_exports::call(builder, "stream_task", __namu_inputs)
 }

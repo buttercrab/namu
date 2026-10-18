@@ -3,7 +3,6 @@ use std::collections::BTreeSet;
 use darling::FromMeta;
 use darling::ast::NestedMeta;
 use proc_macro::TokenStream;
-use proc_macro_error2::abort;
 use quote::{format_ident, quote};
 use syn::punctuated::Punctuated;
 use syn::visit_mut::{self, VisitMut};
@@ -18,6 +17,8 @@ struct WorkflowVisitor {
     next_control_flow_id: usize,
     builder_ident: Ident,
     last_expr_has_value: bool,
+    /// The first unsupported construct found; reported instead of the expansion.
+    error: Option<syn::Error>,
 }
 
 #[derive(Debug, Default, FromMeta)]
@@ -32,6 +33,13 @@ impl WorkflowVisitor {
             next_control_flow_id: 0,
             builder_ident,
             last_expr_has_value: false,
+            error: None,
+        }
+    }
+
+    fn fail(&mut self, tokens: &impl quote::ToTokens, message: &str) {
+        if self.error.is_none() {
+            self.error = Some(syn::Error::new_spanned(tokens, message));
         }
     }
 
@@ -88,9 +96,10 @@ impl VisitMut for WorkflowVisitor {
                 self.last_expr_has_value = true;
             }
             Expr::Assign(expr) => {
-                abort!(
-                    expr,
-                    "assignments are not supported in expressions, put semicolon after the assignment"
+                let expr = expr.clone();
+                self.fail(
+                    &expr,
+                    "assignments are not supported in expressions, put semicolon after the assignment",
                 );
             }
             Expr::If(if_expr) => {
@@ -102,7 +111,15 @@ impl VisitMut for WorkflowVisitor {
             }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
-                *i = parse_quote! { ::namu::__macro_exports::literal(&#builder_ident, #lit) };
+                // Workflow values are owned, so string literals are `String`, matching task
+                // parameters (a `&str` could never cross a task boundary anyway).
+                *i = if matches!(lit.lit, syn::Lit::Str(_)) {
+                    parse_quote! {
+                        ::namu::__macro_exports::literal(&#builder_ident, ::std::string::String::from(#lit))
+                    }
+                } else {
+                    parse_quote! { ::namu::__macro_exports::literal(&#builder_ident, #lit) }
+                };
                 self.last_expr_has_value = true;
             }
             _ => visit_mut::visit_expr_mut(self, i),
@@ -121,17 +138,22 @@ impl VisitMut for WorkflowVisitor {
                                 self.insert_var(pat_ident.ident.clone());
                             }
                         } else {
-                            abort!(local, "let bindings must be initialized");
+                            let local = local.clone();
+                            self.fail(&local, "let bindings must be initialized");
                         }
                     }
                     Pat::Tuple(pat_tuple) => {
                         if pat_tuple.elems.is_empty() {
-                            abort!(local, "Tuple destructuring requires at least one element");
+                            let local = local.clone();
+                            self.fail(&local, "Tuple destructuring requires at least one element");
+                            return;
                         }
                         if let Some(init) = &mut local.init {
                             self.visit_expr_mut(&mut init.expr);
                         } else {
-                            abort!(local, "Tuple destructuring requires initializer");
+                            let local = local.clone();
+                            self.fail(&local, "Tuple destructuring requires initializer");
+                            return;
                         }
 
                         // Track mut variables inside tuple pattern
@@ -141,30 +163,38 @@ impl VisitMut for WorkflowVisitor {
                                     self.insert_var(pat_ident.ident.clone());
                                 }
                             } else {
-                                abort!(
-                                    elem,
-                                    "Only simple idents are supported in tuple destructuring"
+                                let elem = elem.clone();
+                                self.fail(
+                                    &elem,
+                                    "Only simple idents are supported in tuple destructuring",
                                 );
                             }
                         }
                     }
-                    _ => abort!(
-                        local,
-                        "only simple idents or tuple patterns are supported in let bindings"
-                    ),
+                    _ => {
+                        let local = local.clone();
+                        self.fail(
+                            &local,
+                            "only simple idents or tuple patterns are supported in let bindings",
+                        );
+                    }
                 }
 
                 self.last_expr_has_value = false;
             }
             Stmt::Expr(Expr::Assign(assign_expr), _semi) => {
                 let Expr::Path(path) = &*assign_expr.left else {
-                    abort!(
-                        assign_expr,
-                        "only simple idents are supported in let bindings"
+                    let assign_expr = assign_expr.clone();
+                    self.fail(
+                        &assign_expr,
+                        "only simple idents are supported in let bindings",
                     );
+                    return;
                 };
                 let Some(name) = path.path.get_ident() else {
-                    abort!(path, "only simple idents are supported in let bindings");
+                    let path = path.clone();
+                    self.fail(&path, "only simple idents are supported in let bindings");
+                    return;
                 };
 
                 self.visit_expr_mut(&mut assign_expr.right);
@@ -420,6 +450,9 @@ pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
     visitor.enter_scope();
     visitor.visit_block_mut(&mut func_body);
     visitor.exit_scope();
+    if let Some(err) = visitor.error {
+        return err.to_compile_error().into();
+    }
 
     let args = if attr.is_empty() {
         WorkflowArgs::default()

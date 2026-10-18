@@ -8,6 +8,10 @@ pub mod triple {
     #[allow(non_camel_case_types)]
     pub struct Task;
     #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
+    #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
         #[inline]
@@ -53,16 +57,18 @@ pub mod triple {
         mut inputs: Vec<::namu::__macro_exports::Value>,
     ) -> ::namu::__macro_exports::Value {
         if true {
-            match (&inputs.len(), &1) {
-                (left_val, right_val) => {
-                    if !(*left_val == *right_val) {
-                        let kind = ::core::panicking::AssertKind::Eq;
-                        ::core::panicking::assert_failed(
-                            kind,
-                            &*left_val,
-                            &*right_val,
-                            ::core::option::Option::None,
-                        );
+            {
+                match (&inputs.len(), &1) {
+                    (left_val, right_val) => {
+                        if !(*left_val == *right_val) {
+                            let kind = ::core::panicking::AssertKind::Eq;
+                            ::core::panicking::assert_failed(
+                                kind,
+                                &*left_val,
+                                &*right_val,
+                                ::core::option::Option::None,
+                            );
+                        }
                     }
                 }
             };
@@ -73,31 +79,36 @@ pub mod triple {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        let tuple_val: (i32, bool, String) = unsafe {
-            val.take::<(i32, bool, String)>()
-        };
+        let tuple_val: (i32, bool, String) = val
+            .take::<(i32, bool, String)>()
+            .expect("unpack: task output has an unexpected type");
         let (o0, o1, o2) = tuple_val;
-        <[_]>::into_vec(
-            ::alloc::boxed::box_new([
-                ::namu::__macro_exports::Value::new(o0),
-                ::namu::__macro_exports::Value::new(o1),
-                ::namu::__macro_exports::Value::new(o2),
-            ]),
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [
+                    ::namu::__macro_exports::Value::new(o0),
+                    ::namu::__macro_exports::Value::new(o1),
+                    ::namu::__macro_exports::Value::new(o2),
+                ],
+            ),
         )
     }
 }
 #[allow(non_snake_case)]
 pub fn triple<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
-    a: ::namu::__macro_exports::TracedValue<i32>,
+    a: impl ::namu::__macro_exports::IntoArg<i32>,
 ) -> (
     ::namu::__macro_exports::TracedValue<i32>,
     ::namu::__macro_exports::TracedValue<bool>,
     ::namu::__macro_exports::TracedValue<String>,
 ) {
-    ::namu::__macro_exports::call3(
-        &builder,
-        "triple",
-        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    )
+    let __namu_inputs = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+        ::alloc::intrinsics::write_box_via_move(
+            ::alloc::boxed::Box::new_uninit(),
+            [::namu::__macro_exports::IntoArg::into_arg(a, builder)],
+        ),
+    );
+    ::namu::__macro_exports::call3(builder, "triple", __namu_inputs)
 }

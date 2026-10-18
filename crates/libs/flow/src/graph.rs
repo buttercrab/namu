@@ -1,16 +1,26 @@
 use std::marker::PhantomData;
 
 use namu_core::ValueId;
-use namu_core::ir::{Call, Literal, Next, Operation, Phi, Workflow};
+use namu_core::ir::{Call, Collect, FanOut, Literal, Next, Operation, Phi, Workflow};
 
 use crate::ir::{BasicBlock, NodeId};
 use crate::{Node, NodeKind, Terminator};
 
-#[derive(Debug, Clone, Copy)]
+/// A handle to a value in the graph under construction. It only holds an id, so it is `Copy`
+/// for every `T` (a derive would wrongly require `T: Copy`).
+#[derive(Debug)]
 pub struct TracedValue<T> {
     pub id: ValueId,
     _phantom: PhantomData<T>,
 }
+
+impl<T> Clone for TracedValue<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for TracedValue<T> {}
 
 impl<T> TracedValue<T> {
     pub fn new(id: ValueId) -> Self {
@@ -77,13 +87,13 @@ impl<T> Graph<T> {
         let mut next_value_id: usize = 0;
 
         // First pass: convert every Node into an Operation and link linear flow within block.
+        // An Operation holds literals and phis followed by at most one action (call, fan-out or
+        // collect), so a new Operation starts whenever another node follows an action.
         for (block_idx, block) in self.blocks.iter().enumerate() {
             let mut prev_op_idx: Option<usize> = None;
 
             // Accumulated components for the *next* Operation we will emit
-            let mut pending_literals: Vec<Literal> = Vec::new();
-            let mut pending_phis: Vec<Phi> = Vec::new();
-            let mut pending_call: Option<Call> = None;
+            let mut pending = PendingOp::default();
 
             for &node_id in &block.instructions {
                 let node = &self.arena.nodes[node_id];
@@ -93,101 +103,61 @@ impl<T> Graph<T> {
                     next_value_id = next_value_id.max(max_out + 1);
                 }
 
+                if pending.has_action() {
+                    let op_idx = pending.flush(&mut ops);
+                    link(
+                        &mut ops,
+                        &mut block_first_op[block_idx],
+                        prev_op_idx,
+                        op_idx,
+                    );
+                    prev_op_idx = Some(op_idx);
+                }
+
                 match &node.kind {
                     NodeKind::Literal { debug_repr, .. } => {
-                        // Flush if we've already encountered a Call in this batch.
-                        if pending_call.is_some() {
-                            let op_idx = push_pending_op(
-                                &mut ops,
-                                &mut pending_literals,
-                                &mut pending_phis,
-                                &mut pending_call,
-                            );
-
-                            // Link control-flow from previous op (if any)
-                            if let Some(prev_idx) = prev_op_idx {
-                                ops[prev_idx].next = Next::Jump { next: op_idx };
-                            } else {
-                                block_first_op[block_idx] = Some(op_idx);
-                            }
-
-                            prev_op_idx = Some(op_idx);
-                        }
-
-                        pending_literals.push(Literal {
+                        pending.literals.push(Literal {
                             output: node.outputs[0],
                             value: debug_repr.clone(),
                         });
                     }
                     NodeKind::Phi { from } => {
-                        if pending_call.is_some() {
-                            let op_idx = push_pending_op(
-                                &mut ops,
-                                &mut pending_literals,
-                                &mut pending_phis,
-                                &mut pending_call,
-                            );
-
-                            if let Some(prev_idx) = prev_op_idx {
-                                ops[prev_idx].next = Next::Jump { next: op_idx };
-                            } else {
-                                block_first_op[block_idx] = Some(op_idx);
-                            }
-
-                            prev_op_idx = Some(op_idx);
-                        }
-
-                        let from_placeholder: Vec<_> = from.iter().map(|(b, v)| (*b, *v)).collect();
-
-                        pending_phis.push(Phi {
+                        pending.phis.push(Phi {
                             output: node.outputs[0],
-                            from: from_placeholder,
+                            from: from.clone(),
                         });
                     }
                     NodeKind::Call { task_id, inputs } => {
-                        // If there's already a pending call, flush first (shouldn't happen if
-                        // builder respects 1 call per node group, but be safe).
-                        if pending_call.is_some() {
-                            let op_idx = push_pending_op(
-                                &mut ops,
-                                &mut pending_literals,
-                                &mut pending_phis,
-                                &mut pending_call,
-                            );
-
-                            if let Some(prev_idx) = prev_op_idx {
-                                ops[prev_idx].next = Next::Jump { next: op_idx };
-                            } else {
-                                block_first_op[block_idx] = Some(op_idx);
-                            }
-
-                            prev_op_idx = Some(op_idx);
-                        }
-
-                        pending_call = Some(Call {
+                        pending.call = Some(Call {
                             task_id: task_id.clone(),
                             inputs: inputs.clone(),
                             outputs: node.outputs.clone(),
+                        });
+                    }
+                    NodeKind::FanOut { input } => {
+                        pending.fan_out = Some(FanOut {
+                            input: *input,
+                            output: node.outputs[0],
+                        });
+                    }
+                    NodeKind::Collect { input } => {
+                        pending.collect = Some(Collect {
+                            input: *input,
+                            output: node.outputs[0],
                         });
                     }
                 }
             }
 
             // After consuming all nodes in the block, flush any remaining pending parts.
-            if !pending_literals.is_empty() || !pending_phis.is_empty() || pending_call.is_some() {
-                let op_idx = push_pending_op(
+            if !pending.is_empty() {
+                let op_idx = pending.flush(&mut ops);
+                link(
                     &mut ops,
-                    &mut pending_literals,
-                    &mut pending_phis,
-                    &mut pending_call,
+                    &mut block_first_op[block_idx],
+                    prev_op_idx,
+                    op_idx,
                 );
-
-                if let Some(prev_idx) = prev_op_idx {
-                    ops[prev_idx].next = Next::Jump { next: op_idx };
-                } else {
-                    block_first_op[block_idx] = Some(op_idx);
-                }
-
                 prev_op_idx = Some(op_idx);
             }
 
@@ -206,6 +176,8 @@ impl<T> Graph<T> {
                     }],
                     phis: Vec::new(),
                     call: None,
+                    fan_out: None,
+                    collect: None,
                     next: Next::Return { var: None },
                 };
                 ops.push(op);
@@ -274,6 +246,12 @@ impl<T> Graph<T> {
                             parent_vars.join(", ")
                         )
                     }
+                    NodeKind::FanOut { input } => {
+                        format!("  let var{} = fan_out(var{});\n", node_id, input)
+                    }
+                    NodeKind::Collect { input } => {
+                        format!("  let var{} = collect(var{});\n", node_id, input)
+                    }
                     NodeKind::Phi { from } => {
                         let from_str: Vec<String> = from
                             .iter()
@@ -314,18 +292,48 @@ impl<T> Graph<T> {
 
 // --- Helper ----------------------------------------------------------------
 
-fn push_pending_op(
-    ops: &mut Vec<Operation>,
-    lits: &mut Vec<Literal>,
-    phis: &mut Vec<Phi>,
-    call: &mut Option<Call>,
-) -> usize {
-    let op = Operation {
-        literals: std::mem::take(lits),
-        phis: std::mem::take(phis),
-        call: call.take(),
-        next: Next::Return { var: None }, // placeholder
-    };
-    ops.push(op);
-    ops.len() - 1
+#[derive(Default)]
+struct PendingOp {
+    literals: Vec<Literal>,
+    phis: Vec<Phi>,
+    call: Option<Call>,
+    fan_out: Option<FanOut>,
+    collect: Option<Collect>,
+}
+
+impl PendingOp {
+    fn has_action(&self) -> bool {
+        self.call.is_some() || self.fan_out.is_some() || self.collect.is_some()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.literals.is_empty() && self.phis.is_empty() && !self.has_action()
+    }
+
+    fn flush(&mut self, ops: &mut Vec<Operation>) -> usize {
+        let taken = std::mem::take(self);
+        ops.push(Operation {
+            literals: taken.literals,
+            phis: taken.phis,
+            call: taken.call,
+            fan_out: taken.fan_out,
+            collect: taken.collect,
+            next: Next::Return { var: None }, // placeholder
+        });
+        ops.len() - 1
+    }
+}
+
+/// Links `op_idx` after `prev_op_idx` within a block, or records it as the block's first op.
+fn link(
+    ops: &mut [Operation],
+    block_first_op: &mut Option<usize>,
+    prev_op_idx: Option<usize>,
+    op_idx: usize,
+) {
+    if let Some(prev_idx) = prev_op_idx {
+        ops[prev_idx].next = Next::Jump { next: op_idx };
+    } else {
+        *block_first_op = Some(op_idx);
+    }
 }

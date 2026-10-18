@@ -36,6 +36,23 @@ pub struct Call {
     pub outputs: Vec<ValueId>,
 }
 
+/// Fan-out: every element of the list `input` continues in its own child context, where it is
+/// bound to `output`. The context executing this operation becomes the scope that a later
+/// [`Collect`] closes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FanOut {
+    pub input: ValueId,
+    pub output: ValueId,
+}
+
+/// Fan-in: gathers `input` from every surviving branch of the innermost fan-out scope into a list
+/// bound to `output`, then continues once in the scope's context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Collect {
+    pub input: ValueId,
+    pub output: ValueId,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Operation {
     /// Zero or more literal constants produced *before* any phi or call.
@@ -48,6 +65,14 @@ pub struct Operation {
     /// basic-block that ends with only literals/phis.
     pub call: Option<Call>,
 
+    /// Optional fan-out. At most one of `call`, `fan_out` and `collect` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_out: Option<FanOut>,
+
+    /// Optional fan-in. At most one of `call`, `fan_out` and `collect` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collect: Option<Collect>,
+
     /// Control-flow successor metadata.
     pub next: Next,
 }
@@ -58,6 +83,8 @@ impl Operation {
             literals,
             phis,
             call,
+            fan_out: None,
+            collect: None,
             next,
         }
     }

@@ -1,0 +1,195 @@
+//! Task runtimes and the artifact cache. Each task picks its runtime in its manifest.
+
+pub mod native;
+pub mod wasm;
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::Context;
+use namu_proto::{TaskManifest, TaskRuntime};
+use serde_json::Value as JsonValue;
+use sha2::Digest;
+use tokio::sync::Mutex;
+
+pub enum Runner {
+    Wasm(wasm::WasmTask),
+    Native(native::NativeTask),
+}
+
+impl Runner {
+    pub fn call(&self, input: &str) -> anyhow::Result<Result<String, String>> {
+        match self {
+            Runner::Wasm(task) => task.call(input),
+            Runner::Native(task) => task.call(input),
+        }
+    }
+}
+
+/// Downloads, verifies and loads task artifacts, once per task version.
+pub struct Runtimes {
+    http: reqwest::Client,
+    orchestrator_url: String,
+    cache_dir: PathBuf,
+    engine: wasmtime::Engine,
+    loaded: Mutex<HashMap<(String, String), Arc<Runner>>>,
+}
+
+impl Runtimes {
+    pub fn new(http: reqwest::Client, orchestrator_url: String, cache_dir: PathBuf) -> Self {
+        Self {
+            http,
+            orchestrator_url,
+            cache_dir,
+            engine: wasmtime::Engine::default(),
+            loaded: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub async fn runner(&self, manifest: &TaskManifest) -> anyhow::Result<Arc<Runner>> {
+        let key = (manifest.task_id.clone(), manifest.version.clone());
+        let mut loaded = self.loaded.lock().await;
+        if let Some(runner) = loaded.get(&key) {
+            return Ok(runner.clone());
+        }
+        let path = self.fetch_artifact(manifest).await?;
+        let engine = self.engine.clone();
+        let runtime = manifest.runtime;
+        let runner = tokio::task::spawn_blocking(move || -> anyhow::Result<Runner> {
+            Ok(match runtime {
+                TaskRuntime::Wasm => Runner::Wasm(wasm::WasmTask::load(&engine, &path)?),
+                TaskRuntime::Native => Runner::Native(native::NativeTask::load(&path)?),
+            })
+        })
+        .await??;
+        let runner = Arc::new(runner);
+        loaded.insert(key, runner.clone());
+        Ok(runner)
+    }
+
+    async fn fetch_artifact(&self, manifest: &TaskManifest) -> anyhow::Result<PathBuf> {
+        let dir = self
+            .cache_dir
+            .join(safe_segment(&manifest.task_id)?)
+            .join(safe_segment(&manifest.version)?);
+        tokio::fs::create_dir_all(&dir).await?;
+        let archive = dir.join("artifact.tar.zst");
+        if !archive.exists() {
+            let bytes = self
+                .http
+                .get(format!(
+                    "{}/tasks/{}/{}/artifact",
+                    self.orchestrator_url, manifest.task_id, manifest.version
+                ))
+                .send()
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await?;
+            tokio::fs::write(&archive, &bytes).await?;
+        }
+        let runtime = manifest.runtime;
+        let checksum = manifest.checksum.clone();
+        let dir_clone = dir.clone();
+        tokio::task::spawn_blocking(move || extract(&archive, &dir_clone, runtime, &checksum))
+            .await?
+    }
+}
+
+/// Extracts the task binary and verifies it against the manifest checksum.
+fn extract(
+    archive: &Path,
+    dir: &Path,
+    runtime: TaskRuntime,
+    checksum: &str,
+) -> anyhow::Result<PathBuf> {
+    let data = std::fs::read(archive)?;
+    let decoder = zstd::stream::read::Decoder::new(std::io::Cursor::new(data))?;
+    let mut tar = tar::Archive::new(decoder);
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_path_buf();
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        if !is_binary(&name, runtime) {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+        if !checksum.is_empty() && digest != checksum {
+            anyhow::bail!("checksum mismatch for {name}: expected {checksum}, got {digest}");
+        }
+        let out = dir.join(&name);
+        std::fs::write(&out, &bytes).with_context(|| format!("write {}", out.display()))?;
+        return Ok(out);
+    }
+    anyhow::bail!("artifact has no {} binary", runtime.as_str())
+}
+
+fn is_binary(name: &str, runtime: TaskRuntime) -> bool {
+    match runtime {
+        TaskRuntime::Wasm => name.ends_with(".wasm"),
+        TaskRuntime::Native => {
+            name.ends_with(".so") || name.ends_with(".dylib") || name.ends_with(".dll")
+        }
+    }
+}
+
+/// Rejects ids that could escape the cache directory.
+pub fn safe_segment(raw: &str) -> anyhow::Result<&str> {
+    let ok = !raw.is_empty()
+        && raw != "."
+        && raw != ".."
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if ok {
+        Ok(raw)
+    } else {
+        anyhow::bail!("invalid id {raw:?}")
+    }
+}
+
+/// Task input encoding: no arguments is `null`, one is the value itself, several are an array.
+pub fn encode_input(arity: usize, mut inputs: Vec<JsonValue>) -> anyhow::Result<String> {
+    if inputs.len() != arity {
+        anyhow::bail!(
+            "input arity mismatch: expected {arity}, got {}",
+            inputs.len()
+        );
+    }
+    let value = match arity {
+        0 => JsonValue::Null,
+        1 => inputs.pop().unwrap_or(JsonValue::Null),
+        _ => JsonValue::Array(inputs),
+    };
+    Ok(serde_json::to_string(&value)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inputs_follow_the_arity_convention() {
+        assert_eq!(encode_input(0, vec![]).unwrap(), "null");
+        assert_eq!(encode_input(1, vec![JsonValue::from(3)]).unwrap(), "3");
+        assert_eq!(
+            encode_input(2, vec![JsonValue::from(1), JsonValue::from("a")]).unwrap(),
+            r#"[1,"a"]"#
+        );
+        assert!(encode_input(2, vec![JsonValue::from(1)]).is_err());
+    }
+
+    #[test]
+    fn ids_cannot_escape_the_cache() {
+        assert!(safe_segment("analyze").is_ok());
+        assert!(safe_segment("0.1.0").is_ok());
+        for bad in ["", ".", "..", "../etc", "a/b", "a\\b"] {
+            assert!(safe_segment(bad).is_err(), "{bad:?} should be rejected");
+        }
+    }
+}

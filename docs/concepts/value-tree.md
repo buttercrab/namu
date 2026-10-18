@@ -1,33 +1,22 @@
 # Value Tree
 
-Each workflow run produces immutable values. NAMU stores these values in a persistent tree so workers can resolve inputs efficiently across branching paths.
+Each workflow run produces immutable values. NAMU stores them in a tree of contexts so that
+parallel branches share what they have in common, without copying it and without locks. See
+`design.md` §6 for the full model.
 
 ## Core idea
-- A **context** is an immutable snapshot of values for one execution path.
-- New values create child contexts instead of mutating parent contexts.
-- Value lookup uses a persistent structure so each context can be queried without copying the full map.
+- A **context** is one execution path. Each step adds a new node: a parent pointer, the values the
+  step produced, and the enclosing fan-out scopes.
+- **Nodes never change**, including their parent. Lookups walk up the ancestors.
+- A **fan-out** creates one child per item; siblings share everything above them.
+- A **collect** continues in a new child of the context that fanned out: values from before the
+  fan-out are visible again, per-item values are not.
 
-## Storage model
-- **Redis** stores context metadata and value deltas (source of truth).
-- **Workers** cache frequently used values in memory to reduce round trips.
-- **Object store** can hold large values when inline payloads are disabled or too large.
-
-## Input delivery to workers
-The orchestrator resolves inputs before enqueuing work and can attach:
-- **inline values** (`input_values`) when small enough,
-- **hashes** (`input_hashes`) for cache hits,
-- **references** (`input_refs`) for object store fetches.
-
-Workers resolve inputs in this order:
-1. cache hit by hash
-2. inline values
-3. object store reference
-4. Redis fallback
-
-## Relevant knobs
-- `NAMU_INLINE_INPUT_LIMIT_BYTES` (master): inline value size limit; `0` disables inline values.
-- `NAMU_VALUE_CACHE_BYTES` (worker): total cache size for value hashes.
-- Object store env vars in `docs/operations/configuration.md`.
-
-## Notes
-The value tree is immutable by design. Branch failures only affect their leaf contexts; other branches continue independently.
+## In the distributed runtime
+- Nodes live in Redis. A worker writes the nodes it creates behind the critical path, and flushes
+  before handing work to another worker.
+- Nodes produced by another worker are fetched once and cached. They are immutable, so the cache
+  never needs invalidating.
+- Work items only reference a context; values are always read through the tree.
+- Fan-in counts open branches per scope (`live`). The branch that brings it to zero continues the
+  workflow with the collected list.

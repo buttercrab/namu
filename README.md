@@ -6,17 +6,19 @@ Status: experimental. APIs and runtime behavior may change.
 
 ## What you get
 - `#[task]` and `#[workflow]` macros that generate an immutable workflow graph.
-- Orchestrator + worker runtime backed by Postgres and Redis.
+- Type-driven fan-out and fan-in: pass a `Vec<T>` where a task takes `T` to fan out, pass items where it takes `Vec<T>` to collect.
+- Workers that drive workflows themselves, with an immutable value tree shared through Redis.
+- Tasks written once and built as WASM components (run anywhere) or native libraries.
 - CLI to build artifacts, publish workflows, and run jobs.
-- Deterministic, immutable value propagation with worker-side caching.
 
 ## Quick start
-Requirements: Rust (stable) and Docker.
+Requirements: Rust (stable) with `wasm32-wasip2`, and `redis-server`.
 
 ```bash
-./scripts/e2e.sh
+./scripts/poc-local.sh
 ```
-This boots the local stack, publishes fixtures from `tests/e2e`, and runs a workflow end-to-end.
+This starts Redis, the orchestrator and three workers, publishes `examples/distributed`, and runs a
+fan-out/fan-in workflow across the workers. See `docs/poc.md`.
 
 ## How it works (high level)
 ```
@@ -27,7 +29,8 @@ Rust source -> namu-macros -> JSON IR -> namu-engine -> workers
 
 ## Examples
 - `examples/basic` - minimal tasks + workflow.
-- `examples/advanced` - ETL, ML, and media pipelines with batch, stream, and branching.
+- `examples/advanced` - in-process pipelines with batch, stream, and branching.
+- `examples/distributed` - WASM and native tasks across workers.
 
 ## Documentation
 Start with `docs/README.md` for the doc index.

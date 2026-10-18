@@ -23,6 +23,19 @@ pub trait ValueStore: Send + Sync {
         val_id: ValueId,
         value: Self::Value,
     ) -> anyhow::Result<ContextId>;
+
+    /// Writes several values produced by one step. Immutable stores override this to create a
+    /// single child node holding all of them.
+    async fn set_values(
+        &self,
+        mut ctx_id: ContextId,
+        values: Vec<(ValueId, Self::Value)>,
+    ) -> anyhow::Result<ContextId> {
+        for (val_id, value) in values {
+            ctx_id = self.set_value(ctx_id, val_id, value).await?;
+        }
+        Ok(ctx_id)
+    }
 }
 
 #[derive(Debug, Clone)]

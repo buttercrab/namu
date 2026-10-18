@@ -151,7 +151,9 @@ pub fn task_bridge_impl(input: TokenStream) -> TokenStream {
                 quote! {
                     #[allow(dead_code)]
                     pub fn #unpack_fn_ident(val: ::namu::__macro_exports::Value) -> Vec<::namu::__macro_exports::Value> {
-                        let tuple_val: #output_type = unsafe { val.take::<#output_type>() };
+                        let tuple_val: #output_type = val
+                            .take::<#output_type>()
+                            .expect("unpack: task output has an unexpected type");
                         let ( #( #vars ),* ) = tuple_val;
                         vec![ #( ::namu::__macro_exports::Value::new(#vars) ),* ]
                     }

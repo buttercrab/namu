@@ -1,0 +1,37 @@
+# Cross-platform proof of concept: Redis, the orchestrator and two Linux workers in containers.
+# Workers on the host (e.g. macOS, with native tasks) join through the published ports.
+#   docker compose -f dev/docker-compose.poc.yml up --build -d
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-6390}:6379"
+
+  master:
+    build:
+      context: ..
+      dockerfile: dev/Dockerfile
+    image: namu-poc
+    command: ["namu-master"]
+    environment:
+      REDIS_URL: redis://redis:6379/
+      BIND_ADDR: 0.0.0.0:8080
+      ARTIFACTS_DIR: /data/artifacts
+    ports:
+      - "${ORCH_PORT:-8090}:8080"
+    depends_on:
+      - redis
+
+  linux-worker:
+    image: namu-poc
+    command: ["namu-worker"]
+    environment:
+      REDIS_URL: redis://redis:6379/
+      NAMU_ORCH_URL: http://master:8080
+      NAMU_RUNTIMES: wasm
+      ARTIFACT_CACHE: /data/cache
+    deploy:
+      replicas: 2
+    depends_on:
+      - master

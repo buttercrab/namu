@@ -1,42 +1,45 @@
 # Architecture
 
-NAMU compiles Rust workflows into a JSON IR and executes the graph across workers. At runtime, an orchestrator coordinates durable state and scheduling, while workers execute task artifacts.
+NAMU compiles Rust workflows into a JSON IR. Workers execute that IR directly, running tasks in the
+runtime each task declares. See `design.md` for the target design and `poc.md` for what runs today.
 
 ## Components
-- **namu-macros**: `#[task]` and `#[workflow]` procedural macros that emit a JSON IR graph.
-- **namu-flow**: in-memory graph builder used by macros at compile time.
-- **namu-core**: shared IR types and runtime traits.
-- **namu-engine**: IR interpreter, context management, and execution kernel.
-- **namu-master**: orchestrator API that stores metadata and schedules work.
-- **namu-worker**: runtime node that loads task artifacts and executes calls.
-- **Postgres**: durable storage for tasks, workflows, runs, contexts, and workers.
-- **Redis**: queue, run events, and value tree storage.
-- **Object store (optional)**: large value storage when inline payloads are disabled or too large.
-
-## Compile-time flow
-```
-Rust source -> namu-macros -> namu-flow -> JSON IR
-```
-- Tasks and workflows stay as idiomatic Rust.
-- The workflow macro produces a static single-assignment (SSA) graph and serializes it.
+- **namu-macros**: `#[task]` and `#[workflow]`. Workflows become an SSA graph; task parameter types
+  decide fan-out and fan-in. A bodiless `#[task]` declares a task implemented elsewhere.
+- **namu-flow**: the graph builder used by the macros.
+- **namu-core**: IR types and the in-process task traits.
+- **namu-engine**: the IR interpreter (kernel) shared by every engine, plus the in-process
+  `SimpleEngine`.
+- **namu-guest**: SDK for writing tasks once and building them as WASM components (`namu:task`
+  WIT world) or native libraries (C ABI).
+- **namu-master** (orchestrator, control plane): task and workflow registry, starting runs, run
+  status. It is not on the per-step path.
+- **namu-worker** (data plane): drives contexts through the IR, runs WASM and native tasks, and
+  hands work to other workers.
+- **Redis**: registry, value-tree nodes, fan-in scope counters, and work queues.
 
 ## Runtime flow
-1. `namu publish` uploads task artifacts and workflow IR to the orchestrator.
-2. `namu run` creates a workflow run and the orchestrator plans execution.
-3. The orchestrator resolves input values, decides the worker pool, and enqueues work.
-4. Workers fetch artifacts, execute tasks, and report outputs.
-5. The orchestrator advances the run and emits events.
+1. `namu publish` uploads task artifacts and workflow IR. Versions are immutable.
+2. `namu run` asks the orchestrator to start a run. It writes the run metadata and the root context
+   node, then enqueues the root.
+3. A worker picks the root up and drives it. Literals, phis and branches are evaluated locally; tasks
+   in a runtime the worker supports run locally too.
+4. A fan-out creates one child context per item, and any worker can pick them up. A task needing a
+   runtime the worker lacks is handed to a worker that has it.
+5. Branches meet again at collects. When the last branch of the root ends, the run finishes.
 
-## Data model (high level)
-- **Value tree**: immutable context snapshots stored in Redis.
-- **Runs**: workflow instances tracked in Postgres.
-- **Artifacts**: task bundles stored on disk and/or object storage.
+## Data model
+- **Value tree**: immutable context nodes (parent, fan-out scopes, values) in Redis, cached on
+  workers.
+- **Work items**: references to a context and an op, never values.
+- **Artifacts**: `tar.zst` bundles (manifest + `.wasm` or native library) stored by the
+  orchestrator and cached by workers, verified by checksum.
 
-## Crate layout (current)
+## Crate layout
 ```
 crates/
-  apps/
-    cli/     master/     worker/
-  libs/
-    core/    engine/     flow/     macros/    proto/
+  apps/   cli/  master/  worker/
+  libs/   core/ engine/  flow/  guest/  macros/  proto/
+examples/
+  basic/  advanced/  (in-process)    distributed/ (workers)
 ```

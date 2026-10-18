@@ -19,6 +19,13 @@ pub fn add(a: i32, b: i32) -> Result<i32> {
 register_task! { method = add, name = "add", author = "test", version = "0.1" }
 
 #[task(single)]
+pub fn exclaim(s: String) -> Result<String> {
+    Ok(format!("{s}!"))
+}
+
+register_task! { method = exclaim, name = "exclaim", author = "test", version = "0.1" }
+
+#[task(single)]
 pub fn is_positive(v: i32) -> Result<bool> {
     Ok(v > 0)
 }
@@ -78,6 +85,17 @@ pub fn split(n: i32, k: i32) -> Result<impl Iterator<Item = Result<i32>>> {
 }
 
 register_task! { method = split, name = "split", author = "test", version = "0.1" }
+
+#[task(stream)]
+pub fn fail_stream(_v: i32) -> Result<impl Iterator<Item = Result<i32>>> {
+    if _v == i32::MIN {
+        Ok(std::iter::empty())
+    } else {
+        anyhow::bail!("stream setup failed")
+    }
+}
+
+register_task! { method = fail_stream, name = "fail_stream", author = "test", version = "0.1" }
 
 #[task(single)]
 #[allow(unreachable_code)]

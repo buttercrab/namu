@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Parser, Subcommand};
-use namu_proto::{RunCreateRequest, TaskManifest, TaskRuntime, WorkflowUploadRequest};
+use namu_proto::{
+    RunCreateRequest, RunCreateResponse, TaskManifest, TaskRuntime, WorkflowUploadRequest,
+};
 use reqwest::multipart;
 use serde_json::Value as JsonValue;
 use sha2::Digest;
@@ -55,15 +57,12 @@ enum Commands {
     Run {
         workflow_id: String,
         version: String,
+        /// Wait for the run to finish and print its status and results
+        #[arg(long)]
+        wait: bool,
     },
     /// Check run status
     Status { run_id: String },
-    /// Fetch run events
-    Logs {
-        run_id: String,
-        #[arg(short, long, default_value = "100")]
-        limit: usize,
-    },
     /// List workers
     Workers,
     /// Login and healthcheck orchestrator
@@ -95,19 +94,19 @@ async fn main() {
             }
         }
         Commands::Publish { out_dir } => {
-            publish(&out_dir).await;
+            if !publish(&out_dir).await {
+                std::process::exit(1);
+            }
         }
         Commands::Run {
             workflow_id,
             version,
+            wait,
         } => {
-            run_workflow(&workflow_id, &version).await;
+            run_workflow(&workflow_id, &version, wait).await;
         }
         Commands::Status { run_id } => {
             run_status(&run_id).await;
-        }
-        Commands::Logs { run_id, limit } => {
-            run_logs(&run_id, limit).await;
         }
         Commands::Workers => {
             list_workers().await;
@@ -174,7 +173,7 @@ fn build_tasks(tasks_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {
             cmd.args(["build", "--release", "--manifest-path"])
                 .arg(task_dir.join("Cargo.toml"));
             if manifest.runtime == TaskRuntime::Wasm {
-                cmd.args(["--target", "wasm32-wasip1"]);
+                cmd.args(["--target", WASM_TARGET]);
             }
             let status = cmd.status()?;
             if !status.success() {
@@ -189,6 +188,7 @@ fn build_tasks(tasks_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {
         let artifact_bytes = fs::read(&artifact_path)?;
         let checksum = sha2::Sha256::digest(&artifact_bytes);
         manifest.checksum = format!("sha256:{:x}", checksum);
+        set_build_info(&mut manifest);
 
         let tar_path = out_dir.join(format!("{}-{}.tar.zst", manifest.task_id, manifest.version));
         package_task(&tar_path, &manifest, &artifact_path)?;
@@ -210,7 +210,7 @@ fn build_tasks_from_config(cfg: &config::NamuConfig, out_dir: &Path) -> anyhow::
             cmd.args(["build", "--release", "--manifest-path"])
                 .arg(task_dir.join("Cargo.toml"));
             if task.runtime == TaskRuntime::Wasm {
-                cmd.args(["--target", "wasm32-wasip1"]);
+                cmd.args(["--target", WASM_TARGET]);
             }
             let status = cmd.status()?;
             if !status.success() {
@@ -225,6 +225,7 @@ fn build_tasks_from_config(cfg: &config::NamuConfig, out_dir: &Path) -> anyhow::
         let artifact_bytes = fs::read(&artifact_path)?;
         let checksum = sha2::Sha256::digest(&artifact_bytes);
         manifest.checksum = format!("sha256:{:x}", checksum);
+        set_build_info(&mut manifest);
 
         let tar_path = out_dir.join(format!("{}-{}.tar.zst", task.id, task.version));
         package_task(&tar_path, &manifest, &artifact_path)?;
@@ -233,13 +234,26 @@ fn build_tasks_from_config(cfg: &config::NamuConfig, out_dir: &Path) -> anyhow::
     Ok(())
 }
 
+const WASM_TARGET: &str = "wasm32-wasip2";
+
+/// Native artifacts only run on the platform they were built for, so record it; WASM runs
+/// anywhere.
+fn set_build_info(manifest: &mut TaskManifest) {
+    manifest.platform = match manifest.runtime {
+        TaskRuntime::Native => Some(namu_proto::host_platform()),
+        TaskRuntime::Wasm => None,
+    };
+    manifest.abi_version = "2".to_string();
+}
+
 fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
     TaskManifest {
         task_id: task.id.clone(),
         version: task.version.clone(),
         task_kind: task.kind.clone(),
         trust: task.trust.clone(),
-        runtime: task.runtime.clone(),
+        runtime: task.runtime,
+        platform: None,
         requires_gpu: task.requires_gpu,
         resource_class: task.resource_class.clone(),
         capabilities: task.capabilities.clone(),
@@ -248,7 +262,7 @@ fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
         input_schema: task.input_schema.clone(),
         output_schema: task.output_schema.clone(),
         checksum: String::new(),
-        abi_version: "1".to_string(),
+        abi_version: "2".to_string(),
         build_toolchain: "unknown".to_string(),
         created_at: "unknown".to_string(),
     }
@@ -270,13 +284,9 @@ fn find_library(task_dir: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn find_wasm(task_dir: &Path) -> anyhow::Result<PathBuf> {
-    let wasip1 = task_dir.join("target/wasm32-wasip1/release");
-    if let Some(found) = find_single_artifact(&wasip1, |name| name.ends_with(".wasm")) {
-        return Ok(found);
-    }
-    let wasi = task_dir.join("target/wasm32-wasi/release");
-    find_single_artifact(&wasi, |name| name.ends_with(".wasm"))
-        .ok_or_else(|| anyhow::anyhow!("expected 1 wasm module in {}", wasip1.display()))
+    let dir = task_dir.join("target").join(WASM_TARGET).join("release");
+    find_single_artifact(&dir, |name| name.ends_with(".wasm"))
+        .ok_or_else(|| anyhow::anyhow!("expected 1 wasm component in {}", dir.display()))
 }
 
 fn package_task(
@@ -414,7 +424,8 @@ fn task_versions_for_workflow(
     Ok(versions)
 }
 
-async fn publish(out_dir: &Path) {
+/// Publishes every artifact and workflow in `out_dir`. Returns false if anything failed.
+async fn publish(out_dir: &Path) -> bool {
     let master_url = match get_master_url() {
         Ok(url) => url,
         Err(e) => {
@@ -424,6 +435,7 @@ async fn publish(out_dir: &Path) {
     };
 
     let client = reqwest::Client::new();
+    let mut ok = true;
 
     let tasks_dir = out_dir.join("tasks");
     if tasks_dir.exists() {
@@ -448,13 +460,13 @@ async fn publish(out_dir: &Path) {
                     println!("Published task: {}", path.display());
                 }
                 Ok(resp) => {
-                    eprintln!(
-                        "Failed to publish task {}: {}",
-                        path.display(),
-                        resp.status()
-                    );
+                    ok = false;
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    eprintln!("Failed to publish task {}: {status} {body}", path.display());
                 }
                 Err(err) => {
+                    ok = false;
                     eprintln!("Failed to publish task {}: {}", path.display(), err);
                 }
             }
@@ -475,6 +487,7 @@ async fn publish(out_dir: &Path) {
             let req: WorkflowUploadRequest = match serde_json::from_str(&raw) {
                 Ok(req) => req,
                 Err(err) => {
+                    ok = false;
                     eprintln!("Invalid workflow file {}: {}", path.display(), err);
                     continue;
                 }
@@ -486,21 +499,25 @@ async fn publish(out_dir: &Path) {
                     println!("Published workflow: {}", path.display());
                 }
                 Ok(resp) => {
+                    ok = false;
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
                     eprintln!(
-                        "Failed to publish workflow {}: {}",
-                        path.display(),
-                        resp.status()
+                        "Failed to publish workflow {}: {status} {body}",
+                        path.display()
                     );
                 }
                 Err(err) => {
+                    ok = false;
                     eprintln!("Failed to publish workflow {}: {}", path.display(), err);
                 }
             }
         }
     }
+    ok
 }
 
-async fn run_workflow(workflow_id: &str, version: &str) {
+async fn run_workflow(workflow_id: &str, version: &str, wait: bool) {
     let master_url = match get_master_url() {
         Ok(url) => url,
         Err(e) => {
@@ -508,24 +525,65 @@ async fn run_workflow(workflow_id: &str, version: &str) {
             std::process::exit(1);
         }
     };
+    let master_url = master_url.trim_end_matches('/').to_string();
 
     let client = reqwest::Client::new();
     let req = RunCreateRequest {
         workflow_id: workflow_id.to_string(),
         version: version.to_string(),
     };
-    let url = format!("{}/runs", master_url.trim_end_matches('/'));
-    match client.post(url).json(&req).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let json: JsonValue = resp.json().await.unwrap_or_default();
-            println!("Run created: {}", json);
-        }
+    let resp = match client
+        .post(format!("{master_url}/runs"))
+        .json(&req)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => resp,
         Ok(resp) => {
-            eprintln!("Failed to create run: {}", resp.status());
+            let status = resp.status();
+            eprintln!(
+                "Failed to create run: {status} {}",
+                resp.text().await.unwrap_or_default()
+            );
+            std::process::exit(1);
         }
         Err(err) => {
             eprintln!("Failed to create run: {}", err);
+            std::process::exit(1);
         }
+    };
+    let created: RunCreateResponse = match resp.json().await {
+        Ok(created) => created,
+        Err(err) => {
+            eprintln!("Invalid response: {err}");
+            std::process::exit(1);
+        }
+    };
+    println!("Run created: {}", created.run_id);
+    if !wait {
+        return;
+    }
+
+    let url = format!("{master_url}/runs/{}", created.run_id);
+    loop {
+        let status: JsonValue = match client.get(&url).send().await {
+            Ok(resp) => resp.json().await.unwrap_or_default(),
+            Err(err) => {
+                eprintln!("Failed to fetch status: {err}");
+                std::process::exit(1);
+            }
+        };
+        if status["status"] != "running" {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&status).unwrap_or_default()
+            );
+            if status["status"] != "succeeded" {
+                std::process::exit(2);
+            }
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -552,38 +610,6 @@ async fn run_status(run_id: &str) {
         }
         Err(err) => {
             eprintln!("Failed to fetch status: {}", err);
-        }
-    }
-}
-
-async fn run_logs(run_id: &str, limit: usize) {
-    let master_url = match get_master_url() {
-        Ok(url) => url,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
-        }
-    };
-    let client = reqwest::Client::new();
-    let url = format!(
-        "{}/runs/{}/events?limit={}",
-        master_url.trim_end_matches('/'),
-        run_id,
-        limit
-    );
-    match client.get(url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let json: JsonValue = resp.json().await.unwrap_or_default();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json).unwrap_or_default()
-            );
-        }
-        Ok(resp) => {
-            eprintln!("Failed to fetch logs: {}", resp.status());
-        }
-        Err(err) => {
-            eprintln!("Failed to fetch logs: {}", err);
         }
     }
 }

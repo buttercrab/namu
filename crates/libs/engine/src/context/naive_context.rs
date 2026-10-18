@@ -25,43 +25,43 @@ impl NaiveContextManager {
 impl ContextManager for NaiveContextManager {
     fn create_context(&self) -> ContextId {
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
-        self.contexts.insert(id, HashMap::new()).unwrap();
-        self.context_order.insert(id, vec![id]).unwrap();
+        self.contexts.insert_sync(id, HashMap::new()).unwrap();
+        self.context_order.insert_sync(id, vec![id]).unwrap();
         id
     }
 
     fn compare_context(&self, a: ContextId, b: ContextId) -> std::cmp::Ordering {
-        let a_order = self.context_order.get(&a).unwrap();
-        let b_order = self.context_order.get(&b).unwrap();
+        let a_order = self.context_order.get_sync(&a).unwrap();
+        let b_order = self.context_order.get_sync(&b).unwrap();
         a_order.cmp(&b_order)
     }
 
     fn add_value(&self, context_id: ContextId, val_id: ValueId, value: Value) -> ContextId {
-        let context = self.contexts.get(&context_id).unwrap().clone();
-        let mut context_order = self.context_order.get(&context_id).unwrap().clone();
-        context.insert(val_id, value).unwrap();
+        let context = self.contexts.get_sync(&context_id).unwrap().clone();
+        let mut context_order = self.context_order.get_sync(&context_id).unwrap().clone();
+        context.insert_sync(val_id, value).unwrap();
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         context_order.push(id);
-        self.contexts.insert(id, context).unwrap();
-        self.context_order.insert(id, context_order).unwrap();
+        self.contexts.insert_sync(id, context).unwrap();
+        self.context_order.insert_sync(id, context_order).unwrap();
         id
     }
 
     fn get_value(&self, context_id: ContextId, val_id: ValueId) -> Value {
-        let context = self.contexts.get(&context_id).unwrap();
-        context.get().get(&val_id).unwrap().clone()
+        let context = self.contexts.get_sync(&context_id).unwrap();
+        context.get().get_sync(&val_id).unwrap().get().clone()
     }
 
     fn get_values(&self, context_id: ContextId, val_ids: &[ValueId]) -> Vec<Value> {
-        let context = self.contexts.get(&context_id).unwrap();
+        let context = self.contexts.get_sync(&context_id).unwrap();
         val_ids
             .iter()
-            .map(|val_id| context.get().get(val_id).unwrap().clone())
+            .map(|val_id| context.get().get_sync(val_id).unwrap().get().clone())
             .collect()
     }
 
     fn remove_context(&self, context_id: ContextId) {
-        self.contexts.remove(&context_id);
-        self.context_order.remove(&context_id);
+        self.contexts.remove_sync(&context_id);
+        self.context_order.remove_sync(&context_id);
     }
 }

@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use namu_core::ValueId;
+use serde::Serialize;
 
 use crate::graph::{Graph, NodeArena, TracedValue, ValueArena};
 use crate::ir::{BasicBlock, BlockId, NodeKind, Terminator};
@@ -72,10 +73,21 @@ impl<T> Builder<T> {
         self.add_node(kind, arity)
     }
 
-    pub fn literal<L: Debug + Send + Sync + 'static>(&self, value: L) -> ValueId {
-        let debug_repr = format!("{:?}", value);
-        let kind = NodeKind::literal(Arc::new(value), debug_repr);
+    pub fn literal<L: Serialize + Debug + Send + Sync + 'static>(&self, value: L) -> ValueId {
+        // Literals are stored as JSON so every runtime decodes them the same way.
+        let repr = serde_json::to_string(&value).unwrap_or_else(|_| format!("{:?}", value));
+        let kind = NodeKind::literal(Arc::new(value), repr);
         self.add_node(kind, 1)[0]
+    }
+
+    /// Emits a fan-out over the list `input` and returns the per-element value.
+    pub fn fan_out(&self, input: ValueId) -> ValueId {
+        self.add_node(NodeKind::FanOut { input }, 1)[0]
+    }
+
+    /// Emits a fan-in of `input` over the innermost fan-out scope and returns the list value.
+    pub fn collect(&self, input: ValueId) -> ValueId {
+        self.add_node(NodeKind::Collect { input }, 1)[0]
     }
 
     pub fn phi(&self, from: Vec<(BlockId, ValueId)>) -> ValueId {
@@ -151,7 +163,35 @@ define_call!(
     [A, B, C, D, E, F, G, H, I]
 );
 
-pub fn literal<T: Debug + Send + Sync + 'static, U>(
+/// A task argument. The impl is chosen by rustc from the parameter type, which is what makes
+/// fan-out and fan-in type-driven:
+///
+/// - `TracedValue<T>` passed as `T`: a plain argument.
+/// - `TracedValue<Vec<T>>` passed as `T`: fan-out, one branch per element.
+/// - `TracedValue<T>` passed as `Vec<T>`: fan-in, collecting every branch of the current scope.
+pub trait IntoArg<T> {
+    fn into_arg<G>(self, builder: &Builder<G>) -> ValueId;
+}
+
+impl<T> IntoArg<T> for TracedValue<T> {
+    fn into_arg<G>(self, _builder: &Builder<G>) -> ValueId {
+        self.id
+    }
+}
+
+impl<T> IntoArg<T> for TracedValue<Vec<T>> {
+    fn into_arg<G>(self, builder: &Builder<G>) -> ValueId {
+        builder.fan_out(self.id)
+    }
+}
+
+impl<T> IntoArg<Vec<T>> for TracedValue<T> {
+    fn into_arg<G>(self, builder: &Builder<G>) -> ValueId {
+        builder.collect(self.id)
+    }
+}
+
+pub fn literal<T: Serialize + Debug + Send + Sync + 'static, U>(
     builder: &Builder<U>,
     value: T,
 ) -> TracedValue<T> {

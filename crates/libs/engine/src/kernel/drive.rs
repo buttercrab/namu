@@ -29,14 +29,29 @@ impl<R: ValueRuntime> EngineKernel<R> {
                 .get(op_id)
                 .ok_or_else(|| anyhow::anyhow!("invalid op id {op_id}"))?;
 
-            ctx_id = self.apply_literals(store, ctx_id, operation).await?;
-            ctx_id = self.apply_phis(store, ctx_id, operation, pred_op).await?;
+            ctx_id = self
+                .apply_literals_and_phis(store, ctx_id, operation, pred_op)
+                .await?;
 
             if let Some(call) = &operation.call {
                 return Ok(KernelPlan::Dispatch {
                     op_id,
                     ctx_id,
                     call: call_spec(call),
+                });
+            }
+            if let Some(fan_out) = &operation.fan_out {
+                return Ok(KernelPlan::FanOut {
+                    op_id,
+                    ctx_id,
+                    fan_out: fan_out.clone(),
+                });
+            }
+            if let Some(collect) = &operation.collect {
+                return Ok(KernelPlan::Collect {
+                    op_id,
+                    ctx_id,
+                    collect: collect.clone(),
                 });
             }
 
@@ -76,40 +91,35 @@ impl<R: ValueRuntime> EngineKernel<R> {
         }
     }
 
-    async fn apply_literals<S: ValueStore<Value = R::Value>>(
+    /// Applies an operation's literals and phis as one step. Every phi source is read from the
+    /// incoming context before anything is written, so phis behave as a parallel assignment
+    /// (`a, b = b, a` works). All values land in a single `set_values` call, which lets
+    /// immutable stores create one node per step.
+    async fn apply_literals_and_phis<S: ValueStore<Value = R::Value>>(
         &self,
         store: &S,
-        mut ctx_id: ContextId,
-        op: &Operation,
-    ) -> anyhow::Result<ContextId> {
-        for lit in &op.literals {
-            let value = self.runtime.parse_literal(&lit.value)?;
-            ctx_id = store.set_value(ctx_id, lit.output, value).await?;
-        }
-        Ok(ctx_id)
-    }
-
-    async fn apply_phis<S: ValueStore<Value = R::Value>>(
-        &self,
-        store: &S,
-        mut ctx_id: ContextId,
+        ctx_id: ContextId,
         op: &Operation,
         pred_op: Option<usize>,
     ) -> anyhow::Result<ContextId> {
-        let Some(pred_op) = pred_op else {
-            return Ok(ctx_id);
-        };
-        for phi in &op.phis {
-            let entry = phi
-                .from
-                .iter()
-                .find(|(from_op, _)| *from_op == pred_op)
-                .ok_or_else(|| anyhow::anyhow!("phi missing predecessor"))?;
-            let val_id = entry.1;
-            let val = store.get_value(ctx_id, val_id).await?;
-            ctx_id = store.set_value(ctx_id, phi.output, val).await?;
+        let mut values = Vec::with_capacity(op.literals.len() + op.phis.len());
+        for lit in &op.literals {
+            values.push((lit.output, self.runtime.parse_literal(&lit.value)?));
         }
-        Ok(ctx_id)
+        if let Some(pred_op) = pred_op {
+            for phi in &op.phis {
+                let entry = phi
+                    .from
+                    .iter()
+                    .find(|(from_op, _)| *from_op == pred_op)
+                    .ok_or_else(|| anyhow::anyhow!("phi missing predecessor"))?;
+                values.push((phi.output, store.get_value(ctx_id, entry.1).await?));
+            }
+        }
+        if values.is_empty() {
+            return Ok(ctx_id);
+        }
+        store.set_values(ctx_id, values).await
     }
 }
 

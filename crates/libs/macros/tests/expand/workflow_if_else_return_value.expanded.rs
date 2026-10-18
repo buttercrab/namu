@@ -8,6 +8,10 @@ pub mod double {
     #[allow(non_camel_case_types)]
     pub struct Task;
     #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
+    #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
         #[inline]
@@ -53,16 +57,18 @@ pub mod double {
         mut inputs: Vec<::namu::__macro_exports::Value>,
     ) -> ::namu::__macro_exports::Value {
         if true {
-            match (&inputs.len(), &1) {
-                (left_val, right_val) => {
-                    if !(*left_val == *right_val) {
-                        let kind = ::core::panicking::AssertKind::Eq;
-                        ::core::panicking::assert_failed(
-                            kind,
-                            &*left_val,
-                            &*right_val,
-                            ::core::option::Option::None,
-                        );
+            {
+                match (&inputs.len(), &1) {
+                    (left_val, right_val) => {
+                        if !(*left_val == *right_val) {
+                            let kind = ::core::panicking::AssertKind::Eq;
+                            ::core::panicking::assert_failed(
+                                kind,
+                                &*left_val,
+                                &*right_val,
+                                ::core::option::Option::None,
+                            );
+                        }
                     }
                 }
             };
@@ -73,19 +79,26 @@ pub mod double {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        <[_]>::into_vec(::alloc::boxed::box_new([val]))
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [val],
+            ),
+        )
     }
 }
 #[allow(non_snake_case)]
 pub fn double<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
-    a: ::namu::__macro_exports::TracedValue<i32>,
+    a: impl ::namu::__macro_exports::IntoArg<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "double",
-        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    )
+    let __namu_inputs = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+        ::alloc::intrinsics::write_box_via_move(
+            ::alloc::boxed::Box::new_uninit(),
+            [::namu::__macro_exports::IntoArg::into_arg(a, builder)],
+        ),
+    );
+    ::namu::__macro_exports::call(builder, "double", __namu_inputs)
 }
 #[allow(non_snake_case)]
 pub mod identity {
@@ -96,6 +109,10 @@ pub mod identity {
     #[allow(non_camel_case_types)]
     pub struct Task;
     #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
+    #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
         #[inline]
@@ -141,16 +158,18 @@ pub mod identity {
         mut inputs: Vec<::namu::__macro_exports::Value>,
     ) -> ::namu::__macro_exports::Value {
         if true {
-            match (&inputs.len(), &1) {
-                (left_val, right_val) => {
-                    if !(*left_val == *right_val) {
-                        let kind = ::core::panicking::AssertKind::Eq;
-                        ::core::panicking::assert_failed(
-                            kind,
-                            &*left_val,
-                            &*right_val,
-                            ::core::option::Option::None,
-                        );
+            {
+                match (&inputs.len(), &1) {
+                    (left_val, right_val) => {
+                        if !(*left_val == *right_val) {
+                            let kind = ::core::panicking::AssertKind::Eq;
+                            ::core::panicking::assert_failed(
+                                kind,
+                                &*left_val,
+                                &*right_val,
+                                ::core::option::Option::None,
+                            );
+                        }
                     }
                 }
             };
@@ -161,19 +180,26 @@ pub mod identity {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        <[_]>::into_vec(::alloc::boxed::box_new([val]))
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [val],
+            ),
+        )
     }
 }
 #[allow(non_snake_case)]
 pub fn identity<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
-    a: ::namu::__macro_exports::TracedValue<i32>,
+    a: impl ::namu::__macro_exports::IntoArg<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "identity",
-        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    )
+    let __namu_inputs = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+        ::alloc::intrinsics::write_box_via_move(
+            ::alloc::boxed::Box::new_uninit(),
+            [::namu::__macro_exports::IntoArg::into_arg(a, builder)],
+        ),
+    );
+    ::namu::__macro_exports::call(builder, "identity", __namu_inputs)
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
@@ -204,11 +230,14 @@ pub fn if_else_return_value_workflow() -> ::namu::__macro_exports::Graph<i32> {
             __builder.switch_to_block(__if_merge_block_0);
             ::namu::__macro_exports::phi(
                 &__builder,
-                <[_]>::into_vec(
-                    ::alloc::boxed::box_new([
-                        (__then_predecessor_id_0, __then_val),
-                        (__else_predecessor_id_0, __else_val),
-                    ]),
+                ::alloc::boxed::box_assume_init_into_vec_unsafe(
+                    ::alloc::intrinsics::write_box_via_move(
+                        ::alloc::boxed::Box::new_uninit(),
+                        [
+                            (__then_predecessor_id_0, __then_val),
+                            (__else_predecessor_id_0, __else_val),
+                        ],
+                    ),
                 ),
             )
         }

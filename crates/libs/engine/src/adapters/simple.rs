@@ -9,8 +9,7 @@ use kanal::{Receiver, Sender as OneShotSender, Sender, bounded, unbounded};
 use namu_core::ir::Workflow;
 use namu_core::registry::{PackFn, TaskEntry, TaskImpl, UnpackFn};
 use namu_core::{ContextId, DynamicTaskContext, Value};
-use scc::ebr::Guard;
-use scc::{HashIndex, HashMap};
+use scc::{Guard, HashIndex, HashMap};
 
 use crate::kernel::{CallSpec, CoreValueRuntime, EngineKernel, KernelPlan};
 use crate::runtime::store::ValueStore;
@@ -101,7 +100,7 @@ impl SimpleEngine {
     }
 
     pub fn get_result(&self, run_id: usize) -> Receiver<Value> {
-        self.inner.run_results.get(&run_id).unwrap().clone()
+        self.inner.run_results.get_sync(&run_id).unwrap().clone()
     }
 
     fn add_task_sync(
@@ -111,16 +110,19 @@ impl SimpleEngine {
         pack: Option<PackFn>,
         unpack: Option<UnpackFn>,
     ) {
-        if self.inner.tasks.get(task_name).is_some() {
+        if self.inner.tasks.get_sync(task_name).is_some() {
             eprintln!("[engine] Replaced existing task registration for '{task_name}'");
-            self.inner.tasks.remove(task_name);
+            self.inner.tasks.remove_sync(task_name);
         }
-        let _ = self.inner.tasks.insert(task_name.to_string(), task);
+        let _ = self.inner.tasks.insert_sync(task_name.to_string(), task);
         if let Some(pack) = pack {
-            let _ = self.inner.pack_map.insert(task_name.to_string(), pack);
+            let _ = self.inner.pack_map.insert_sync(task_name.to_string(), pack);
         }
         if let Some(unpack) = unpack {
-            let _ = self.inner.unpack_map.insert(task_name.to_string(), unpack);
+            let _ = self
+                .inner
+                .unpack_map
+                .insert_sync(task_name.to_string(), unpack);
         }
     }
 }
@@ -138,25 +140,28 @@ impl Engine for SimpleEngine {
 
     async fn create_workflow(&self, workflow: Workflow) -> Self::WorkflowId {
         let id = self.inner.workflow_counter.fetch_add(1, Ordering::Release);
-        if self.inner.workflows.get(&id).is_some() {
+        if self.inner.workflows.get_sync(&id).is_some() {
             eprintln!("[engine] Replaced existing workflow with id {id}");
-            self.inner.workflows.remove(&id);
+            self.inner.workflows.remove_sync(&id);
         }
-        self.inner.workflows.insert(id, workflow).unwrap();
+        self.inner.workflows.insert_sync(id, workflow).unwrap();
         id
     }
 
     async fn create_run(&self, workflow_id: Self::WorkflowId) -> Self::RunId {
         let id = self.inner.run_counter.fetch_add(1, Ordering::Release);
-        if self.inner.runs.get(&id).is_some() {
+        if self.inner.runs.get_sync(&id).is_some() {
             eprintln!("[engine] Replaced existing run mapping with id {id}");
-            self.inner.runs.remove(&id);
+            self.inner.runs.remove_sync(&id);
         }
-        self.inner.runs.insert(id, workflow_id).unwrap();
+        self.inner.runs.insert_sync(id, workflow_id).unwrap();
 
         let (result_tx, result_rx) = unbounded();
-        self.inner.run_results.insert(id, result_rx).unwrap();
-        self.inner.run_result_senders.insert(id, result_tx).unwrap();
+        self.inner.run_results.insert_sync(id, result_rx).unwrap();
+        self.inner
+            .run_result_senders
+            .insert_sync(id, result_tx)
+            .unwrap();
         id
     }
 
@@ -168,7 +173,12 @@ impl Engine for SimpleEngine {
             .peek(&workflow_id, &Guard::new())
             .cloned()
             .unwrap();
-        let result_tx = self.inner.run_result_senders.get(&run_id).unwrap().clone();
+        let result_tx = self
+            .inner
+            .run_result_senders
+            .get_sync(&run_id)
+            .unwrap()
+            .clone();
 
         let task_senders = HashIndex::new();
         let ctx_origin: HashIndex<ContextId, usize> = HashIndex::new();
@@ -205,7 +215,7 @@ impl Engine for SimpleEngine {
 
                 run_ctx
                     .task_senders
-                    .insert(task_name.clone(), in_tx)
+                    .insert_sync(task_name.clone(), in_tx)
                     .unwrap();
 
                 let task = self
@@ -260,9 +270,9 @@ impl Engine for SimpleEngine {
             }
         }
 
-        let _ = self.inner.run_results.remove(&run_id);
-        let _ = self.inner.run_result_senders.remove(&run_id);
-        self.inner.runs.remove(&run_id);
+        let _ = self.inner.run_results.remove_sync(&run_id);
+        let _ = self.inner.run_result_senders.remove_sync(&run_id);
+        self.inner.runs.remove_sync(&run_id);
 
         Ok(())
     }
@@ -313,6 +323,11 @@ async fn drive_from(
         } => {
             dispatch_call(run_ctx, op_id, ctx_id, &call).await?;
         }
+        KernelPlan::FanOut { .. } | KernelPlan::Collect { .. } => {
+            return Err(anyhow::anyhow!(
+                "fan-out and collect are only supported by the distributed runtime (namu-worker)"
+            ));
+        }
         KernelPlan::Return { ctx_id, return_var } => {
             if let Some(var) = return_var {
                 let val = run_ctx.store.get_value(ctx_id, var).await?;
@@ -339,13 +354,17 @@ async fn dispatch_call(
     let packed = if let Some(pack_fn) = pack_fn {
         (pack_fn)(inputs)
     } else {
-        debug_assert_eq!(
-            inputs.len(),
-            1,
-            "Task '{}' missing pack fn and inputs >1",
-            call.task_id
-        );
-        inputs.into_iter().next().unwrap()
+        match inputs.len() {
+            0 => Value::new(()),
+            1 => inputs.into_iter().next().unwrap(),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "task '{}' missing pack fn for {} inputs",
+                    call.task_id,
+                    inputs.len()
+                ));
+            }
+        }
     };
 
     let sender = run_ctx
@@ -354,7 +373,7 @@ async fn dispatch_call(
         .expect("sender not found")
         .clone();
 
-    let _ = run_ctx.ctx_origin.insert(ctx_id, op_id);
+    let _ = run_ctx.ctx_origin.insert_sync(ctx_id, op_id);
     sender
         .send((ctx_id, packed))
         .expect("failed to send to task");
@@ -391,7 +410,7 @@ async fn handle_event(run_ctx: &RunContext<'_>, event: TaskEvent) -> anyhow::Res
                     .set_value(child_ctx, call.outputs[0], out_vals[0].clone())
                     .await?;
             } else {
-                for (out_id, val) in call.outputs.iter().copied().zip(out_vals.into_iter()) {
+                for (out_id, val) in call.outputs.iter().copied().zip(out_vals) {
                     run_ctx.store.set_value(child_ctx, out_id, val).await?;
                 }
             }
@@ -428,10 +447,10 @@ async fn handle_event(run_ctx: &RunContext<'_>, event: TaskEvent) -> anyhow::Res
 }
 
 fn finish_ctx(run_ctx: &RunContext<'_>, ctx_id: ContextId) {
-    if run_ctx.finished_ctxs.get(&ctx_id).is_some() {
+    if run_ctx.finished_ctxs.get_sync(&ctx_id).is_some() {
         return;
     }
-    let _ = run_ctx.finished_ctxs.insert(ctx_id, ());
+    let _ = run_ctx.finished_ctxs.insert_sync(ctx_id, ());
     run_ctx.store.finish_context(ctx_id);
     if run_ctx.active_ctxs.fetch_sub(1, Ordering::AcqRel) == 1 {
         let _ = run_ctx.finish_tx.send(());
