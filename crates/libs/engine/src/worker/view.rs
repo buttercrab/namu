@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 
 use super::{Inner, Run};
 use crate::ids::{NodeId, RunId, owner};
-use crate::kernel::ValueStore;
+use crate::kernel::{Point, ValueStore};
 use crate::message::Message;
 use crate::tree::Node;
 
@@ -32,14 +32,59 @@ impl ValueStore for View<'_> {
         bail!("value {value} is not visible from context {ctx}")
     }
 
-    async fn put(&self, ctx: NodeId, values: Vec<(ValueId, Value)>) -> anyhow::Result<NodeId> {
-        let id = self.worker.ids.next();
+    async fn put(
+        &self,
+        ctx: NodeId,
+        values: Vec<(ValueId, Value)>,
+        at: Point,
+    ) -> anyhow::Result<NodeId> {
+        let live = match at {
+            Point::Enter(op) => self.run.spec.liveness.after_enter(op),
+            Point::Action(op) => self.run.spec.liveness.after_action(op),
+        };
+        Ok(self.worker.grow(self.run, ctx, live, values))
+    }
+}
+
+impl Inner {
+    /// Creates a node holding `values` on `ctx`'s chain, under the deepest node that still holds
+    /// one of `live` (design §6.2); nodes below that hold only dead values and are left behind.
+    pub(super) fn grow(
+        &self,
+        run: &Run,
+        ctx: NodeId,
+        live: &[ValueId],
+        values: Vec<(ValueId, Value)>,
+    ) -> NodeId {
+        // What the new node defines shadows the same values further up: a loop's phi defines
+        // the same value every iteration, and the old copies are as dead as the rest.
+        let live: Vec<ValueId> = live
+            .iter()
+            .copied()
+            .filter(|value| !values.iter().any(|(id, _)| id == value))
+            .collect();
+        let id = self.ids.next();
         let node = Node {
-            parent: Some(ctx),
+            parent: Some(anchor(run, ctx, &live)),
             values,
         };
-        self.run.nodes.insert(id, Arc::new(node));
-        Ok(id)
+        run.nodes.insert(id, Arc::new(node));
+        id
+    }
+}
+
+/// The deepest node of `ctx`'s chain that holds one of `live`: what a new node attaches under.
+/// The walk stops at a node not held here (or the root), keeping it.
+pub(super) fn anchor(run: &Run, ctx: NodeId, live: &[ValueId]) -> NodeId {
+    let mut cursor = ctx;
+    loop {
+        let Some(node) = run.nodes.get(cursor) else {
+            return cursor;
+        };
+        match node.parent {
+            Some(parent) if !node.holds_any(live) => cursor = parent,
+            _ => return cursor,
+        }
     }
 }
 
@@ -51,7 +96,8 @@ impl Inner {
             return Ok(node);
         }
         let holder = owner(id);
-        let node = if self.routes.resolve(holder) != holder {
+        // Nodes held by a dead worker, or swept here, are in the log.
+        let node = if self.routes.resolve(holder) != holder || holder == self.id {
             self.log.node(run.id(), id).await?
         } else {
             let (waiter, reply) = oneshot::channel();
@@ -71,7 +117,11 @@ impl Inner {
                 self.deliver(holder, fetch);
                 run.fetches.fetch_add(1, Ordering::Relaxed);
             }
-            reply.await.context("node fetch abandoned")?
+            match reply.await.context("node fetch abandoned")? {
+                Some(node) => Some(node),
+                // Its holder swept it.
+                None => self.log.node(run.id(), id).await?,
+            }
         };
         let node = node.with_context(|| format!("node {id} is gone"))?;
         run.nodes.insert(id, node.clone());

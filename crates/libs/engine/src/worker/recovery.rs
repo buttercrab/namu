@@ -133,7 +133,11 @@ impl Inner {
         match over {
             true => self.scope_over(run, id, scope),
             false => {
-                run.scopes.lock().unwrap().insert(id, scope);
+                let ctx = match &scope.then {
+                    Then::Continue(continuation) => Some(continuation.ctx),
+                    Then::Finish(_) => None,
+                };
+                run.open_scope(id, scope, ctx);
             }
         }
     }

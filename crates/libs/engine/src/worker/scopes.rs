@@ -15,7 +15,6 @@ use crate::log::{EndRecord, Record, ReportRecord};
 use crate::message::{Branch, BranchId, Message, Report, Resume};
 use crate::run::{RunOutcome, WorkerStats};
 use crate::scope::{Continuation, Ended, Finish, Scope, Then, Weight};
-use crate::tree::Node;
 
 /// How long the owner of a finished run waits for every worker to confirm it forgot the run.
 const FORGET_PATIENCE: Duration = Duration::from_secs(2);
@@ -88,10 +87,16 @@ impl Inner {
     }
 
     pub(super) fn scope_over(self: &Arc<Self>, run: &Arc<Run>, id: ScopeId, scope: Scope) {
-        run.finished.lock().unwrap().insert(id);
         match scope.into_parts() {
-            (_, Then::Finish(finish)) => self.finish(run, *finish),
-            (items, Then::Continue(continuation)) => self.resume(run, id, continuation, items),
+            (_, Then::Finish(finish)) => {
+                run.close_scope(id);
+                self.finish(run, *finish);
+            }
+            (items, Then::Continue(continuation)) => {
+                // The continuation pins its own context before the scope lets go of its.
+                self.resume(run, id, continuation, items);
+                run.close_scope(id);
+            }
         }
     }
 
@@ -130,12 +135,9 @@ impl Inner {
             .as_ref()
             .expect("collect ops are found by scope analysis")
             .output;
-        let node_id = self.ids.next();
-        let node = Arc::new(Node {
-            parent: Some(ctx),
-            values: vec![(output, Value::Array(items))],
-        });
-        run.nodes.insert(node_id, node.clone());
+        let live = run.spec.liveness.after_action(op);
+        let node_id = self.grow(run, ctx, live, vec![(output, Value::Array(items))]);
+        let node = run.nodes.get(node_id).expect("just grown");
         let branch = Branch {
             id: branch,
             hop: hop + 1,

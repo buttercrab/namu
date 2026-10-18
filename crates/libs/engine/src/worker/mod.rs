@@ -35,7 +35,7 @@ use crate::run::{RunInfo, RunOutcome, RunSpec, WorkerStats};
 use crate::scope::{FULL, Finish, Scope, Then};
 use crate::tasks::{TaskRef, Tasks};
 use crate::transport::Transport;
-use crate::tree::{Node, Nodes};
+use crate::tree::{Node, Nodes, Pin};
 
 type NodeWaiter = oneshot::Sender<Option<Arc<Node>>>;
 
@@ -76,9 +76,11 @@ struct Inner {
 /// A run as one worker sees it.
 struct Run {
     spec: Arc<RunSpec>,
-    nodes: Nodes,
+    nodes: Arc<Nodes>,
     /// The scopes this worker owns: opened here, or taken over from a dead worker.
     scopes: Mutex<HashMap<ScopeId, Scope>>,
+    /// Keeps each open scope's continuation context held until the scope is over.
+    scope_pins: Mutex<HashMap<ScopeId, Pin>>,
     /// Scopes owned here that are over; ends that arrive for them are duplicates.
     finished: Mutex<HashSet<ScopeId>>,
     calls: AtomicU64,
@@ -311,8 +313,9 @@ impl Inner {
                 .or_insert_with(|| {
                     Arc::new(Run {
                         spec,
-                        nodes: Nodes::default(),
+                        nodes: Arc::default(),
                         scopes: Mutex::default(),
+                        scope_pins: Mutex::default(),
                         finished: Mutex::default(),
                         calls: AtomicU64::new(0),
                         fetches: AtomicU64::new(0),
@@ -385,10 +388,27 @@ impl Inner {
 }
 
 impl Run {
+    /// Owns `scope` here, keeping the context it continues from (if any: not for the root scope)
+    /// held until it is over.
+    fn open_scope(&self, id: ScopeId, scope: Scope, ctx: Option<NodeId>) {
+        if let Some(ctx) = ctx {
+            let pin = self.nodes.pin(ctx);
+            self.scope_pins.lock().unwrap().insert(id, pin);
+        }
+        self.scopes.lock().unwrap().insert(id, scope);
+    }
+
+    /// Lets go of a scope that is over.
+    fn close_scope(&self, id: ScopeId) {
+        self.finished.lock().unwrap().insert(id);
+        self.scope_pins.lock().unwrap().remove(&id);
+    }
+
     fn stats(&self) -> WorkerStats {
         WorkerStats {
             calls: self.calls.load(Ordering::Relaxed),
             fetches: self.fetches.load(Ordering::Relaxed),
+            peak_nodes: self.nodes.peak() as u64,
         }
     }
 

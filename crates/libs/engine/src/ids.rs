@@ -36,6 +36,11 @@ impl Minter {
         }
     }
 
+    /// The next id this minter will give out; every id given out later is at least this.
+    pub fn peek(&self) -> u64 {
+        (self.worker << COUNTER_BITS) | self.counter.load(Ordering::Relaxed)
+    }
+
     pub fn next(&self) -> u64 {
         let counter = self.counter.fetch_add(1, Ordering::Relaxed);
         assert!(
