@@ -29,7 +29,7 @@ redis-server --port 6379 &
 REDIS_URL=redis://127.0.0.1:6379/ BIND_ADDR=127.0.0.1:8080 cargo run --release -p namu-master
 ```
 
-### 2) Start workers (as many as you like, on any machine that can reach Redis and the orchestrator)
+### 2) Start workers (as many as you like; on other machines, set `NAMU_ADVERTISE_ADDR`)
 ```bash
 NAMU_ORCH_URL=http://127.0.0.1:8080 REDIS_URL=redis://127.0.0.1:6379/ \
 NAMU_RUNTIMES=wasm,native cargo run --release -p namu-worker
@@ -49,6 +49,6 @@ NAMU_ORCH_URL=http://127.0.0.1:8080 cargo run -p namu-cli -- run doc_stats 0.1.0
 ```
 
 ## Next steps
-- `docs/poc.md`: what the distribution proof of concept shows, measurements, known gaps.
+- `docs/poc.md`: what the distributed runtime shows today, measurements, known gaps.
 - `docs/design.md`: the target design.
 - `examples/distributed`: tasks (WASM and native) and workflows used above.

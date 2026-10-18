@@ -1,19 +1,15 @@
-//! How messages reach other workers.
+//! Workers in one process, connected by channels.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
 
 use tokio::sync::mpsc;
 
+use super::Transport;
 use crate::ids::WorkerId;
 use crate::message::Message;
 
-/// Delivers messages to workers, in order per pair of workers.
-pub trait Transport: Send + Sync + 'static {
-    fn send(&self, to: WorkerId, message: Message);
-}
-
-/// Workers in one process, connected by channels. Messages are moved, never serialized.
+/// Messages are moved, never serialized.
 #[derive(Debug, Default)]
 pub struct LocalTransport {
     inboxes: RwLock<HashMap<WorkerId, mpsc::UnboundedSender<Message>>>,

@@ -38,6 +38,21 @@ let cluster = LocalCluster::uniform(3, Arc::new(tasks));
 let outcome = cluster.run(workflow_ir).await?;
 ```
 
-## Distributed workers
-`namu-worker` still runs the proof-of-concept data plane (Redis queues and commits, `poc.md`) on the
-same kernel. It moves onto the engine's workers, with a network transport, in the next step.
+## Across machines
+The same workers talk over TCP (`TcpTransport`). `namu-worker` runs one engine worker per process,
+with the WASM and native task runtimes, and joins the mesh through the orchestrator, which gives it
+its id and the member list. The orchestrator is itself a member (id 0): it sends a run to the
+worker that will own it and hears back when it is over. `LocalCluster::tcp` runs the same setup on
+localhost, and the test suite checks every workflow on it too.
+
+A worker learns about a run the first time it receives work for it: it asks the run's owner for
+the run's description and prepares the tasks it uses. When a run is over, its owner asks every
+worker to forget it, and each one reports what it did.
+
+## Crashes
+Everything that moves responsibility for a branch (a handoff, a branch's end, a report) is kept
+by its sender until the receiver has logged what it produced, behind the critical path (the `Log`
+trait: Redis on workers, memory in `LocalCluster`). When a worker dies, the control plane names
+its successor, which takes over its runs, scopes and branches from the log; every branch has a
+stable id, so work that runs twice counts once. `LocalCluster::kill` simulates a crash, and the
+recovery tests kill workers at every moment of a run. See `design.md` §7.

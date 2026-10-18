@@ -1,0 +1,253 @@
+//! The durable log: what a successor needs to take over a dead worker's work (design §7).
+//!
+//! Workers append records behind the critical path. An append is applied after every earlier
+//! append from the same worker, and its [`Durable`] resolves once the records are durable; only
+//! acknowledgements wait for that. Nothing reads the log on the common path: a successor reads a
+//! dead worker's estate, and workers read nodes whose holder is dead.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::sync::oneshot;
+
+use crate::ids::{NodeId, RunId, ScopeId, WorkerId, owner};
+use crate::message::{Branch, BranchId, Report};
+use crate::run::RunInfo;
+use crate::scope::{Continuation, Weight};
+use crate::tree::Node;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Record {
+    /// A run, written by its owner when it starts.
+    Run(Arc<RunInfo>),
+    /// Nodes that a record next to them refers to.
+    Nodes {
+        run: RunId,
+        nodes: Vec<(NodeId, Arc<Node>)>,
+    },
+    /// A branch as it stops at `holder`.
+    Branch {
+        run: RunId,
+        holder: WorkerId,
+        branch: Branch,
+    },
+    /// The branch has left `holder` (or ended there).
+    BranchGone {
+        run: RunId,
+        holder: WorkerId,
+        id: BranchId,
+        hop: u64,
+    },
+    /// A scope opened by its owner; `None` for the run's root scope.
+    Scope {
+        run: RunId,
+        scope: ScopeId,
+        continuation: Option<Continuation>,
+    },
+    /// The scope is over and its continuation recorded.
+    ScopeGone {
+        run: RunId,
+        scope: ScopeId,
+    },
+    End {
+        run: RunId,
+        scope: ScopeId,
+        end: EndRecord,
+    },
+    Report {
+        run: RunId,
+        report: ReportRecord,
+    },
+    /// The run is over: everything about it can go.
+    RunGone(RunId),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndRecord {
+    pub branch: BranchId,
+    pub weight: Weight,
+    pub item: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportRecord {
+    pub branch: BranchId,
+    /// The scope the branch's weight goes back to.
+    pub scope: ScopeId,
+    pub weight: Weight,
+    pub report: Report,
+}
+
+/// Resolves once an append is durable. Dropped if the append failed.
+pub type Durable = oneshot::Receiver<()>;
+
+/// What one worker owned and held in one run.
+#[derive(Debug, Clone, Default)]
+pub struct RunEstate {
+    pub info: Option<Arc<RunInfo>>,
+    /// Reports, if the worker owned the run.
+    pub reports: Vec<ReportRecord>,
+    /// Scopes it opened, with their ends.
+    pub scopes: Vec<ScopeEstate>,
+    /// Branches it held.
+    pub branches: Vec<Branch>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScopeEstate {
+    pub scope: ScopeId,
+    pub continuation: Option<Continuation>,
+    pub ends: Vec<EndRecord>,
+}
+
+#[async_trait]
+pub trait Log: Send + Sync + 'static {
+    /// Appends `records`, applied after every earlier append from this worker.
+    fn append(&self, records: Vec<Record>) -> Durable;
+
+    /// Appends `records` without waiting for them to be durable.
+    fn record(&self, records: Vec<Record>) {
+        drop(self.append(records));
+    }
+
+    async fn node(&self, run: RunId, id: NodeId) -> anyhow::Result<Option<Arc<Node>>>;
+
+    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>>;
+
+    /// Everything `worker` owned or held, per run, for its successor.
+    async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>>;
+}
+
+/// A log in this process's memory: durable for as long as the process lives. It is what
+/// `LocalCluster` uses, which makes worker crashes testable in one process.
+#[derive(Debug, Default)]
+pub struct MemoryLog {
+    runs: Mutex<HashMap<RunId, MemoryRun>>,
+}
+
+#[derive(Debug, Default)]
+struct MemoryRun {
+    info: Option<Arc<RunInfo>>,
+    nodes: HashMap<NodeId, Arc<Node>>,
+    branches: HashMap<(WorkerId, BranchId, u64), Branch>,
+    scopes: HashMap<ScopeId, ScopeEstate>,
+    reports: Vec<ReportRecord>,
+}
+
+impl MemoryLog {
+    pub fn apply(&self, records: Vec<Record>) {
+        let mut runs = self.runs.lock().unwrap();
+        for record in records {
+            match record {
+                Record::Run(info) => {
+                    let id = info.id;
+                    runs.entry(id).or_default().info = Some(info);
+                }
+                Record::Nodes { run, nodes } => runs.entry(run).or_default().nodes.extend(nodes),
+                Record::Branch {
+                    run,
+                    holder,
+                    branch,
+                } => {
+                    let key = (holder, branch.id, branch.hop);
+                    runs.entry(run).or_default().branches.insert(key, branch);
+                }
+                Record::BranchGone {
+                    run,
+                    holder,
+                    id,
+                    hop,
+                } => {
+                    if let Some(run) = runs.get_mut(&run) {
+                        run.branches.remove(&(holder, id, hop));
+                    }
+                }
+                Record::Scope {
+                    run,
+                    scope,
+                    continuation,
+                } => {
+                    let estate = ScopeEstate {
+                        scope,
+                        continuation,
+                        ends: Vec::new(),
+                    };
+                    runs.entry(run).or_default().scopes.insert(scope, estate);
+                }
+                Record::ScopeGone { run, scope } => {
+                    if let Some(run) = runs.get_mut(&run) {
+                        run.scopes.remove(&scope);
+                    }
+                }
+                Record::End { run, scope, end } => {
+                    let run = runs.entry(run).or_default();
+                    if let Some(scope) = run.scopes.get_mut(&scope) {
+                        scope.ends.push(end);
+                    }
+                }
+                Record::Report { run, report } => {
+                    runs.entry(run).or_default().reports.push(report);
+                }
+                Record::RunGone(run) => {
+                    runs.remove(&run);
+                }
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Log for MemoryLog {
+    fn append(&self, records: Vec<Record>) -> Durable {
+        self.apply(records);
+        let (durable, done) = oneshot::channel();
+        let _ = durable.send(());
+        done
+    }
+
+    async fn node(&self, run: RunId, id: NodeId) -> anyhow::Result<Option<Arc<Node>>> {
+        let runs = self.runs.lock().unwrap();
+        Ok(runs.get(&run).and_then(|run| run.nodes.get(&id).cloned()))
+    }
+
+    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>> {
+        let runs = self.runs.lock().unwrap();
+        Ok(runs.get(&run).and_then(|run| run.info.clone()))
+    }
+
+    async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>> {
+        let runs = self.runs.lock().unwrap();
+        let estates = runs.values().map(|run| {
+            let owns_run = run.info.as_ref().is_some_and(|info| info.owner() == worker);
+            RunEstate {
+                info: run.info.clone(),
+                reports: match owns_run {
+                    true => run.reports.clone(),
+                    false => Vec::new(),
+                },
+                scopes: run
+                    .scopes
+                    .values()
+                    .filter(|scope| owner(scope.scope) == worker)
+                    .cloned()
+                    .collect(),
+                branches: run
+                    .branches
+                    .iter()
+                    .filter(|((holder, _, _), _)| *holder == worker)
+                    .map(|(_, branch)| branch.clone())
+                    .collect(),
+            }
+        });
+        Ok(estates
+            .filter(|estate| {
+                !estate.reports.is_empty()
+                    || !estate.scopes.is_empty()
+                    || !estate.branches.is_empty()
+            })
+            .collect())
+    }
+}

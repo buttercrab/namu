@@ -322,27 +322,75 @@ concern, not a workflow construct:
 ## 7. Durability
 
 Durability comes from **lineage**: every value is the output of a known task applied to known
-immutable inputs.
+immutable inputs. A crash loses work in progress, never the run: what was lost is recomputed from
+the last durable point, and duplicates of recomputed work are recognized and dropped.
 
-- **Write-behind**: nodes, scope state and source cursors are persisted to a **durable log**
-  asynchronously, and never block the next step.
-- **Upstream backup**: a sender keeps each handoff until the receiver acknowledges that the
-  state it created from it is persisted. Write-behind is fast, so this window is milliseconds,
-  and it is bounded by credits. A crash therefore loses nothing that is not still held by a
-  live sender or by the log.
-- **Recovery**: when a worker is declared dead (§10.4), senders re-push their unacknowledged
-  handoffs to other workers. Contexts resume from their last persisted node, scopes it owned are
-  restored on a new owner from the log, and sources restart from their last cursor. Only the
-  unpersisted tail is recomputed.
-- **Exactly-once effects**: handoff ids and branch ids are deterministic (run, parent context,
-  op, item index). Receivers drop duplicate handoffs, and scope owners drop duplicate weight
-  returns and collect items. Effects on NAMU state therefore happen once, even though delivery
-  is at-least-once.
+### 7.1 Identity
+
+- Every **branch** has a stable id: the run's root branch, or (scope, item index) for a fan-out
+  child. A branch keeps its id across handoffs, and the branch that opened a scope keeps its id
+  when it continues after the collect.
+- A branch's **hop** counts its handoffs, so each stop of a branch on a worker is a distinct
+  record.
+- **Scope owners drop a second `End` from the same branch, and run owners a second `Report`.**
+  So if recovery executes a branch again, it still counts once: effects on NAMU state are
+  exactly-once, while task execution is at-least-once.
+
+### 7.2 What is logged
+
+The **durable log** (a trait; Redis with persistence first) holds just enough to resume every
+live branch and every open scope. Writes are behind the critical path: nothing waits for them
+except the acknowledgement that releases the sender's copy.
+
+| Record | Written by | When |
+|---|---|---|
+| Run description | the run's owner | when the run starts |
+| Branch (context, resume point, weight, scopes) | the worker holding it | when the branch arrives there |
+| Scope (the branch that opened it, its collect) | the scope's owner | when it fans out |
+| End (branch id, weight, collected item) | the scope's owner | when a branch ends in the scope |
+| Report (branch id, result or failure) | the run's owner | when a branch reports |
+| Nodes | whoever writes a record that refers to them | with that record |
+
+**Nodes are logged only when something durable refers to them.** A record refers to a context.
+The nodes it needs are the ones created since the branch arrived on this worker, and they are
+logged with the record. These are exactly the nodes a handoff ships to the receiver, and older
+ancestors were logged when the branch arrived. So everything a live branch can reach is durable,
+without a log write per step.
+
+### 7.3 Upstream backup
+
+Messages that move responsibility for a branch (`Handoff`, `End`, `Report`) are kept by their
+sender until the receiver acknowledges that the record they produce is durable. The sender then
+deletes its own record of the branch: at every moment, a live branch is recorded on its holder
+or still held by its sender. A fan-out releases the opening branch's record only once the scope
+record is durable and every child has been acknowledged. Acknowledgements are batched and
+asynchronous; the receiver starts on the work immediately.
+
+### 7.4 Recovery
+
+- When a worker's membership expires (§10.4), the orchestrator names **one successor** for it,
+  and every member learns this from its next heartbeat. Exactly one worker adopts, because a scope
+  must have a single owner to add up its weight.
+- Messages addressed to the dead worker go to its successor from then on, and senders re-send
+  everything the dead worker had not acknowledged. Nodes it held are read from the log.
+- The successor **adopts the dead worker's estate** from the log:
+  - its runs, with their reports;
+  - its scopes, with their ends;
+  - the branches it held. Those branches run again from their recorded point.
+- Work that ran twice is dropped by branch id (§7.1). A scope whose opening branch is run again is
+  opened again under a new id, and branches that end in the abandoned scope are dropped. The
+  result is the same as an uninterrupted run; only work done since the last durable point
+  is repeated.
+- If the successor dies too, its successor adopts both estates.
+
+### 7.5 Checkpoints and side effects
+
 - **Checkpoint tasks**: tasks with external side effects (writes to DBs or APIs) are marked as
-  checkpoints. Their outputs are persisted synchronously before anything downstream runs, so they
-  are never re-executed during recovery.
+  checkpoints. After one runs, its branch is recorded again, past the task, and continues only
+  once that record is durable. Recovery therefore never runs it again (a crash during the task
+  itself still repeats it).
 - Task execution is **at-least-once**. Each call gets a deterministic **idempotency key** (run id +
-  context path + op id) so side-effecting tasks can deduplicate.
+  branch id + op) so side-effecting tasks can deduplicate.
 - **Long runs stay small.** With liveness-based placement (§6.2), dead nodes are freed, in the log
   as well as in memory. The persisted state is then the live frontier of the run, not its history,
   so a run's footprint and its recovery time do not grow with its age.
@@ -424,8 +472,8 @@ it as on any number of machines, and a conformance suite checks this for every e
   transfers ownership of its scopes, flushes its nodes to the log, then deregisters. Nodes it
   created stay readable from the log.
 - **Crash**: workers hold a heartbeat lease with the orchestrator. When it expires, the worker is
-  declared dead, the routing table moves to a new version without it, and recovery (§7) starts.
-  A worker that comes back after being declared dead rejoins as a new member.
+  no longer a member, the orchestrator names its successor, and recovery (§7.4) starts. A worker
+  that comes back after being declared dead rejoins as a new member.
 
 So capacity can be added to a slow run while it runs, and removed when it is done, without
 stopping the run.
@@ -460,9 +508,8 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 
 ## 14. Gap vs. current implementation
 
-"Today" reflects `namu-engine` (one engine; `LocalCluster` runs it in-process) and the
-proof-of-concept worker (`poc.md`), which still runs the distributed data plane until it moves onto
-the engine. ✅ marks rows that are done.
+"Today" reflects `namu-engine`, which runs in-process (`LocalCluster`) and across machines
+(`namu-worker` on the TCP mesh, see `poc.md`). ✅ marks rows that are done.
 
 | Area | Today | Target |
 |------|-------|--------|
@@ -476,13 +523,13 @@ the engine. ✅ marks rows that are done.
 | Literals | ✅ JSON-encoded; string literals are `String` | Typed IR values |
 | Values | JSON at every boundary | Codec abstraction plus types, zero-copy locally |
 | Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
-| Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait; in-process transport (`LocalCluster`) is the reference, checked on one worker vs three in every test | Network transport; the worker binary on the engine (§10) |
-| Distributed path | ✅ PoC worker: worker-local kernel; every handoff goes through Redis streams (~140 µs) | Peer-to-peer handoffs; Redis only as cache and durable log (§10) |
-| Routing | Round robin among the workers that serve a task | Load-aware, locality-aware placement; credits for sources (§10.3) |
-| Streams | PoC worker: stream task output is fanned out once complete. Engine: none yet | Pipelined per item, backpressure, resumable cursors (§6.5) |
+| Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
+| Distributed path | ✅ Peer-to-peer TCP mesh; the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
+| Routing | Round robin among the workers that serve a task; a branch waits for a server to join | Load-aware, locality-aware placement; credits for sources (§10.3) |
+| Streams | None | Pipelined per item, backpressure, resumable cursors (§6.5) |
 | Batch | Not supported | Runtime batching across branches and runs, `batch_size` / `max_wait` (§6.6) |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |
-| Durability | ✅ PoC worker: atomic commits through Redis, lease reclaim, poison items, `checkpoint` tasks. Engine: none yet | Upstream backup + write-behind log; idempotency keys for tasks (§7) |
-| Fan-in termination | ✅ Weight throwing with scope owners (engine). PoC worker: `live` counters in Redis | |
-| Membership | Static: workers registered at start | Join, drain and crash handling while a run is in progress (§10.4) |
+| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks (§7) | Idempotency keys for tasks; GC of the log for long runs |
+| Fan-in termination | ✅ Weight throwing with scope owners | |
+| Membership | ✅ Join (register + heartbeats); a worker whose heartbeats stop is replaced by a successor (§7.4) | Drain (§10.4) |

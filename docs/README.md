@@ -7,7 +7,7 @@ Welcome to the NAMU docs. Start with Getting Started for a runnable local stack,
 
 ## Design
 - `design.md` - agreed target design: goals, execution model, value tree, durability.
-- `poc.md` - the distribution proof of concept: what it shows, measurements, known gaps.
+- `poc.md` - the distributed runtime today: what it shows, measurements, known gaps.
 
 ## Concepts
 - `concepts/ir.md` - the JSON IR produced by macros and consumed by the engine.

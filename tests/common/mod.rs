@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use namu::prelude::*;
 use namu_core::ir::Workflow;
-use namu_engine::{FnTasks, LocalCluster, RunOutcome};
+use namu_engine::{FnTasks, LocalCluster, RunOutcome, Tasks};
 use serde_json::Value;
 
 #[task]
@@ -91,15 +91,25 @@ fn ok<T>(value: T) -> Result<T, String> {
     Ok(value)
 }
 
-/// Runs `workflow` on a single worker and on three, checks that both give the same outcome, and
-/// returns it with results sorted.
+/// Runs `workflow` on one worker, on three, and on three talking over TCP, checks that all give
+/// the same outcome, and returns it with results sorted.
 pub async fn run(workflow: Workflow) -> RunOutcome {
-    let tasks = Arc::new(tasks());
+    let tasks: Arc<dyn Tasks> = Arc::new(tasks());
     let one = LocalCluster::uniform(1, tasks.clone());
-    let three = LocalCluster::uniform(3, tasks);
+    let three = LocalCluster::uniform(3, tasks.clone());
+    let tcp = LocalCluster::tcp(vec![tasks; 3])
+        .await
+        .expect("bind localhost");
     let alone = sorted(one.run(workflow.clone()).await.expect("run on one worker"));
-    let spread = sorted(three.run(workflow).await.expect("run on three workers"));
+    let spread = sorted(
+        three
+            .run(workflow.clone())
+            .await
+            .expect("run on three workers"),
+    );
+    let networked = sorted(tcp.run(workflow).await.expect("run over TCP"));
     assert_eq!(alone, spread, "one worker and three workers disagree");
+    assert_eq!(alone, networked, "in-process and TCP workers disagree");
     alone
 }
 
@@ -110,7 +120,12 @@ pub async fn results(workflow: Workflow) -> Vec<Value> {
     outcome.results
 }
 
-fn sorted(mut outcome: RunOutcome) -> RunOutcome {
+/// What a run produced, regardless of which workers did the work.
+fn sorted(outcome: RunOutcome) -> RunOutcome {
+    let mut outcome = RunOutcome {
+        workers: Default::default(),
+        ..outcome
+    };
     outcome.results.sort_by_key(ToString::to_string);
     outcome.failures.sort();
     outcome

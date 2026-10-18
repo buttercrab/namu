@@ -3,6 +3,9 @@
 # workers on this machine (macOS) join them. The same .wasm artifacts run on both platforms;
 # native tasks only run on the platform they were built for.
 #
+# Workers talk to each other directly, so every member advertises an address the others can
+# reach: this machine's LAN address (HOST_IP, detected if unset) and a fixed port.
+#
 #   ./scripts/poc-cross.sh
 #   HOST_WORKERS="native" WORKFLOW=bench_handoff RUNS=5 ./scripts/poc-cross.sh
 #
@@ -12,6 +15,7 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
+export HOST_IP=${HOST_IP:-$(ipconfig getifaddr en0 2>/dev/null || hostname -I | cut -d' ' -f1)}
 export REDIS_PORT=${REDIS_PORT:-6390}
 export ORCH_PORT=${ORCH_PORT:-8090}
 HOST_WORKERS=${HOST_WORKERS:-"wasm,native"}
@@ -45,7 +49,9 @@ until curl -sf "$NAMU_ORCH_URL/healthz" >/dev/null; do sleep 0.2; done
 i=0
 for runtimes in $HOST_WORKERS; do
   i=$((i + 1))
+  port=$((7110 + i))
   WORKER_ID="host-$i" NAMU_RUNTIMES="$runtimes" ARTIFACT_CACHE="$POC_DIR/cache" \
+    NAMU_MESH_ADDR="0.0.0.0:$port" NAMU_ADVERTISE_ADDR="$HOST_IP:$port" \
     "$BIN/namu-worker" >"$POC_DIR/logs/host-$i.log" 2>&1 &
   PIDS+=($!)
 done
@@ -54,15 +60,15 @@ done
   --workflows-dir "$POC_DIR/workflows" --out-dir "$POC_DIR/dist" >"$POC_DIR/logs/build.log" 2>&1
 "$BIN/namu" publish --out-dir "$POC_DIR/dist" >"$POC_DIR/logs/publish.log"
 
-# Wait until every worker has registered.
-expected=$((i + 2))
+# Wait until every worker has registered (the orchestrator is listed too).
+expected=$((i + 3))
 until [[ $(curl -sf "$NAMU_ORCH_URL/workers" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["workers"]))') -ge $expected ]]; do
   sleep 0.2
 done
 curl -sf "$NAMU_ORCH_URL/workers" | python3 -c '
 import json, sys
 for w in json.load(sys.stdin)["workers"]:
-    print("  %-22s %-15s %s" % (w["worker_id"], w["platform"], ",".join(sorted(w["runtimes"]))))'
+    print("  %-3s %-13s %-21s %-15s %s" % (w["id"], w["name"], w["addr"], w["platform"], ",".join(sorted(w["runtimes"]))))'
 
 for run in $(seq 1 "$RUNS"); do
   set +e

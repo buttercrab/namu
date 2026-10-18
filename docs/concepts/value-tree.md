@@ -24,12 +24,3 @@ parallel branches share what they have in common, without copying it and without
   scope's weight when they end, and the scope is over when all of it is back.
 - Which collect closes which fan-out is found from the IR before the run, so a scope with no
   items, or whose items were all dropped, collects `[]`.
-
-## In the proof-of-concept worker
-- Nodes live in Redis. A worker writes the nodes it creates behind the critical path, and flushes
-  before handing work to another worker.
-- Nodes produced by another worker are fetched once and cached. They are immutable, so the cache
-  never needs invalidating.
-- Work items only reference a context; values are always read through the tree.
-- Fan-in counts open branches per scope (`live`). The branch that brings it to zero continues the
-  workflow with the collected list.

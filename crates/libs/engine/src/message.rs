@@ -1,19 +1,33 @@
 //! Messages between workers. They are the only traffic on the per-step path.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use namu_core::OpId;
+use namu_core::ir::Workflow;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
+use crate::run::{RunInfo, RunOutcome, WorkerStats};
 use crate::scope::Weight;
 use crate::tree::Node;
+
+/// A branch's identity, stable across handoffs and recovery: the scope it was created in and its
+/// item index there. The run's root branch is item 0 of the root scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct BranchId {
+    pub scope: ScopeId,
+    pub index: u64,
+}
 
 /// One execution path through a workflow, at some point of its progress.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Branch {
+    pub id: BranchId,
+    /// How many times the branch has moved; each stop on a worker is its own log record.
+    pub hop: u64,
     pub ctx: NodeId,
     pub resume: Resume,
     /// This branch's share of its innermost scope.
@@ -48,21 +62,44 @@ pub enum Report {
     Failure(String),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Marks a message its sender keeps until the receiver acknowledges it (design §7.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Delivery {
+    pub from: WorkerId,
+    pub seq: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
-    /// Continue `branch` on the receiving worker. `node` is the branch's context node when the
-    /// sender holds it, which saves the receiver a fetch.
+    /// Start a run owned by the receiving worker; `Finished` goes to `reply_to` when it is over.
+    Start {
+        run: RunId,
+        workflow: Workflow,
+        task_versions: BTreeMap<String, String>,
+        reply_to: WorkerId,
+    },
+    Finished {
+        run: RunId,
+        outcome: RunOutcome,
+    },
+
+    /// Continue `branch` on the receiving worker. `nodes` are the nodes the sender created for
+    /// this branch since it arrived there, innermost first: the receiver cannot hold them yet,
+    /// and is likely to read them.
     Handoff {
         run: RunId,
         branch: Branch,
-        node: Option<Arc<Node>>,
+        nodes: Vec<(NodeId, Arc<Node>)>,
+        delivery: Delivery,
     },
-    /// A branch of `scope` ended and returns its weight, with its item if it reached the collect.
+    /// `branch` ended in `scope` and returns its weight, with its item if it reached the collect.
     End {
         run: RunId,
         scope: ScopeId,
+        branch: BranchId,
         weight: Weight,
         item: Option<Value>,
+        delivery: Delivery,
     },
     /// A branch's report to the run's owner. It carries the branch's weight in `scope`, which the
     /// owner returns once the report is recorded, so the run cannot finish before its reports
@@ -70,20 +107,60 @@ pub enum Message {
     Report {
         run: RunId,
         scope: ScopeId,
+        branch: BranchId,
         weight: Weight,
         report: Report,
+        delivery: Delivery,
     },
+    /// The receiver has made what these deliveries produced durable; the sender may let go.
+    Ack {
+        seqs: Vec<u64>,
+    },
+
     /// Asks the node's owner for a node.
-    Fetch {
+    FetchNode {
         run: RunId,
-        node: NodeId,
-        request: u64,
+        id: NodeId,
         reply_to: WorkerId,
     },
-    Fetched {
-        request: u64,
+    Node {
+        run: RunId,
+        id: NodeId,
         node: Option<Arc<Node>>,
     },
-    /// The run is over; drop its state.
-    Forget { run: RunId },
+    /// Asks the run's owner how the run is described, on first contact with the run.
+    FetchRun {
+        run: RunId,
+        reply_to: WorkerId,
+    },
+    Run {
+        info: Arc<RunInfo>,
+    },
+    /// The answer to `FetchRun` for a run that is over: its late messages are dropped.
+    RunOver {
+        run: RunId,
+    },
+
+    /// The run is over: drop its state and tell the owner what you did for it.
+    Forget {
+        run: RunId,
+        reply_to: WorkerId,
+    },
+    Forgotten {
+        run: RunId,
+        worker: WorkerId,
+        stats: WorkerStats,
+    },
+}
+
+impl Message {
+    /// The delivery to acknowledge, for messages their sender keeps until acknowledged.
+    pub fn delivery(&self) -> Option<Delivery> {
+        match self {
+            Message::Handoff { delivery, .. }
+            | Message::End { delivery, .. }
+            | Message::Report { delivery, .. } => Some(*delivery),
+            _ => None,
+        }
+    }
 }

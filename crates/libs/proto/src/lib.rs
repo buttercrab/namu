@@ -135,16 +135,6 @@ pub struct RunCreateResponse {
     pub run_id: Uuid,
 }
 
-/// Everything a worker needs to execute a run, written once by the orchestrator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunMeta {
-    pub workflow_id: String,
-    pub version: String,
-    pub ir: JsonValue,
-    pub task_versions: HashMap<String, String>,
-    pub created_at_ms: u64,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunStatusResponse {
     /// `running`, `succeeded`, or `partial_failed` (some branches failed).
@@ -158,9 +148,13 @@ pub struct RunStatusResponse {
     pub remote_node_fetches_by_worker: BTreeMap<String, u64>,
 }
 
+/// A worker joining the cluster.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerRegisterRequest {
-    pub worker_id: String,
+    /// A readable name, e.g. `worker-1`. Not necessarily unique.
+    pub name: String,
+    /// Where the worker listens for other workers (`host:port`).
+    pub addr: String,
     /// Runtime keys this worker serves, e.g. `wasm`, `native:macos-aarch64`.
     pub runtimes: Vec<String>,
     pub platform: String,
@@ -168,72 +162,58 @@ pub struct WorkerRegisterRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerRegisterResponse {
-    /// Unique per registration; workers use it to mint globally unique context ids.
-    pub worker_index: u64,
+    /// Unique per registration; the worker's identity in the mesh.
+    pub worker_id: u64,
+    pub membership: Membership,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkerInfo {
-    pub worker_id: String,
-    pub worker_index: u64,
+/// A participant in the mesh. Id 0 is the control plane (the orchestrator), which serves no
+/// runtimes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Member {
+    pub id: u64,
+    pub name: String,
+    pub addr: String,
     pub runtimes: Vec<String>,
     pub platform: String,
 }
 
-/// A unit of work handed between workers. It references a value-tree node; values themselves
-/// are read through the tree, never copied into the message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorkItem {
-    /// Continue driving `ctx` from `op` (arrived from `pred`).
-    Continue {
-        run_id: Uuid,
-        ctx: u64,
-        op: usize,
-        pred: Option<usize>,
-    },
-    /// Execute the call at `op` in `ctx` (already prepared), then continue.
-    Call { run_id: Uuid, ctx: u64, op: usize },
-    /// Every branch of the fan-out scope `scope` has ended and at least one reached the collect
-    /// at `op`: build the collected list and continue after the collect.
-    CollectReady { run_id: Uuid, scope: u64, op: usize },
+/// The mesh as the control plane sees it. Registered workers renew their membership with a
+/// heartbeat, which returns this. A worker whose heartbeats stop is no longer a member: its
+/// successor takes over its work (design §7.4), and if it comes back, it registers anew.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Membership {
+    pub members: Vec<Member>,
+    /// Dead worker -> the worker that took over its work.
+    pub successors: BTreeMap<u64, u64>,
 }
 
-impl WorkItem {
-    pub fn run_id(&self) -> Uuid {
-        match self {
-            WorkItem::Continue { run_id, .. }
-            | WorkItem::Call { run_id, .. }
-            | WorkItem::CollectReady { run_id, .. } => *run_id,
-        }
-    }
-}
+/// How often workers send heartbeats, and how long membership lasts without one.
+pub const HEARTBEAT_INTERVAL_MS: u64 = 1_000;
+pub const MEMBERSHIP_TTL_MS: u64 = 5_000;
 
-/// An immutable value-tree node as stored in Redis. Once written it never changes, including
-/// its parent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeRecord {
-    pub parent: Option<u64>,
-    /// Enclosing fan-out scopes, innermost last. Each entry is the id of the context that fanned
-    /// out.
-    pub scopes: Vec<u64>,
-    pub values: Vec<(usize, JsonValue)>,
-}
-
-/// Redis key layout shared by the orchestrator and workers.
+/// Redis key layout of the control plane.
 pub mod keys {
     use uuid::Uuid;
 
     pub const WORKER_SEQ: &str = "namu:worker_seq";
-    pub const WORKERS: &str = "namu:workers";
-    /// Work any worker can pick up (fan-out branches, continuations).
-    pub const QUEUE_ANY: &str = "namu:q:any";
-    pub const CONSUMER_GROUP: &str = "namu:workers";
+    /// Hash: worker id -> name, kept after the worker leaves so run stats stay readable.
+    pub const WORKER_NAMES: &str = "namu:worker_names";
+    /// Round-robin cursor for choosing the owner of a new run.
+    pub const OWNER_CURSOR: &str = "namu:owner_cursor";
+    /// Set: workers believed alive. One that is here but has no member record has died.
+    pub const ALIVE: &str = "namu:alive";
+    /// Hash: dead worker -> the worker that took over its work.
+    pub const SUCCESSORS: &str = "namu:successors";
+    /// Set: runs that have not finished.
+    pub const RUNNING: &str = "namu:running";
 
-    /// Work that needs a specific runtime key (see `TaskManifest::runtime_key`).
-    pub fn queue_runtime(runtime_key: &str) -> String {
-        format!("namu:q:rt:{runtime_key}")
+    /// A live member's record; expires unless renewed by heartbeats.
+    pub fn member(id: u64) -> String {
+        format!("namu:member:{id}")
     }
+
+    pub const MEMBER_PATTERN: &str = "namu:member:*";
 
     pub fn task(task_id: &str, version: &str) -> String {
         format!("namu:task:{task_id}:{version}")
@@ -243,11 +223,7 @@ pub mod keys {
         format!("namu:workflow:{id}:{version}")
     }
 
-    pub fn run_meta(run: Uuid) -> String {
-        format!("namu:run:{run}:meta")
-    }
-
-    /// Hash: status, live, failures_count, finished_at_ms.
+    /// Hash: status, owner, workflow_id, version, created_at_ms, finished_at_ms.
     pub fn run_state(run: Uuid) -> String {
         format!("namu:run:{run}:state")
     }
@@ -260,60 +236,20 @@ pub mod keys {
         format!("namu:run:{run}:failures")
     }
 
+    /// Hash: worker name -> task calls.
     pub fn run_calls(run: Uuid) -> String {
         format!("namu:run:{run}:calls")
     }
 
+    /// Hash: worker name -> nodes fetched from other workers.
     pub fn run_remote_fetches(run: Uuid) -> String {
         format!("namu:run:{run}:remote_fetches")
     }
-
-    /// Set of work items already committed for a run (makes redelivery harmless).
-    pub fn run_done(run: Uuid) -> String {
-        format!("namu:run:{run}:done")
-    }
-
-    /// Prefix of `scope` keys, for the commit script.
-    pub fn scope_prefix(run: Uuid) -> String {
-        format!("namu:run:{run}:scope:")
-    }
-
-    pub fn node(run: Uuid, ctx: u64) -> String {
-        format!("namu:run:{run}:node:{ctx}")
-    }
-
-    /// Hash for a fan-out scope: `live` (open branches) and `collect_op`.
-    pub fn scope(run: Uuid, scope_ctx: u64) -> String {
-        format!("namu:run:{run}:scope:{scope_ctx}")
-    }
-
-    /// List of values collected for a fan-out scope.
-    pub fn scope_items(run: Uuid, scope_ctx: u64) -> String {
-        format!("namu:run:{run}:scope:{scope_ctx}:items")
-    }
 }
-
-/// Context ids are globally unique without coordination: the high bits hold the registering
-/// worker's index, the low bits a per-worker counter. Index 0 is the orchestrator (root nodes).
-pub const CONTEXT_COUNTER_BITS: u32 = 40;
-
-pub fn context_id(worker_index: u64, counter: u64) -> u64 {
-    (worker_index << CONTEXT_COUNTER_BITS) | (counter & ((1 << CONTEXT_COUNTER_BITS) - 1))
-}
-
-/// Context id of a run's root node (minted by the orchestrator).
-pub const ROOT_CONTEXT: u64 = 0;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn context_ids_are_unique_per_worker() {
-        assert_eq!(context_id(0, 0), ROOT_CONTEXT);
-        assert_ne!(context_id(1, 5), context_id(2, 5));
-        assert_eq!(context_id(3, 7) >> CONTEXT_COUNTER_BITS, 3);
-    }
 
     #[test]
     fn native_tasks_are_placed_by_platform() {
@@ -328,18 +264,5 @@ mod tests {
         // Defaults keep manifests short.
         assert_eq!(manifest.abi_version, "2");
         assert_eq!(manifest.trust, TaskTrust::Trusted);
-    }
-
-    #[test]
-    fn work_items_round_trip() {
-        let item = WorkItem::Call {
-            run_id: Uuid::nil(),
-            ctx: 42,
-            op: 7,
-        };
-        let json = serde_json::to_string(&item).unwrap();
-        assert!(json.contains(r#""kind":"call""#));
-        let back: WorkItem = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, WorkItem::Call { ctx: 42, op: 7, .. }));
     }
 }

@@ -8,6 +8,7 @@
 mod cluster;
 pub mod ids;
 pub mod kernel;
+pub mod log;
 pub mod message;
 pub mod routes;
 pub mod run;
@@ -18,6 +19,6 @@ pub mod tree;
 mod worker;
 
 pub use cluster::LocalCluster;
-pub use run::{RunOutcome, RunSpec};
-pub use tasks::{FnTasks, Tasks};
+pub use run::{RunInfo, RunOutcome, RunSpec, WorkerStats};
+pub use tasks::{FnTasks, TaskRef, Tasks};
 pub use worker::Worker;

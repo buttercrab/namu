@@ -3,15 +3,11 @@
 pub mod native;
 pub mod wasm;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::Context;
 use namu_proto::{TaskManifest, TaskRuntime};
-use serde_json::Value as JsonValue;
 use sha2::Digest;
-use tokio::sync::Mutex;
 
 pub enum Runner {
     Wasm(wasm::WasmTask),
@@ -27,13 +23,13 @@ impl Runner {
     }
 }
 
-/// Downloads, verifies and loads task artifacts, once per task version.
+/// Downloads, verifies and loads task artifacts. Artifacts are cached on disk, so a task version
+/// is downloaded once per machine.
 pub struct Runtimes {
     http: reqwest::Client,
     orchestrator_url: String,
     cache_dir: PathBuf,
     engine: wasmtime::Engine,
-    loaded: Mutex<HashMap<(String, String), Arc<Runner>>>,
 }
 
 impl Runtimes {
@@ -43,29 +39,20 @@ impl Runtimes {
             orchestrator_url,
             cache_dir,
             engine: wasmtime::Engine::default(),
-            loaded: Mutex::new(HashMap::new()),
         }
     }
 
-    pub async fn runner(&self, manifest: &TaskManifest) -> anyhow::Result<Arc<Runner>> {
-        let key = (manifest.task_id.clone(), manifest.version.clone());
-        let mut loaded = self.loaded.lock().await;
-        if let Some(runner) = loaded.get(&key) {
-            return Ok(runner.clone());
-        }
+    pub async fn load(&self, manifest: &TaskManifest) -> anyhow::Result<Runner> {
         let path = self.fetch_artifact(manifest).await?;
         let engine = self.engine.clone();
         let runtime = manifest.runtime;
-        let runner = tokio::task::spawn_blocking(move || -> anyhow::Result<Runner> {
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Runner> {
             Ok(match runtime {
                 TaskRuntime::Wasm => Runner::Wasm(wasm::WasmTask::load(&engine, &path)?),
                 TaskRuntime::Native => Runner::Native(native::NativeTask::load(&path)?),
             })
         })
-        .await??;
-        let runner = Arc::new(runner);
-        loaded.insert(key, runner.clone());
-        Ok(runner)
+        .await?
     }
 
     async fn fetch_artifact(&self, manifest: &TaskManifest) -> anyhow::Result<PathBuf> {
@@ -153,36 +140,9 @@ pub fn safe_segment(raw: &str) -> anyhow::Result<&str> {
     }
 }
 
-/// Task input encoding: no arguments is `null`, one is the value itself, several are an array.
-pub fn encode_input(arity: usize, mut inputs: Vec<JsonValue>) -> anyhow::Result<String> {
-    if inputs.len() != arity {
-        anyhow::bail!(
-            "input arity mismatch: expected {arity}, got {}",
-            inputs.len()
-        );
-    }
-    let value = match arity {
-        0 => JsonValue::Null,
-        1 => inputs.pop().unwrap_or(JsonValue::Null),
-        _ => JsonValue::Array(inputs),
-    };
-    Ok(serde_json::to_string(&value)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn inputs_follow_the_arity_convention() {
-        assert_eq!(encode_input(0, vec![]).unwrap(), "null");
-        assert_eq!(encode_input(1, vec![JsonValue::from(3)]).unwrap(), "3");
-        assert_eq!(
-            encode_input(2, vec![JsonValue::from(1), JsonValue::from("a")]).unwrap(),
-            r#"[1,"a"]"#
-        );
-        assert!(encode_input(2, vec![JsonValue::from(1)]).is_err());
-    }
 
     #[test]
     fn ids_cannot_escape_the_cache() {

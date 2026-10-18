@@ -1,6 +1,16 @@
 # Cross-platform proof of concept: Redis, the orchestrator and two Linux workers in containers.
-# Workers on the host (e.g. macOS, with native tasks) join through the published ports.
-#   docker compose -f dev/docker-compose.poc.yml up --build -d
+# Workers on the host (e.g. macOS, with native tasks) join the same mesh.
+#
+# The mesh needs every member reachable by every other, from inside and outside Docker, so each
+# container publishes a fixed mesh port and advertises it at HOST_IP (the host's LAN address).
+# scripts/poc-cross.sh sets HOST_IP.
+#   HOST_IP=192.168.1.10 docker compose -f dev/docker-compose.poc.yml up --build -d
+x-worker: &worker
+  image: namu-poc
+  command: ["namu-worker"]
+  depends_on:
+    - master
+
 services:
   redis:
     image: redis:7-alpine
@@ -18,20 +28,34 @@ services:
       REDIS_URL: redis://redis:6379/
       BIND_ADDR: 0.0.0.0:8080
       ARTIFACTS_DIR: /data/artifacts
+      NAMU_MESH_ADDR: 0.0.0.0:7100
+      NAMU_ADVERTISE_ADDR: ${HOST_IP:?set HOST_IP}:7100
     ports:
       - "${ORCH_PORT:-8090}:8080"
+      - "7100:7100"
     depends_on:
       - redis
 
-  linux-worker:
-    image: namu-poc
-    command: ["namu-worker"]
+  linux-worker-1:
+    <<: *worker
     environment:
-      REDIS_URL: redis://redis:6379/
+      WORKER_ID: linux-1
       NAMU_ORCH_URL: http://master:8080
       NAMU_RUNTIMES: wasm
       ARTIFACT_CACHE: /data/cache
-    deploy:
-      replicas: 2
-    depends_on:
-      - master
+      NAMU_MESH_ADDR: 0.0.0.0:7101
+      NAMU_ADVERTISE_ADDR: ${HOST_IP:?set HOST_IP}:7101
+    ports:
+      - "7101:7101"
+
+  linux-worker-2:
+    <<: *worker
+    environment:
+      WORKER_ID: linux-2
+      NAMU_ORCH_URL: http://master:8080
+      NAMU_RUNTIMES: wasm
+      ARTIFACT_CACHE: /data/cache
+      NAMU_MESH_ADDR: 0.0.0.0:7102
+      NAMU_ADVERTISE_ADDR: ${HOST_IP:?set HOST_IP}:7102
+    ports:
+      - "7102:7102"

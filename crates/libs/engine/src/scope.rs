@@ -5,14 +5,19 @@
 //! when it ends, together with its collected item if it reached the collect. The scope is over
 //! once the owner holds the full weight again. Creating branches never needs a message to the
 //! owner, so no message ordering between workers can make a scope end early.
+//!
+//! Recovery can run a branch twice (design §7). The owner counts each branch once: a second end of
+//! the same branch is dropped.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use namu_core::OpId;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::oneshot;
 
 use crate::ids::{NodeId, ScopeId};
+use crate::message::BranchId;
 use crate::run::RunOutcome;
 
 pub type Weight = u64;
@@ -35,23 +40,33 @@ pub fn split(weight: Weight, n: usize) -> impl Iterator<Item = Weight> {
 /// A scope, held by its owner.
 pub struct Scope {
     returned: Weight,
-    items: Vec<Value>,
+    /// Collected items, by the branch that brought them.
+    items: HashMap<BranchId, Value>,
+    ended: HashSet<BranchId>,
     pub then: Then,
 }
 
 /// What happens when a scope is over.
 pub enum Then {
     /// The run's root scope: the run is over.
-    Finish {
-        outcome: RunOutcome,
-        done: oneshot::Sender<RunOutcome>,
-    },
+    Finish(Box<Finish>),
     /// A fan-out scope: the branch that fanned out continues.
     Continue(Continuation),
 }
 
+/// The run's outcome as its owner collects it.
+pub struct Finish {
+    pub outcome: RunOutcome,
+    /// Branches whose report is recorded.
+    pub reported: HashSet<BranchId>,
+}
+
 /// The branch that opened a fan-out scope, suspended until the scope is over.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Continuation {
+    pub branch: BranchId,
+    /// Its hop when it fanned out; it continues as the next hop.
+    pub hop: u64,
     /// The context it fanned out from.
     pub ctx: NodeId,
     /// Its weight in the enclosing scope.
@@ -62,31 +77,67 @@ pub struct Continuation {
     pub collect: Option<OpId>,
 }
 
+/// How a branch's end changed its scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    /// The branch had ended before; nothing changed.
+    Again,
+    Open,
+    Over,
+}
+
 impl Scope {
     pub fn new(then: Then) -> Self {
         Self {
             returned: 0,
-            items: Vec::new(),
+            items: HashMap::new(),
+            ended: HashSet::new(),
             then,
         }
     }
 
-    /// Takes back a branch's weight and collected item. Returns whether the scope is over.
-    pub fn end(&mut self, weight: Weight, item: Option<Value>) -> bool {
+    /// Takes back a branch's weight and collected item.
+    pub fn end(&mut self, branch: BranchId, weight: Weight, item: Option<Value>) -> Ended {
+        if !self.ended.insert(branch) {
+            return Ended::Again;
+        }
         self.returned += weight;
         assert!(self.returned <= FULL, "scope returned more than its weight");
-        self.items.extend(item);
-        self.returned == FULL
+        if let Some(item) = item {
+            self.items.insert(branch, item);
+        }
+        match self.returned == FULL {
+            true => Ended::Over,
+            false => Ended::Open,
+        }
     }
 
+    pub fn has_ended(&self, branch: BranchId) -> bool {
+        self.ended.contains(&branch)
+    }
+
+    /// The collected items, in branch order, and what happens next.
     pub fn into_parts(self) -> (Vec<Value>, Then) {
-        (self.items, self.then)
+        let mut items: Vec<_> = self.items.into_iter().collect();
+        items.sort_unstable_by_key(|(branch, _)| *branch);
+        (items.into_iter().map(|(_, item)| item).collect(), self.then)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn branch(index: u64) -> BranchId {
+        BranchId { scope: 1, index }
+    }
+
+    fn finish() -> Then {
+        Then::Finish(Box::new(Finish {
+            outcome: RunOutcome::default(),
+            reported: HashSet::new(),
+        }))
+    }
 
     #[test]
     fn shares_sum_to_the_whole() {
@@ -100,16 +151,28 @@ mod tests {
 
     #[test]
     fn a_scope_ends_when_all_weight_is_back() {
-        let (done, _) = oneshot::channel();
-        let mut scope = Scope::new(Then::Finish {
-            outcome: RunOutcome::default(),
-            done,
-        });
+        let mut scope = Scope::new(finish());
         let mut shares = split(FULL, 3);
-        assert!(!scope.end(shares.next().unwrap(), Some(Value::from(1))));
-        assert!(!scope.end(shares.next().unwrap(), None));
-        assert!(scope.end(shares.next().unwrap(), Some(Value::from(3))));
+        let ends = [
+            scope.end(branch(2), shares.next().unwrap(), Some(Value::from(3))),
+            scope.end(branch(1), shares.next().unwrap(), None),
+            scope.end(branch(0), shares.next().unwrap(), Some(Value::from(1))),
+        ];
+        assert_eq!(ends, [Ended::Open, Ended::Open, Ended::Over]);
         let (items, _) = scope.into_parts();
         assert_eq!(items, vec![Value::from(1), Value::from(3)]);
+    }
+
+    #[test]
+    fn a_branch_counts_once() {
+        let mut scope = Scope::new(finish());
+        let mut shares = split(FULL, 2);
+        let share = shares.next().unwrap();
+        assert_eq!(scope.end(branch(0), share, None), Ended::Open);
+        assert_eq!(scope.end(branch(0), share, None), Ended::Again);
+        assert_eq!(
+            scope.end(branch(1), shares.next().unwrap(), None),
+            Ended::Over
+        );
     }
 }

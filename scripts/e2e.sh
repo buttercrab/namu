@@ -9,7 +9,7 @@ cd "$ROOT_DIR"
 check() {
   local workflow=$1 expect=$2
   echo "== $workflow"
-  env ${EXTRA_ENV:-} POC_DIR="$ROOT_DIR/data/e2e/$workflow" WORKFLOW="$workflow" RUNS=2 \
+  POC_DIR="$ROOT_DIR/data/e2e/$workflow" WORKFLOW="$workflow" RUNS=2 \
     ./scripts/poc-local.sh | grep -E "^(run|worker)"
   python3 - "$ROOT_DIR/data/e2e/$workflow/run-2.json" "$expect" <<'PY'
 import json, sys
@@ -32,15 +32,14 @@ PY
 check doc_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 check nested_stats '{"status": "succeeded", "failures": 0, "result": 30750}'
 check doc_stats_partial '{"status": "partial_failed", "failures": 14, "docs": 34}'
-# Tasks that crash every attempt are retried, then their branches fail.
-EXTRA_ENV="NAMU_LEASE_MS=1000" check doc_stats_poison \
-  '{"status": "partial_failed", "failures": 14, "docs": 34}'
+# Tasks that crash (trap) fail their branch; the run carries on without it.
+check doc_stats_poison '{"status": "partial_failed", "failures": 14, "docs": 34}'
 
-# Recovery: kill -9 a worker in the middle of a run; the run must still produce the result of an
-# uninterrupted run.
+# Recovery: kill -9 a worker in the middle of a run. Once its membership expires, its successor
+# takes over from the log, and the run must produce the result of an uninterrupted run.
 echo "== doc_stats_slow with a worker killed mid-run"
 crash_dir="$ROOT_DIR/data/e2e/crash"
-KEEP=1 POC_DIR="$crash_dir" NAMU_LEASE_MS=2000 NAMU_CONCURRENCY=2 WORKFLOW=doc_stats_slow \
+KEEP=1 POC_DIR="$crash_dir" NAMU_TASK_SLOTS=2 WORKFLOW=doc_stats_slow \
   ./scripts/poc-local.sh >"$crash_dir.log" 2>&1
 read -r -a pids <<<"$(sed -n 's/^left running (pids: \(.*\))$/\1/p' "$crash_dir.log")"
 teardown() {
