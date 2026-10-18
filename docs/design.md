@@ -310,21 +310,45 @@ is at stage 1. A stream used any other way is read to its end into a list.
 ### 6.6 Batching
 
 A **batch task** is written for many items at once (`fn label(xs: Vec<Item>) -> Vec<Label>`) but
-is called per item in the workflow (`label(item)`), like a single task. Batching is a runtime
-concern, not a workflow construct:
+is called per item in the workflow (`label(item)`), like a single task; passing it a list fans
+out. Batching is a runtime concern, not a workflow construct: each branch keeps its own context,
+waits for its own result, and continues independently. It is **not** a fan-in.
 
-- Each branch keeps its own context. Branches that reach the same batch task are pushed to a
-  worker that hosts it, wait in that worker's batch queue, and are run together. Each branch
-  receives its own result and continues independently. It is **not** a fan-in: nothing about
-  the scope changes.
-- A batch runs when it reaches `batch_size`, or when its oldest item has waited `max_wait` (a
-  per-task latency bound).
-- To fill batches, routing prefers the batch worker whose next batch is fullest, so items
-  concentrate on fewer workers rather than spreading thinly.
-- Items from different scopes, and from different runs of the same task version, may share a
-  batch. This is how one inference worker serves many concurrent labeling runs.
-- A failed batch call fails every branch in it. A task that can fail per item returns a
-  per-item result instead.
+A batch task runs as a **session**: a long-lived instance on a worker (holding a loaded model,
+say), driven in **steps**:
+
+```
+open()                               -> session
+step(session, admit: [(id, input)])  -> [(id, result)]
+```
+
+Each step hands the session newly arrived items and takes back the items it has finished, in
+any order. Every result resumes its branch at once. One call does both, so no threads cross the
+task boundary, and it works the same in WASM, native code and in-process.
+
+- **Dynamic batching** is the simplest session: a step runs the task's `fn(Vec<T>) ->
+  Vec<Result<R>>` over the items it is given and returns them all. An idle session takes whatever
+  is queued (up to `batch_size`); items that arrive while it is busy form the next step. Under
+  light load an item runs at once; under heavy load batches fill up by themselves.
+- **Continuous batching** (as in LLM serving) is a session that keeps items across steps: one step
+  is, say, one decode iteration over the active sequences. A finished item leaves at once and a
+  waiting one takes its place, so no item waits for the slowest in its batch.
+- **Capacity**: at most `batch_size` items are in a session at once. Optionally, `max_wait` holds
+  a step until that many are queued or the oldest has waited that long, for fuller batches.
+- **Across runs**: sessions belong to a worker and a task version, not to a run. Items from
+  different scopes and different runs of the same task version share steps. This is how one
+  inference worker serves many concurrent labeling runs.
+- A worker runs one session per batch task (`batch_slots` for more, e.g. one per GPU). Routing is
+  round robin among the workers that serve the task for now; under dynamic batching each one's
+  batches fill under load. Filling one worker's batch before the next needs load information
+  (§10.3).
+- A failed step fails every item in it; an item's own error fails only its branch. A worker that
+  dies mid-step loses nothing durable: its waiting and in-flight branches run again from their
+  records (§7), like any task call.
+
+This is the stream machinery of §6.5 in reverse: a stream source is a long-lived instance that
+produces items into branches; a batch session consumes branches and produces their results, as
+they finish.
 
 ## 7. Durability
 
@@ -534,7 +558,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Distributed path | ✅ Peer-to-peer TCP mesh; the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
 | Routing | Round robin among the workers that serve a task; a branch waits for a server to join | Load-aware, locality-aware placement; credits for sources (§10.3) |
 | Streams | ✅ Fused with their fan-out, per-item credits at the source, resumable by position (§6.5). Guest streams yield no cursors yet; a resumed stream is reopened and skipped forward | Cursors from guest streams; windows for unbounded streams |
-| Batch | Not supported | Runtime batching across branches and runs, `batch_size` / `max_wait` (§6.6) |
+| Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |
 | Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks (§7) | Idempotency keys for tasks; GC of the log for long runs |

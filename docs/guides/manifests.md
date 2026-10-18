@@ -56,7 +56,10 @@ Minimal example:
 `runtime` is `wasm` (a WASM component, runs anywhere) or `native` (a shared library, runs only on
 the platform it was built for). Set `"checkpoint": true` for tasks with external side effects:
 their branch is logged past them before it continues, so crash recovery never runs them again.
-For a stream task, `"window"` limits how many of its items are in flight at once (default 1024). `namu build` fills in `checksum` (sha256 of the binary) and, for
+For a stream task, `"window"` limits how many of its items are in flight at once (default 1024).
+For a batch task, `"batch_size"` is how many items a session holds at once (default 32),
+`"max_wait_ms"` makes an idle session wait for a full batch (unset: it steps at once), and
+`"batch_slots"` is how many sessions each worker runs (default 1). `namu build` fills in `checksum` (sha256 of the binary) and, for
 native tasks, `platform`. The orchestrator rejects artifacts whose binary does not match the
 checksum, and treats versions as immutable: republishing the same version with a different
 artifact is refused.

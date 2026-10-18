@@ -161,3 +161,26 @@ pub fn stream_stats() -> Summary {
     let stats = analyze(docs, cfg);
     summarize(stats)
 }
+
+/// A document's most frequent word. A batch task: documents from every branch (and run) are
+/// classified together, a step at a time.
+#[task(batch)]
+pub fn classify(docs: Vec<String>) -> Vec<Result<String>>;
+
+/// A label, refined one letter per step. Continuous batching: a short word never waits for a
+/// long one.
+#[task(batch)]
+pub fn refine(labels: Vec<String>) -> Vec<Result<String>>;
+
+#[task(single)]
+pub fn tally(labels: Vec<String>) -> Result<std::collections::BTreeMap<String, usize>>;
+
+/// Labels the documents with two batch tasks, then counts the labels.
+#[workflow(id = "label_stats")]
+pub fn label_stats() -> std::collections::BTreeMap<String, usize> {
+    let n = 48;
+    let docs = split_docs(n);
+    let topics = classify(docs);
+    let labels = refine(topics);
+    tally(labels)
+}

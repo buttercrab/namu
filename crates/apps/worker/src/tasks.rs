@@ -7,11 +7,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
 use namu_engine::routes::Routes;
-use namu_engine::tasks::{DEFAULT_WINDOW, TaskStream};
+use namu_engine::tasks::{BatchPolicy, BatchSession, DEFAULT_WINDOW, TaskStream};
 use namu_engine::{RunSpec, TaskRef, Tasks};
 use namu_proto::{Member, TaskKind, TaskManifest};
 use serde_json::Value;
@@ -32,8 +33,9 @@ pub struct RuntimeTasks {
 struct Task {
     runtime_key: String,
     checkpoint: bool,
-    stream: bool,
+    kind: TaskKind,
     window: Option<usize>,
+    policy: BatchPolicy,
     /// Loaded when this worker serves the task.
     runner: Option<Arc<Runner>>,
 }
@@ -136,8 +138,9 @@ impl Tasks for RuntimeTasks {
             let entry = Task {
                 runtime_key,
                 checkpoint: manifest.checkpoint,
-                stream: manifest.task_kind == TaskKind::Stream,
+                kind: manifest.task_kind.clone(),
                 window: manifest.window,
+                policy: batch_policy(&manifest),
                 runner,
             };
             self.tasks.write().unwrap().insert(task.clone(), entry);
@@ -154,7 +157,23 @@ impl Tasks for RuntimeTasks {
     }
 
     fn is_stream(&self, task: &TaskRef) -> bool {
-        self.entry(task, |entry| entry.stream)
+        self.entry(task, |entry| entry.kind == TaskKind::Stream)
+    }
+
+    fn is_batch(&self, task: &TaskRef) -> bool {
+        self.entry(task, |entry| entry.kind == TaskKind::Batch)
+    }
+
+    fn open_batch(&self, task: &TaskRef) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
+        self.runner(task)?.open_batch()
+    }
+
+    fn batch_policy(&self, task: &TaskRef) -> BatchPolicy {
+        let tasks = self.tasks.read().unwrap();
+        tasks
+            .get(task)
+            .map(|entry| entry.policy)
+            .unwrap_or_default()
     }
 
     fn window(&self, task: &TaskRef) -> usize {
@@ -184,5 +203,14 @@ impl Tasks for RuntimeTasks {
         let output = serde_json::from_str(&output)
             .with_context(|| format!("task {} returned invalid JSON", task.id))?;
         Ok(Ok(output))
+    }
+}
+
+fn batch_policy(manifest: &TaskManifest) -> BatchPolicy {
+    let defaults = BatchPolicy::default();
+    BatchPolicy {
+        size: manifest.batch_size.unwrap_or(defaults.size),
+        max_wait: manifest.max_wait_ms.map(Duration::from_millis),
+        slots: manifest.batch_slots.unwrap_or(defaults.slots),
     }
 }

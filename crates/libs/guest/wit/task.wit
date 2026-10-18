@@ -21,3 +21,32 @@ interface source {
 world stream-task {
   export source;
 }
+
+/// A batch task runs as a session: a long-lived instance driven in steps. Each step takes in
+/// newly arrived items and gives back the ones it finished, in any order: all of them for dynamic
+/// batching, possibly fewer for continuous batching, where items stay across steps.
+interface batch {
+  /// An item handed to a session: its id, and its input as JSON.
+  record admitted {
+    id: u64,
+    input: string,
+  }
+
+  /// An item the session finished: its output as JSON, or its own error.
+  record finished {
+    id: u64,
+    output: result<string, string>,
+  }
+
+  resource session {
+    /// An error fails every item in the session.
+    step: func(admit: list<admitted>) -> result<list<finished>, string>;
+  }
+
+  /// Opens a session, e.g. by loading a model.
+  open: func() -> result<session, string>;
+}
+
+world batch-task {
+  export batch;
+}

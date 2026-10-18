@@ -4,7 +4,8 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use namu_engine::tasks::{StreamItem, TaskStream};
+use namu_engine::tasks::{BatchSession, Finished, StreamItem, TaskStream};
+use serde_json::Value;
 use wasmtime::component::{Component, InstancePre, Linker, ResourceAny, ResourceTable, TypedFunc};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
@@ -162,4 +163,95 @@ impl Drop for WasmItems {
             let _ = items.resource_drop(&mut self.store);
         }
     }
+}
+
+mod batch {
+    wasmtime::component::bindgen!({
+        path: "../../libs/guest/wit",
+        world: "batch-task",
+    });
+}
+
+/// A batch task compiled as a WASM component (`batch-task` world). Each session gets its own
+/// instance, which lives as long as the session.
+pub struct WasmBatchTask {
+    engine: Engine,
+    pre: batch::BatchTaskPre<Host>,
+}
+
+impl WasmBatchTask {
+    pub fn load(engine: &Engine, path: &Path) -> anyhow::Result<Self> {
+        let component = Component::from_file(engine, path)
+            .map_err(|err| anyhow::anyhow!("compile wasm component {}: {err:?}", path.display()))?;
+        let mut linker = Linker::<Host>::new(engine);
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+        let pre = batch::BatchTaskPre::new(linker.instantiate_pre(&component)?)?;
+        Ok(Self {
+            engine: engine.clone(),
+            pre,
+        })
+    }
+
+    pub fn open(&self) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
+        let host = Host {
+            wasi: WasiCtx::builder().inherit_stderr().build(),
+            table: ResourceTable::new(),
+        };
+        let mut store = Store::new(&self.engine, host);
+        let instance = self.pre.instantiate(&mut store)?;
+        let session = match instance.namu_task_batch().call_open(&mut store)? {
+            Ok(session) => session,
+            Err(message) => return Ok(Err(message)),
+        };
+        Ok(Ok(Box::new(WasmSession {
+            store,
+            instance,
+            session: Some(session),
+        })))
+    }
+}
+
+struct WasmSession {
+    store: Store<Host>,
+    instance: batch::BatchTask,
+    /// Taken when the session is dropped, to run the guest's destructor.
+    session: Option<ResourceAny>,
+}
+
+impl BatchSession for WasmSession {
+    fn step(&mut self, admit: Vec<(u64, Value)>) -> anyhow::Result<Finished> {
+        use batch::exports::namu::task::batch::Admitted;
+
+        let session = self.session.expect("the session is open");
+        let admit: Vec<Admitted> = admit
+            .into_iter()
+            .map(|(id, input)| Admitted {
+                id,
+                input: input.to_string(),
+            })
+            .collect();
+        let finished = self
+            .instance
+            .namu_task_batch()
+            .session()
+            .call_step(&mut self.store, session, &admit)?
+            .map_err(|err| anyhow::anyhow!(err))?;
+        Ok(finished
+            .into_iter()
+            .map(|item| (item.id, decode(item.output)))
+            .collect())
+    }
+}
+
+impl Drop for WasmSession {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            let _ = session.resource_drop(&mut self.store);
+        }
+    }
+}
+
+/// An item's output as JSON, or its error.
+fn decode(output: Result<String, String>) -> Result<Value, String> {
+    serde_json::from_str(&output?).map_err(|err| format!("bad output: {err}"))
 }

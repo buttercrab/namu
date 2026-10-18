@@ -17,6 +17,16 @@
 //!         Ok(crawl(site))
 //!     }
 //! }
+//!
+//! // Dynamic batching: each step runs the function over the items it is given.
+//! namu_guest::batch! {
+//!     fn embed(texts: Vec<String>) -> Vec<anyhow::Result<Embedding>> {
+//!         model().embed(&texts)
+//!     }
+//! }
+//!
+//! // Continuous batching: the session keeps items across steps.
+//! namu_guest::continuous!(Decoder); // Decoder: namu_guest::Continuous + Default
 //! ```
 //!
 //! One task per crate: the exported symbols have fixed names.
@@ -32,6 +42,17 @@ pub mod bindings {
 }
 
 #[cfg(target_family = "wasm")]
+pub mod batch_bindings {
+    wit_bindgen::generate!({
+        path: "wit",
+        world: "batch-task",
+        pub_export_macro: true,
+        export_macro_name: "export_batch",
+        default_bindings_module: "::namu_guest::batch_bindings",
+    });
+}
+
+#[cfg(target_family = "wasm")]
 pub mod stream_bindings {
     wit_bindgen::generate!({
         path: "wit",
@@ -42,8 +63,19 @@ pub mod stream_bindings {
     });
 }
 
-/// Version of the native C ABI exported by [`task!`] and [`stream!`]. Version 3 added streams.
-pub const NATIVE_ABI_VERSION: u32 = 3;
+/// Version of the native C ABI exported by the task macros. Version 3 added streams, version 4
+/// batch sessions.
+pub const NATIVE_ABI_VERSION: u32 = 4;
+
+/// A batch task that keeps items across steps (continuous batching). A session is made with
+/// `Default` when the worker opens it.
+pub trait Continuous: Default + 'static {
+    type In: serde::de::DeserializeOwned;
+    type Out: serde::Serialize;
+
+    /// Takes in `admit` and returns what finished in this step, each with its own result.
+    fn step(&mut self, admit: Vec<(u64, Self::In)>) -> Vec<(u64, Result<Self::Out, String>)>;
+}
 
 #[doc(hidden)]
 pub mod __private {
@@ -54,6 +86,80 @@ pub mod __private {
 
     /// A stream's items, each JSON or the task's error.
     pub type Items = Box<dyn Iterator<Item = Result<String, String>>>;
+
+    /// What a batch step finished: each item's id, and its output as JSON or its own error.
+    pub type Finished = Vec<(u64, Result<String, String>)>;
+
+    /// An open batch session: takes in `(id, input JSON)` and returns what it finished. An error
+    /// fails every item in it.
+    pub type Session = Box<dyn FnMut(Vec<(u64, String)>) -> Result<Finished, String>>;
+
+    /// A dynamic batch session over `f`: each step runs it over the items given.
+    pub fn dynamic<T, R, E>(f: fn(Vec<T>) -> Vec<Result<R, E>>) -> Session
+    where
+        T: serde::de::DeserializeOwned + 'static,
+        R: serde::Serialize + 'static,
+        E: std::fmt::Display + 'static,
+    {
+        Box::new(move |admit| {
+            let mut finished = Vec::new();
+            let (mut ids, mut items) = (Vec::new(), Vec::new());
+            for (id, input) in admit {
+                match serde_json::from_str(&input) {
+                    Ok(item) => {
+                        ids.push(id);
+                        items.push(item);
+                    }
+                    Err(err) => finished.push((id, Err(format!("invalid task input: {err}")))),
+                }
+            }
+            if items.is_empty() {
+                return Ok(finished);
+            }
+            let outputs = catch_unwind(AssertUnwindSafe(|| f(items)))
+                .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
+            if outputs.len() != ids.len() {
+                return Err(format!(
+                    "a batch of {} gave {} results",
+                    ids.len(),
+                    outputs.len()
+                ));
+            }
+            finished.extend(
+                ids.into_iter()
+                    .zip(outputs)
+                    .map(|(id, output)| (id, encode(output))),
+            );
+            Ok(finished)
+        })
+    }
+
+    /// A continuous batch session of `C`.
+    pub fn continuous<C: crate::Continuous>() -> Session {
+        let mut session = C::default();
+        Box::new(move |admit| {
+            let mut finished = Vec::new();
+            let mut items = Vec::new();
+            for (id, input) in admit {
+                match serde_json::from_str(&input) {
+                    Ok(item) => items.push((id, item)),
+                    Err(err) => finished.push((id, Err(format!("invalid task input: {err}")))),
+                }
+            }
+            let done = catch_unwind(AssertUnwindSafe(|| session.step(items)))
+                .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
+            finished.extend(done.into_iter().map(|(id, output)| (id, encode(output))));
+            Ok(finished)
+        })
+    }
+
+    fn encode<R: serde::Serialize, E: std::fmt::Display>(
+        output: Result<R, E>,
+    ) -> Result<String, String> {
+        output
+            .map_err(|err| err.to_string())
+            .and_then(|output| serde_json::to_string(&output).map_err(|err| err.to_string()))
+    }
 
     /// Runs a task body against a JSON input and encodes its result as JSON.
     pub fn run<T, E, F>(input: &str, body: F) -> Result<String, String>
@@ -198,6 +304,63 @@ pub mod __private {
         drop(unsafe { Box::from_raw(handle.cast::<Items>()) });
     }
 
+    /// Native ABI entry point that opens a batch session; on failure the error is handed over.
+    ///
+    /// # Safety
+    /// The out-pointers must be writable.
+    pub unsafe fn native_batch_open(
+        handle: *mut *mut std::ffi::c_void,
+        out_ptr: *mut *mut u8,
+        out_len: *mut usize,
+        open: fn() -> Result<Session, String>,
+    ) -> i32 {
+        match catch_unwind(open)
+            .unwrap_or_else(|panic| Err(format!("task panicked: {}", panic_message(&panic))))
+        {
+            Ok(session) => {
+                unsafe { *handle = Box::into_raw(Box::new(session)).cast() };
+                0
+            }
+            Err(err) => {
+                unsafe { hand_over(err, out_ptr, out_len) };
+                1
+            }
+        }
+    }
+
+    /// Native ABI entry point for a batch step. The input is a JSON array of `[id, input]`, the
+    /// output a JSON array of `[id, {"Ok": output} | {"Err": error}]`; or 1 and the session's
+    /// error.
+    ///
+    /// # Safety
+    /// `handle` must come from [`native_batch_open`] and not be closed; `in_ptr` must point to
+    /// `in_len` readable bytes; the out-pointers must be writable.
+    pub unsafe fn native_batch_step(
+        handle: *mut std::ffi::c_void,
+        in_ptr: *const u8,
+        in_len: usize,
+        out_ptr: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        let session = unsafe { &mut *handle.cast::<Session>() };
+        let step = unsafe { input(in_ptr, in_len) }
+            .and_then(|input| serde_json::from_str(input).map_err(|err| err.to_string()))
+            .and_then(session)
+            .and_then(|finished| serde_json::to_string(&finished).map_err(|err| err.to_string()));
+        let (code, payload) = match step {
+            Ok(finished) => (0, finished),
+            Err(err) => (1, err),
+        };
+        unsafe { hand_over(payload, out_ptr, out_len) };
+        code
+    }
+
+    /// # Safety
+    /// `handle` must come from [`native_batch_open`] and not be closed yet.
+    pub unsafe fn native_batch_close(handle: *mut std::ffi::c_void) {
+        drop(unsafe { Box::from_raw(handle.cast::<Session>()) });
+    }
+
     /// # Safety
     /// `ptr`/`len` must come from a buffer handed over by this library.
     pub unsafe fn native_free(ptr: *mut u8, len: usize) {
@@ -225,6 +388,31 @@ macro_rules! stream {
         fn $name($($args)*) -> $ret $body
         $crate::__decoder!(__namu_decode, $name($($args)*) -> $ret);
         $crate::__export_stream!();
+    };
+}
+
+/// Defines a NAMU batch task run by dynamic batching: the function takes the items of a step and
+/// returns one result per item. See the crate docs.
+#[macro_export]
+macro_rules! batch {
+    (fn $name:ident($arg:ident : $ty:ty $(,)?) -> $ret:ty $body:block) => {
+        fn $name($arg: $ty) -> $ret $body
+        fn __namu_open_batch() -> ::std::result::Result<$crate::__private::Session, String> {
+            Ok($crate::__private::dynamic($name))
+        }
+        $crate::__export_batch!();
+    };
+}
+
+/// Defines a NAMU batch task run by continuous batching, from a type implementing
+/// [`Continuous`]. See the crate docs.
+#[macro_export]
+macro_rules! continuous {
+    ($session:ty) => {
+        fn __namu_open_batch() -> ::std::result::Result<$crate::__private::Session, String> {
+            Ok($crate::__private::continuous::<$session>())
+        }
+        $crate::__export_batch!();
     };
 }
 
@@ -348,6 +536,86 @@ macro_rules! __export_stream {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn namu_stream_close(handle: *mut ::std::ffi::c_void) {
             unsafe { $crate::__private::native_close(handle) }
+        }
+
+        $crate::__export_native_common!();
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __export_batch {
+    () => {
+        #[cfg(target_family = "wasm")]
+        const _: () = {
+            use $crate::batch_bindings::exports::namu::task::batch::{
+                Admitted, Finished, Guest, GuestSession, Session,
+            };
+
+            struct NamuBatch;
+            struct NamuSession(::std::cell::RefCell<$crate::__private::Session>);
+
+            impl Guest for NamuBatch {
+                type Session = NamuSession;
+
+                fn open() -> ::std::result::Result<Session, String> {
+                    let session = __namu_open_batch()?;
+                    Ok(Session::new(NamuSession(::std::cell::RefCell::new(
+                        session,
+                    ))))
+                }
+            }
+
+            impl GuestSession for NamuSession {
+                fn step(
+                    &self,
+                    admit: Vec<Admitted>,
+                ) -> ::std::result::Result<Vec<Finished>, String> {
+                    let admit = admit
+                        .into_iter()
+                        .map(|item| (item.id, item.input))
+                        .collect();
+                    let finished = (self.0.borrow_mut())(admit)?;
+                    Ok(finished
+                        .into_iter()
+                        .map(|(id, output)| Finished { id, output })
+                        .collect())
+                }
+            }
+
+    $crate::batch_bindings::export_batch!(NamuBatch with_types_in $crate::batch_bindings);
+        };
+
+        #[cfg(not(target_family = "wasm"))]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn namu_batch_open(
+            handle: *mut *mut ::std::ffi::c_void,
+            out_ptr: *mut *mut u8,
+            out_len: *mut usize,
+        ) -> i32 {
+            unsafe {
+                $crate::__private::native_batch_open(handle, out_ptr, out_len, __namu_open_batch)
+            }
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn namu_batch_step(
+            handle: *mut ::std::ffi::c_void,
+            in_ptr: *const u8,
+            in_len: usize,
+            out_ptr: *mut *mut u8,
+            out_len: *mut usize,
+        ) -> i32 {
+            unsafe {
+                $crate::__private::native_batch_step(handle, in_ptr, in_len, out_ptr, out_len)
+            }
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn namu_batch_close(handle: *mut ::std::ffi::c_void) {
+            unsafe { $crate::__private::native_batch_close(handle) }
         }
 
         $crate::__export_native_common!();
