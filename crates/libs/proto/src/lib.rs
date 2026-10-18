@@ -65,6 +65,10 @@ pub struct TaskManifest {
     pub platform: Option<String>,
     #[serde(default)]
     pub trust: TaskTrust,
+    /// Commit the task's output before anything downstream runs, so recovery never re-runs it.
+    /// Use for tasks with external side effects.
+    #[serde(default)]
+    pub checkpoint: bool,
     #[serde(default)]
     pub requires_gpu: bool,
     #[serde(default = "default_resource_class")]
@@ -190,12 +194,17 @@ pub enum WorkItem {
     },
     /// Execute the call at `op` in `ctx` (already prepared), then continue.
     Call { run_id: Uuid, ctx: u64, op: usize },
+    /// Every branch of the fan-out scope `scope` has ended and at least one reached the collect
+    /// at `op`: build the collected list and continue after the collect.
+    CollectReady { run_id: Uuid, scope: u64, op: usize },
 }
 
 impl WorkItem {
     pub fn run_id(&self) -> Uuid {
         match self {
-            WorkItem::Continue { run_id, .. } | WorkItem::Call { run_id, .. } => *run_id,
+            WorkItem::Continue { run_id, .. }
+            | WorkItem::Call { run_id, .. }
+            | WorkItem::CollectReady { run_id, .. } => *run_id,
         }
     }
 }
@@ -257,6 +266,16 @@ pub mod keys {
 
     pub fn run_remote_fetches(run: Uuid) -> String {
         format!("namu:run:{run}:remote_fetches")
+    }
+
+    /// Set of work items already committed for a run (makes redelivery harmless).
+    pub fn run_done(run: Uuid) -> String {
+        format!("namu:run:{run}:done")
+    }
+
+    /// Prefix of `scope` keys, for the commit script.
+    pub fn scope_prefix(run: Uuid) -> String {
+        format!("namu:run:{run}:scope:")
     }
 
     pub fn node(run: Uuid, ctx: u64) -> String {

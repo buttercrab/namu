@@ -2,6 +2,9 @@
 
 All settings are environment variables.
 
+Redis holds all run state. For runs to survive a Redis restart, run it with persistence
+(e.g. `appendonly yes`).
+
 ## Orchestrator (namu-master)
 - `REDIS_URL` (default: `redis://127.0.0.1/`)
 - `BIND_ADDR` (default: `0.0.0.0:8080`)
@@ -13,6 +16,8 @@ All settings are environment variables.
 - `NAMU_RUNTIMES` (default: `wasm,native`): runtimes this worker serves. Native tasks are only
   routed to workers on the platform they were built for (`<os>-<arch>`).
 - `NAMU_CONCURRENCY` (default: number of CPUs): work items processed concurrently.
+- `NAMU_LEASE_MS` (default: `30000`): how long a work item can go without its worker renewing it
+  before another worker takes it over. Lower values recover faster from crashes.
 - `WORKER_ID` (default: `<platform>-<random>`)
 - `ARTIFACT_CACHE` (default: `./data/cache`)
 

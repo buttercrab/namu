@@ -254,6 +254,7 @@ fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
         trust: task.trust.clone(),
         runtime: task.runtime,
         platform: None,
+        checkpoint: task.checkpoint,
         requires_gpu: task.requires_gpu,
         resource_class: task.resource_class.clone(),
         capabilities: task.capabilities.clone(),

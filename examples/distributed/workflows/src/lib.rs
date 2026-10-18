@@ -112,3 +112,34 @@ pub fn doc_stats_partial() -> Summary {
     let stats = analyze(long_docs, cfg);
     summarize(stats)
 }
+
+/// `doc_stats` with much more work per document, so a run lasts long enough to kill a worker
+/// in the middle of it (see `scripts/e2e.sh`). Recovery must produce the same result.
+#[workflow(id = "doc_stats_slow")]
+pub fn doc_stats_slow() -> Summary {
+    let min_len = 6;
+    let rounds = 150000;
+    let n = 48;
+    let cfg = make_config(min_len, rounds);
+    let docs = split_docs(n);
+    let stats = analyze(docs, cfg);
+    summarize(stats)
+}
+
+#[task(single)]
+pub fn abort_short(doc: String, min_words: i32) -> Result<String>;
+
+/// Short documents crash `abort_short` on every attempt. Workers retry them, then fail those
+/// branches; the run ends `partial_failed` with the long documents summarized.
+#[workflow(id = "doc_stats_poison")]
+pub fn doc_stats_poison() -> Summary {
+    let min_len = 6;
+    let rounds = 1;
+    let n = 48;
+    let min_words = 500;
+    let cfg = make_config(min_len, rounds);
+    let docs = split_docs(n);
+    let long_docs = abort_short(docs, min_words);
+    let stats = analyze(long_docs, cfg);
+    summarize(stats)
+}

@@ -40,6 +40,7 @@ pub struct TaskConfig {
     pub kind: TaskKind,
     pub runtime: TaskRuntime,
     pub trust: TaskTrust,
+    pub checkpoint: bool,
     pub requires_gpu: bool,
     pub resource_class: String,
     pub capabilities: Vec<String>,
@@ -210,6 +211,10 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
         let kind = parse_task_kind(get_string(entry, "kind")?.as_str())?;
         let runtime = parse_task_runtime(get_string(entry, "runtime")?.as_str())?;
         let trust = parse_task_trust(get_string(entry, "trust")?.as_str())?;
+        let checkpoint = entry
+            .get("checkpoint")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let requires_gpu = entry
             .get("requires_gpu")
             .and_then(|v| v.as_bool())
@@ -257,6 +262,7 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
                 kind,
                 runtime,
                 trust,
+                checkpoint,
                 requires_gpu,
                 resource_class,
                 capabilities,

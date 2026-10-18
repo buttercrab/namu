@@ -344,4 +344,4 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Batch | Partial batch hangs in `SimpleEngine`; batch tasks not supported by workers | Cross-context batching with flush |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; bodiless `#[task]` signatures in workflows | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform. Trust tiers removed from enforcement (manifest field kept) | Python, containers, GPU |
-| Durability | Write-behind node persistence only; no recovery, pending work is not reclaimed | Lineage + checkpoint tasks + reclaim |
+| Durability | ✅ Work items commit atomically (exactly-once effects); expired leases are reclaimed and recomputed from the last committed context; poison items fail after 3 attempts; `checkpoint` tasks commit immediately (see `poc.md`) | Idempotency keys for tasks; Redis persistence |
