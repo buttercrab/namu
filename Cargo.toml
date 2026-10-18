@@ -35,7 +35,7 @@ resolver = "3"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
-darling = "0.20"
+darling = "0.24"
 erased-serde = "0.4"
 futures = "0.3"
 futures-util = "0.3"

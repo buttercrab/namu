@@ -140,3 +140,18 @@ fn loop_phis_are_parallel_assignments() {
     // a = 2, b = 1 -> 2 + 2 + 1
     assert_eq!(*result_val[0].downcast_ref::<i32>().unwrap(), 5);
 }
+
+#[test]
+fn string_literals_keep_escaped_characters() {
+    #[workflow]
+    fn exclaim_workflow() -> String {
+        let s = "say \"hi\"\n";
+        exclaim(s)
+    }
+
+    let result_val = run_workflow(exclaim_workflow().to_serializable("exclaim".to_string()));
+    assert_eq!(
+        result_val[0].downcast_ref::<String>().unwrap(),
+        "say \"hi\"\n!"
+    );
+}

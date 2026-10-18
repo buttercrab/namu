@@ -12,7 +12,7 @@ if ! command -v cargo-audit >/dev/null; then
 fi
 
 if ! command -v cargo-expand >/dev/null; then
-  echo "cargo-expand is required: cargo install cargo-expand --locked" >&2
+  echo "cargo-expand is required: cargo install cargo-expand --locked --version 1.0.114" >&2
   exit 1
 fi
 

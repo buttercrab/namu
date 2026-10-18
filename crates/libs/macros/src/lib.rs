@@ -1,5 +1,4 @@
 use proc_macro::TokenStream;
-use proc_macro_error2::proc_macro_error;
 
 mod bridge;
 mod register;
@@ -7,13 +6,11 @@ mod task;
 mod type_macro;
 mod workflow;
 
-#[proc_macro_error]
 #[proc_macro_attribute]
 pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
     task::task(attr, item)
 }
 
-#[proc_macro_error]
 #[proc_macro_attribute]
 pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
     workflow::workflow(attr, item)
@@ -29,7 +26,6 @@ pub fn task_bridge(item: TokenStream) -> TokenStream {
     bridge::task_bridge_impl(item)
 }
 
-#[proc_macro_error]
 #[proc_macro_attribute]
 pub fn r#type(attr: TokenStream, item: TokenStream) -> TokenStream {
     type_macro::r#type(attr, item)

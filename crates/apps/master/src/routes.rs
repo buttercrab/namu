@@ -64,7 +64,9 @@ pub async fn upload_task(
     let existing: Option<String> = redis.get(&key).await.map_err(internal)?;
     if let Some(existing) = existing {
         let existing: TaskManifest = serde_json::from_str(&existing).map_err(internal)?;
-        if existing.checksum == manifest.checksum {
+        // Workers place and invoke tasks from the manifest, so metadata changes (runtime,
+        // platform, arity, ...) count as a different version just like a different binary.
+        if comparable(&existing).map_err(internal)? == comparable(&manifest).map_err(internal)? {
             return Ok(Json(
                 json!({"task_id": manifest.task_id, "version": manifest.version, "unchanged": true}),
             ));
@@ -72,7 +74,7 @@ pub async fn upload_task(
         return Err((
             StatusCode::CONFLICT,
             format!(
-                "{}@{} is already published with a different artifact; bump the version",
+                "{}@{} is already published with a different artifact or manifest; bump the version",
                 manifest.task_id, manifest.version
             ),
         ));
@@ -94,6 +96,15 @@ pub async fn upload_task(
     Ok(Json(
         json!({"task_id": manifest.task_id, "version": manifest.version}),
     ))
+}
+
+/// A manifest as JSON without fields the orchestrator sets itself.
+fn comparable(manifest: &TaskManifest) -> serde_json::Result<JsonValue> {
+    let mut value = serde_json::to_value(manifest)?;
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("created_at");
+    }
+    Ok(value)
 }
 
 /// Reads the manifest from an artifact and checks the binary against its checksum.

@@ -11,10 +11,9 @@ proc-macro = true
 darling = { workspace = true }
 erased-serde = { workspace = true }
 inventory = { workspace = true }
-proc-macro-error2 = { version = "2", default-features = false }
 proc-macro2 = "1"
 quote = "1"
-syn = { version = "2", features = [
+syn = { version = "3", features = [
   "full",
   "visit-mut",
   "visit",

@@ -3,8 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hashbrown::HashMap;
 use namu_core::{ContextId, Value, ValueId};
-use scc::ebr::Guard;
-use scc::{HashIndex, HashMap as SccHashMap};
+use scc::{Guard, HashIndex, HashMap as SccHashMap};
 
 use crate::context::ContextManager;
 #[derive(Clone, Debug)]
@@ -47,7 +46,7 @@ impl DynamicContextManager {
             // sweep. Failing to find the parent is not fatal for correctness –
             // the only consequence is that the eventual clean-up of the parent
             // will not wait for this (already reclaimed) child.
-            let _ = self.node_state.update(&parent_id, |_, (_, children)| {
+            let _ = self.node_state.update_sync(&parent_id, |_, (_, children)| {
                 *children += 1;
             });
         }
@@ -92,8 +91,8 @@ impl DynamicContextManager {
         };
         // SAFETY: the `id` is unique across the lifetime of the process
         // because it comes from a single atomic counter.
-        self.nodes.insert(id, node).unwrap();
-        self.node_state.insert(id, (true, 0)).unwrap();
+        self.nodes.insert_sync(id, node).unwrap();
+        self.node_state.insert_sync(id, (true, 0)).unwrap();
         id
     }
 
@@ -236,7 +235,7 @@ impl ContextManager for DynamicContextManager {
     fn remove_context(&self, mut context_id: ContextId) {
         if self
             .node_state
-            .update(&context_id, |_, (is_used, _)| *is_used = false)
+            .update_sync(&context_id, |_, (is_used, _)| *is_used = false)
             .is_none()
         {
             return;
@@ -251,16 +250,16 @@ impl ContextManager for DynamicContextManager {
         {
             let was_removed = self
                 .node_state
-                .remove_if(&context_id, |(is_used, children_count)| {
+                .remove_if_sync(&context_id, |(is_used, children_count)| {
                     !*is_used && *children_count == 0
                 })
                 .is_some();
 
             if was_removed {
-                self.nodes.remove(&context_id);
+                self.nodes.remove_sync(&context_id);
 
                 if let Some(p_id) = parent_id {
-                    self.node_state.update(&p_id, |_, (_, children)| {
+                    self.node_state.update_sync(&p_id, |_, (_, children)| {
                         if *children > 0 {
                             *children -= 1;
                         }

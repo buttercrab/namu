@@ -19,6 +19,13 @@ pub fn add(a: i32, b: i32) -> Result<i32> {
 register_task! { method = add, name = "add", author = "test", version = "0.1" }
 
 #[task(single)]
+pub fn exclaim(s: String) -> Result<String> {
+    Ok(format!("{s}!"))
+}
+
+register_task! { method = exclaim, name = "exclaim", author = "test", version = "0.1" }
+
+#[task(single)]
 pub fn is_positive(v: i32) -> Result<bool> {
     Ok(v > 0)
 }

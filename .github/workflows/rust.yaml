@@ -19,9 +19,11 @@ jobs:
         run: |
           rustup update --no-self-update
           rustup component add clippy
+      # Pinned: newer cargo-expand resolves names during expansion, which the macro expansion
+      # snapshots (crates/libs/macros/tests/expand) were not generated with.
       - name: Install cargo-expand
         run: |
-          cargo install cargo-expand --locked
+          cargo install cargo-expand --locked --version 1.0.114
       - name: Prime trybuild target dir
         run: |
           mkdir -p target/tests/target

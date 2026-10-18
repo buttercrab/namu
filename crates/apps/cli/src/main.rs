@@ -63,12 +63,6 @@ enum Commands {
     },
     /// Check run status
     Status { run_id: String },
-    /// Fetch run events
-    Logs {
-        run_id: String,
-        #[arg(short, long, default_value = "100")]
-        limit: usize,
-    },
     /// List workers
     Workers,
     /// Login and healthcheck orchestrator
@@ -113,9 +107,6 @@ async fn main() {
         }
         Commands::Status { run_id } => {
             run_status(&run_id).await;
-        }
-        Commands::Logs { run_id, limit } => {
-            run_logs(&run_id, limit).await;
         }
         Commands::Workers => {
             list_workers().await;
@@ -619,38 +610,6 @@ async fn run_status(run_id: &str) {
         }
         Err(err) => {
             eprintln!("Failed to fetch status: {}", err);
-        }
-    }
-}
-
-async fn run_logs(run_id: &str, limit: usize) {
-    let master_url = match get_master_url() {
-        Ok(url) => url,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
-        }
-    };
-    let client = reqwest::Client::new();
-    let url = format!(
-        "{}/runs/{}/events?limit={}",
-        master_url.trim_end_matches('/'),
-        run_id,
-        limit
-    );
-    match client.get(url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let json: JsonValue = resp.json().await.unwrap_or_default();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json).unwrap_or_default()
-            );
-        }
-        Ok(resp) => {
-            eprintln!("Failed to fetch logs: {}", resp.status());
-        }
-        Err(err) => {
-            eprintln!("Failed to fetch logs: {}", err);
         }
     }
 }

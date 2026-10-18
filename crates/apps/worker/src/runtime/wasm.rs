@@ -4,7 +4,6 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use anyhow::Context;
 use wasmtime::component::{Component, InstancePre, Linker, ResourceTable, TypedFunc};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
@@ -42,12 +41,9 @@ impl WasmTask {
     pub fn load(engine: &Engine, path: &Path) -> anyhow::Result<Self> {
         // Compiled once per worker; the artifact itself is platform-independent.
         let component = Component::from_file(engine, path)
-            .with_context(|| format!("compile wasm component {}", path.display()))?;
+            .map_err(|err| anyhow::anyhow!("compile wasm component {}: {err:?}", path.display()))?;
         let mut linker = Linker::<Host>::new(engine);
-        // Recent Rust std targets import the (still unstable) `exit-with-code`.
-        let mut options = wasmtime_wasi::p2::bindings::sync::LinkOptions::default();
-        options.cli_exit_with_code(true);
-        wasmtime_wasi::p2::add_to_linker_with_options_sync(&mut linker, &options)?;
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
         let pre = linker.instantiate_pre(&component)?;
         Ok(Self {
             engine: engine.clone(),
@@ -65,7 +61,7 @@ impl WasmTask {
         let instance = self.pre.instantiate(&mut store)?;
         let func = instance
             .get_typed_func::<(String,), (Result<String, String>,)>(&mut store, "call")
-            .context("component does not export `call`")?;
+            .map_err(|err| anyhow::anyhow!("component does not export `call`: {err:?}"))?;
         Ok(Instance { store, func })
     }
 
@@ -81,7 +77,6 @@ impl WasmTask {
         let (result,) = instance
             .func
             .call(&mut instance.store, (input.to_string(),))?;
-        instance.func.post_return(&mut instance.store)?;
         self.idle.lock().unwrap().push(instance);
         Ok(result)
     }
