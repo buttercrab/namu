@@ -88,13 +88,17 @@ fn serializable_while_loop_workflow() {
   "name": "while_loop",
   "operations": [
     {
-      "literals": [ { "output": 0, "value": "0" } ],
+      "literals": [
+        { "output": 0, "value": "0" },
+        { "output": 2, "value": "3" },
+        { "output": 4, "value": "1" }
+      ],
       "phis": [],
       "call": null,
       "next": { "Jump": { "next": 1 } }
     },
     {
-      "literals": [ { "output": 2, "value": "3" } ],
+      "literals": [],
       "phis": [ { "output": 1, "from": [[0,0],[2,5]] } ],
       "call": {
         "task_id": "less_than",
@@ -104,7 +108,7 @@ fn serializable_while_loop_workflow() {
       "next": { "Branch": { "var": 3, "true_next": 2, "false_next": 3 } }
     },
     {
-      "literals": [ { "output": 4, "value": "1" } ],
+      "literals": [],
       "phis": [],
       "call": {
         "task_id": "add",
@@ -114,7 +118,7 @@ fn serializable_while_loop_workflow() {
       "next": { "Jump": { "next": 1 } }
     },
     {
-      "literals": [ { "output": 6, "value": "()" } ],
+      "literals": [],
       "phis": [],
       "call": null,
       "next": { "Return": { "var": 1 } }

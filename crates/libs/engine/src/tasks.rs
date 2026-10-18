@@ -1,0 +1,126 @@
+//! The tasks a worker can run.
+//!
+//! A task takes one JSON input and returns one JSON output. Arguments and results are packed by
+//! a fixed convention, shared with every task runtime: no arguments is `null`, one is the value
+//! itself, several are an array; a task with several outputs returns an array.
+
+use std::collections::HashMap;
+use std::fmt::Display;
+
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+
+/// Runs tasks on one worker.
+pub trait Tasks: Send + Sync + 'static {
+    /// Whether this worker can run `task`.
+    fn serves(&self, task: &str) -> bool;
+
+    /// Runs `task` once. `Ok(Err(message))` is the task's own failure, which fails the branch;
+    /// `Err` is a failure of the machinery around it.
+    fn call(&self, task: &str, input: Value) -> anyhow::Result<Result<Value, String>>;
+}
+
+/// Packs call arguments into one task input.
+pub fn pack_input(mut args: Vec<Value>) -> Value {
+    match args.len() {
+        0 => Value::Null,
+        1 => args.pop().expect("one argument"),
+        _ => Value::Array(args),
+    }
+}
+
+/// Unpacks a task output into `arity` values.
+pub fn unpack_output(output: Value, arity: usize) -> anyhow::Result<Vec<Value>> {
+    match (arity, output) {
+        (0, _) => Ok(Vec::new()),
+        (1, output) => Ok(vec![output]),
+        (n, Value::Array(parts)) if parts.len() == n => Ok(parts),
+        (n, output) => anyhow::bail!("expected {n} outputs, got {output}"),
+    }
+}
+
+type TaskFn = Box<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
+
+/// Tasks implemented as Rust functions in this process: the fastest runtime, with no
+/// serialization boundary beyond JSON values.
+#[derive(Default)]
+pub struct FnTasks {
+    tasks: HashMap<String, TaskFn>,
+}
+
+impl FnTasks {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers `task`. `I` is the packed input: `()` for no arguments, the argument itself for
+    /// one, a tuple for several.
+    pub fn with<I, O, E>(
+        mut self,
+        task: &str,
+        f: impl Fn(I) -> Result<O, E> + Send + Sync + 'static,
+    ) -> Self
+    where
+        I: DeserializeOwned,
+        O: Serialize,
+        E: Display,
+    {
+        let call = move |input: Value| {
+            let input = serde_json::from_value(input).map_err(|err| format!("bad input: {err}"))?;
+            let output = f(input).map_err(|err| err.to_string())?;
+            serde_json::to_value(output).map_err(|err| format!("bad output: {err}"))
+        };
+        self.tasks.insert(task.to_string(), Box::new(call));
+        self
+    }
+}
+
+impl Tasks for FnTasks {
+    fn serves(&self, task: &str) -> bool {
+        self.tasks.contains_key(task)
+    }
+
+    fn call(&self, task: &str, input: Value) -> anyhow::Result<Result<Value, String>> {
+        let f = self
+            .tasks
+            .get(task)
+            .ok_or_else(|| anyhow::anyhow!("task {task} is not served here"))?;
+        Ok(f(input))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn arguments_follow_the_packing_convention() {
+        assert_eq!(pack_input(vec![]), Value::Null);
+        assert_eq!(pack_input(vec![json!(3)]), json!(3));
+        assert_eq!(pack_input(vec![json!(1), json!("a")]), json!([1, "a"]));
+        assert_eq!(
+            unpack_output(json!([1, 2]), 1).unwrap(),
+            vec![json!([1, 2])]
+        );
+        assert_eq!(
+            unpack_output(json!([1, 2]), 2).unwrap(),
+            vec![json!(1), json!(2)]
+        );
+        assert!(unpack_output(json!(1), 2).is_err());
+    }
+
+    #[test]
+    fn fn_tasks_decode_packed_inputs() {
+        let tasks = FnTasks::new()
+            .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
+            .with("fail", |_: ()| Err::<i32, _>("no"));
+        assert!(tasks.serves("add"));
+        assert!(!tasks.serves("mul"));
+        assert_eq!(tasks.call("add", json!([2, 3])).unwrap(), Ok(json!(5)));
+        assert_eq!(tasks.call("fail", Value::Null).unwrap(), Err("no".into()));
+        assert!(tasks.call("add", json!("x")).unwrap().is_err());
+    }
+}

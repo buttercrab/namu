@@ -1,14 +1,10 @@
 use namu_macros::{task, workflow};
 
-#[task(single)]
-fn add_one(a: i32) -> anyhow::Result<i32> {
-    Ok(a + 1)
-}
+#[task]
+fn add_one(a: i32) -> anyhow::Result<i32>;
 
-#[task(single)]
-fn multiply_by_two(a: i32) -> anyhow::Result<i32> {
-    Ok(a * 2)
-}
+#[task]
+fn multiply_by_two(a: i32) -> anyhow::Result<i32>;
 
 #[workflow]
 fn chained_tasks_workflow() -> i32 {

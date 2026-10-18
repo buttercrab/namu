@@ -1,6 +1,7 @@
 # Tasks
 
-Tasks are the smallest unit of execution. There are two ways to write them.
+Tasks are the smallest unit of execution. A workflow only declares a task's signature; the task
+itself is implemented once, for the runtime that runs it.
 
 ## Tasks for workers (`namu-guest`)
 Write the task once and build it for the runtime its manifest declares:
@@ -24,23 +25,23 @@ itself, and with several it is an array. One task per crate. See `examples/distr
 The workflow crate declares the task's signature without a body, so it never links task code:
 
 ```rust
-#[task(single)]
+#[task]
 pub fn analyze(doc: String, min_len: i32) -> Result<Stats>;
 ```
 
-## In-process tasks (SimpleEngine)
-For local testing and embedding, write the task with `#[task]` and register it:
+## In-process tasks (`FnTasks`)
+In the same process as the engine, a task is a Rust function registered by name. Its input is the
+packed arguments: the argument itself for one, a tuple for several, `()` for none.
 
 ```rust
-#[task(single)]
-pub fn add(a: i32, b: i32) -> Result<i32> {
-    Ok(a + b)
-}
-
-register_task! { method = add, name = "add", author = "Namu", version = "0.1.0" }
+let tasks = FnTasks::new()
+    .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b));
 ```
+
+See `examples/basic`.
 
 ## Task kinds
 - `single`: one input, one output
-- `batch`: vectorized inputs and outputs (in-process only today)
+- `batch`: written for a list of inputs, called per item; the engine groups items (design §6.6,
+  not implemented yet)
 - `stream`: one input, many outputs; each output continues in its own branch

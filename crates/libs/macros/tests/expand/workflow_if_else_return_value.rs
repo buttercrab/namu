@@ -1,14 +1,10 @@
 use namu_macros::{task, workflow};
 
-#[task(single)]
-fn double(a: i32) -> anyhow::Result<i32> {
-    Ok(a * 2)
-}
+#[task]
+fn double(a: i32) -> anyhow::Result<i32>;
 
-#[task(single)]
-fn identity(a: i32) -> anyhow::Result<i32> {
-    Ok(a)
-}
+#[task]
+fn identity(a: i32) -> anyhow::Result<i32>;
 
 #[workflow]
 fn if_else_return_value_workflow() -> i32 {

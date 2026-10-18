@@ -11,18 +11,18 @@ Example:
 ```toml
 [project]
 name = "my-pipeline"
-workflows_crate = "examples/advanced/workflows"
+workflows_crate = "examples/distributed/workflows"
 registry = "namu"
 
 [registry.namu]
 index = "https://registry.namu.dev/index"
 
-[tasks.add]
-crate = "namu-task-add"
+[tasks.analyze]
+crate = "analyze"
 version = "0.1.0"
-path = "examples/advanced/tasks/add"
+path = "examples/distributed/tasks/analyze"
 kind = "single"
-runtime = "native"
+runtime = "wasm"
 trust = "trusted"
 resource_class = "cpu.small"
 input_arity = 2
@@ -31,7 +31,7 @@ output_arity = 1
 [workflows]
 export = "auto"
 
-[workflows.etl_pipeline]
+[workflows.doc_stats]
 version = "0.1.0"
 ```
 

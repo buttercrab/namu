@@ -235,32 +235,35 @@ all live values" decides where the path continues.
 ### 6.3 Fan-out and fan-in in the tree
 
 ```
-            ctx F  (scope: stream consumed here)
+            ctx F  (opens scope S, owned by the worker that fanned out)
            /  |  \
-         C1   C2   C3     one child per item; scope(Ci) = F
+         C1   C2   C3     one child per item, each carrying a share of S's weight
          |    |
-        ...  (C2 forks again: F.live += 1)
+        ...  (C2 fans out again: a new scope, nested in S)
          |
-      reaches FanIn -> result folded into F's accumulator
+      reaches S's collect -> returns its weight and item to S's owner
 ```
 
-- Each fan-out scope F keeps `live` (open branches) and `ended` (the stream has finished
-  producing items).
-- The stream emitting an item increments `live`. A branch forking increments it. A branch
-  reaching the FanIn, failing, or ending another way decrements it.
-- The FanIn completes when `ended && live == 0`. Its result is written into a **new child of F**,
-  and execution continues from there. Downstream code sees everything from before the fan-out plus
-  the reduced value, but not per-item values.
-- Across machines this is distributed termination detection, done by **weight throwing**. Each
-  scope F has an **owner** (the worker that created it, encoded in F's id). F starts with weight
-  1. A fork splits its branch's weight between the two halves, locally and without a message. A
-  branch that ends sends its weight back to the owner, together with its collect item if it has
-  one. The stream source holds weight too and returns what is left when it ends. F is done when
-  the owner has received the whole weight back. A fork never sends anything, so there is no race
-  between "a branch started" and "a branch ended" messages, and no global lock.
-- Weights are dyadic fractions (stored as exponents), so splitting is exact. A source that splits
-  for weeks never runs out of precision: it borrows a fresh unit from the owner instead.
-- Weight returns are batched per worker. For reduce, each worker folds locally and sends one
+- Which collect closes which fan-out is fixed by the control-flow graph, so it is found from the
+  IR before the run. A scope with no items, or whose items were all dropped, therefore still
+  collects `[]` and continues.
+- When the scope is over, the collected list is written into a **new child of F**, and the branch
+  that fanned out continues from there. Downstream code sees everything from before the fan-out
+  plus the collected value, but not per-item values. A scope without a collect simply ends the
+  branch that opened it.
+- Knowing when a scope is over across machines is distributed termination detection, done by
+  **weight throwing**. Each scope has an **owner** (the worker that opened it, encoded in the
+  scope's id). A scope has a fixed total weight, and its branches start with shares of it. Weight
+  moves with the work: a handoff carries the branch's share, and a branch that ends sends its
+  share back to the owner, with its collect item if it has one. Creating branches never sends a
+  message to the owner, so no message ordering between workers can end a scope early, and no
+  global lock is needed.
+- A branch that reports a result or a failure to the run's owner sends its weight with the report,
+  and the owner returns it to the scope once the report is recorded. So a run cannot finish while
+  a report is still in flight.
+- Weights are integers from a pool of 2^62 per scope, so accounting is exact. A source that could
+  exhaust its share (a stream running for weeks) borrows more from the owner.
+- Weight returns can be batched per worker. For reduce, each worker folds locally and sends one
   partial result with the summed weight.
 
 ### 6.4 Hybrid execution
@@ -286,9 +289,9 @@ A **stream task** yields items over time; it does not return a list. Each item b
 context of the fan-out scope **as soon as it is yielded**. Streams are pipelined: item 1 can be at
 stage 3 while item 50 is at stage 1.
 
-- **Backpressure.** A worker accepts work only up to the credits it grants (§10.3). When the
-  downstream is saturated, handoffs wait, the branches producing them wait, and the source is
-  not resumed. A slow GPU slows the crawler instead of filling memory.
+- **Backpressure.** A source starts a new branch only with a credit (§10.3), and the credit
+  comes back when a branch ends. When the downstream is saturated, branches end more slowly, and
+  the source is not resumed. A slow GPU slows the crawler instead of filling memory.
 - **Resumable sources.** A source that runs for weeks must survive a crash without replaying
   from the start. A stream task may yield a **cursor** with its items (an offset, a page token,
   a timestamp). The cursor is persisted with the scope, and after a crash the source restarts
@@ -309,8 +312,8 @@ concern, not a workflow construct:
   the scope changes.
 - A batch runs when it reaches `batch_size`, or when its oldest item has waited `max_wait` (a
   per-task latency bound).
-- To fill batches, a batch-task worker grants credits in multiples of its batch size, so
-  routing concentrates items on fewer workers rather than spreading them thinly.
+- To fill batches, routing prefers the batch worker whose next batch is fullest, so items
+  concentrate on fewer workers rather than spreading thinly.
 - Items from different scopes, and from different runs of the same task version, may share a
   batch. This is how one inference worker serves many concurrent labeling runs.
 - A failed batch call fails every branch in it. A task that can fail per item returns a
@@ -403,19 +406,21 @@ it as on any number of machines, and a conformance suite checks this for every e
 - The orchestrator publishes a versioned **routing table**: for each task, the workers that can
   run it (runtime, platform, resources, whether it is loaded). Workers cache it; a change is pushed
   to them.
-- Each worker **grants credits** to its peers: how many more handoffs it will accept, per task.
-  Credits are how load is balanced and how backpressure works (§6.5).
-- At a boundary, the sender picks among the candidate workers that have granted it credit,
-  preferring (in order) one that already holds the context's referenced nodes, then the least
-  loaded. With no credit available, the context parks on the sender.
+- **Credits** bound how many branches are alive, not how many messages a worker holds. A source
+  needs a credit to start a branch (§6.5); a handoff of an existing branch is always accepted.
+  Limiting handoffs instead would deadlock as soon as two full workers wait on each other, which
+  any workflow alternating between two runtimes would do.
+- Workers report their load to their peers, piggybacked on the messages they already exchange.
+  At a boundary, the sender picks among the workers that can run the next task, preferring (in
+  order) one that already holds the context's referenced nodes, then the least loaded.
 - **Work stealing**: an idle worker may take parked contexts from a busy one.
 
 ### 10.4 Membership and elasticity
 
 - **Join**: a new worker registers its capabilities. The orchestrator adds it to the routing
-  table, the new worker starts granting credits, and work flows to it. No rebalancing step is
+  table, the new worker reports its (empty) load, and work flows to it. No rebalancing step is
   needed, because contexts move only at boundaries and the newcomer simply becomes a candidate.
-- **Leave (drain)**: the worker stops granting credits, finishes or hands off what it holds,
+- **Leave (drain)**: the worker leaves the routing table, finishes or hands off what it holds,
   transfers ownership of its scopes, flushes its nodes to the log, then deregisters. Nodes it
   created stay readable from the log.
 - **Crash**: workers hold a heartbeat lease with the orchestrator. When it expires, the worker is
@@ -455,26 +460,29 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 
 ## 14. Gap vs. current implementation
 
-"Today" reflects the distribution proof of concept (`poc.md`, 2026-10-18); ✅ marks rows it closed.
+"Today" reflects `namu-engine` (one engine; `LocalCluster` runs it in-process) and the
+proof-of-concept worker (`poc.md`), which still runs the distributed data plane until it moves onto
+the engine. ✅ marks rows that are done.
 
 | Area | Today | Target |
 |------|-------|--------|
 | Parallelism | One call per op; a context waits on each call. Parallelism comes only from fan-out | Dataflow within a block |
-| Value tree | ✅ Distributed workers use immutable nodes with scope pointers (Redis + per-worker cache). Lookups walk the parent chain; no GC. `SimpleEngine` still mutates in place; `DynamicContextManager` is unused | O(log depth) lookups, GC |
+| Value tree | ✅ Immutable nodes held by their creator and fetched on demand (engine). Lookups walk the parent chain; GC only at run end | O(log depth) lookups via liveness placement, GC |
 | Placement | Always appends to the leaf; loops grow the chain without bound | Liveness-based placement, longest-lived-first ordering |
-| `compare_context` | Implemented, never called | Remove (re-add only if scheduling needs a tree order) |
-| Dedup | Every op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor |
-| Fan-out / fan-in | ✅ Type-driven via `IntoArg` (fan-out, collect, nesting, dropped failures) in the distributed runtime. Not in `SimpleEngine`; an empty fan-out ends the branch instead of collecting `[]` | Plus reduce and window |
+| Dedup | ✅ Constants are hoisted into the root context. Every other op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor (§13 q7) |
+| Fan-out / fan-in | ✅ Type-driven via `IntoArg`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine) | Plus reduce and window |
 | `return` in a branch | Not supported | Drops that item (filter) |
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON-encoded; string literals are `String` | Typed IR values |
-| Values | JSON at every boundary in the distributed runtime; unchecked `Any` in `SimpleEngine` | Codec abstraction plus types, zero-copy locally |
+| Values | JSON at every boundary | Codec abstraction plus types, zero-copy locally |
 | Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
-| Distributed path | ✅ Worker-local kernel; orchestrator is control plane only. Every handoff goes through Redis streams (~140 µs) | Peer-to-peer handoffs with credits; Redis only as cache and durable log (§10) |
-| Streams (distributed) | Stream task output is fanned out once complete | Pipelined per item, backpressure, resumable cursors (§6.5) |
-| Batch | Partial batch hangs in `SimpleEngine`; batch tasks not supported by workers | Runtime batching across branches and runs, `batch_size` / `max_wait` (§6.6) |
-| Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; bodiless `#[task]` signatures in workflows | Typed WIT signatures with generated stubs; Python SDK |
-| Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform. Trust tiers removed from enforcement (manifest field kept) | Python, containers, GPU |
-| Durability | ✅ Work items commit atomically through Redis (exactly-once effects); expired leases are reclaimed; poison items fail after 3 attempts; `checkpoint` tasks commit immediately (see `poc.md`) | Upstream backup + write-behind log; idempotency keys for tasks (§7) |
-| Fan-in termination | Per-scope `live` counters in Redis, updated by the commit script | Weight throwing with scope owners (§6.3) |
-| Membership | Workers register; no heartbeat-based removal, no drain | Join, drain and crash handling while a run is in progress (§10.4) |
+| Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait; in-process transport (`LocalCluster`) is the reference, checked on one worker vs three in every test | Network transport; the worker binary on the engine (§10) |
+| Distributed path | ✅ PoC worker: worker-local kernel; every handoff goes through Redis streams (~140 µs) | Peer-to-peer handoffs; Redis only as cache and durable log (§10) |
+| Routing | Round robin among the workers that serve a task | Load-aware, locality-aware placement; credits for sources (§10.3) |
+| Streams | PoC worker: stream task output is fanned out once complete. Engine: none yet | Pipelined per item, backpressure, resumable cursors (§6.5) |
+| Batch | Not supported | Runtime batching across branches and runs, `batch_size` / `max_wait` (§6.6) |
+| Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
+| Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |
+| Durability | ✅ PoC worker: atomic commits through Redis, lease reclaim, poison items, `checkpoint` tasks. Engine: none yet | Upstream backup + write-behind log; idempotency keys for tasks (§7) |
+| Fan-in termination | ✅ Weight throwing with scope owners (engine). PoC worker: `live` counters in Redis | |
+| Membership | Static: workers registered at start | Join, drain and crash handling while a run is in progress (§10.4) |

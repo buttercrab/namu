@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use namu_engine::kernel::ValueStore;
 use namu_proto::{NodeRecord, keys};
 use redis::AsyncCommands;
@@ -208,36 +207,12 @@ impl RunTree {
 /// Adapts a [`RunTree`] to the kernel's store interface. Every write creates a new node.
 pub struct TreeStore<'a>(pub &'a RunTree);
 
-#[async_trait]
 impl ValueStore for TreeStore<'_> {
-    type Value = JsonValue;
-
-    async fn get_value(&self, ctx_id: usize, val_id: usize) -> anyhow::Result<JsonValue> {
-        self.0.get_value(ctx_id as u64, val_id).await
+    async fn get(&self, ctx: u64, value: usize) -> anyhow::Result<JsonValue> {
+        self.0.get_value(ctx, value).await
     }
 
-    async fn get_values(&self, ctx_id: usize, val_ids: &[usize]) -> anyhow::Result<Vec<JsonValue>> {
-        let mut out = Vec::with_capacity(val_ids.len());
-        for &val_id in val_ids {
-            out.push(self.0.get_value(ctx_id as u64, val_id).await?);
-        }
-        Ok(out)
-    }
-
-    async fn set_value(
-        &self,
-        ctx_id: usize,
-        val_id: usize,
-        value: JsonValue,
-    ) -> anyhow::Result<usize> {
-        self.set_values(ctx_id, vec![(val_id, value)]).await
-    }
-
-    async fn set_values(
-        &self,
-        ctx_id: usize,
-        values: Vec<(usize, JsonValue)>,
-    ) -> anyhow::Result<usize> {
-        Ok(self.0.create_child(ctx_id as u64, values).await? as usize)
+    async fn put(&self, ctx: u64, values: Vec<(usize, JsonValue)>) -> anyhow::Result<u64> {
+        self.0.create_child(ctx, values).await
     }
 }

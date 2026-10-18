@@ -3,12 +3,8 @@
 //! This module defines the core data structures that represent the graph,
 //! such as `Graph`, `Node`, `BasicBlock`, and `Terminator`.
 
-use std::any::Any;
-use std::sync::Arc;
-
 use namu_core::ValueId;
 
-pub type Value = Arc<dyn Any + Send + Sync>;
 pub type NodeId = usize;
 pub type BlockId = usize;
 
@@ -18,9 +14,9 @@ pub enum NodeKind {
         task_id: String,
         inputs: Vec<ValueId>,
     },
+    /// A constant, as JSON.
     Literal {
-        value: Value,
-        debug_repr: String,
+        json: String,
     },
     Phi {
         from: Vec<(BlockId, ValueId)>,
@@ -40,8 +36,8 @@ impl NodeKind {
         Self::Call { task_id, inputs }
     }
 
-    pub fn literal(value: Value, debug_repr: String) -> Self {
-        Self::Literal { value, debug_repr }
+    pub fn literal(json: String) -> Self {
+        Self::Literal { json }
     }
 
     pub fn phi(from: Vec<(BlockId, ValueId)>) -> Self {

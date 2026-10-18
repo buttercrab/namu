@@ -7,5 +7,5 @@ pub use builder::{
     call9, jump, literal, phi, return_unit, return_value,
 };
 pub use graph::{Graph, TracedValue};
-pub use ir::{BasicBlock, BlockId, Node, NodeKind, Terminator, Value};
+pub use ir::{BasicBlock, BlockId, Node, NodeKind, Terminator};
 pub use namu_macros::{task, workflow};

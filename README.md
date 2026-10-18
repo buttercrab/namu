@@ -28,8 +28,7 @@ Rust source -> namu-macros -> JSON IR -> namu-engine -> workers
 ```
 
 ## Examples
-- `examples/basic` - minimal tasks + workflow.
-- `examples/advanced` - in-process pipelines with batch, stream, and branching.
+- `examples/basic` - a workflow and its tasks, run in-process (`cargo run -p namu-basic`).
 - `examples/distributed` - WASM and native tasks across workers.
 
 ## Documentation

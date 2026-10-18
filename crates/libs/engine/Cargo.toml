@@ -6,15 +6,9 @@ license = "MIT"
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = { workspace = true }
-erased-serde = { workspace = true }
-hashbrown = { workspace = true }
-inventory = { workspace = true }
-itertools = { workspace = true }
-kanal = { workspace = true }
 namu-core = { path = "../core", version = "0.1.0" }
-namu-proto = { path = "../proto", version = "0.1.0" }
+serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
-scc = "3.8"
 tokio = { workspace = true }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 uuid = { version = "1.17", features = ["v4", "serde"] }
