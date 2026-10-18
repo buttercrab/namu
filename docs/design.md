@@ -460,9 +460,8 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 
 ## 14. Gap vs. current implementation
 
-"Today" reflects `namu-engine` (one engine; `LocalCluster` runs it in-process) and the
-proof-of-concept worker (`poc.md`), which still runs the distributed data plane until it moves onto
-the engine. ✅ marks rows that are done.
+"Today" reflects `namu-engine`, which runs in-process (`LocalCluster`) and across machines
+(`namu-worker` on the TCP mesh, see `poc.md`). ✅ marks rows that are done.
 
 | Area | Today | Target |
 |------|-------|--------|
@@ -476,13 +475,13 @@ the engine. ✅ marks rows that are done.
 | Literals | ✅ JSON-encoded; string literals are `String` | Typed IR values |
 | Values | JSON at every boundary | Codec abstraction plus types, zero-copy locally |
 | Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
-| Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait; in-process transport (`LocalCluster`) is the reference, checked on one worker vs three in every test | Network transport; the worker binary on the engine (§10) |
-| Distributed path | ✅ PoC worker: worker-local kernel; every handoff goes through Redis streams (~140 µs) | Peer-to-peer handoffs; Redis only as cache and durable log (§10) |
-| Routing | Round robin among the workers that serve a task | Load-aware, locality-aware placement; credits for sources (§10.3) |
-| Streams | PoC worker: stream task output is fanned out once complete. Engine: none yet | Pipelined per item, backpressure, resumable cursors (§6.5) |
+| Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
+| Distributed path | ✅ Peer-to-peer TCP mesh; the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
+| Routing | Round robin among the workers that serve a task; a branch waits for a server to join | Load-aware, locality-aware placement; credits for sources (§10.3) |
+| Streams | None | Pipelined per item, backpressure, resumable cursors (§6.5) |
 | Batch | Not supported | Runtime batching across branches and runs, `batch_size` / `max_wait` (§6.6) |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |
-| Durability | ✅ PoC worker: atomic commits through Redis, lease reclaim, poison items, `checkpoint` tasks. Engine: none yet | Upstream backup + write-behind log; idempotency keys for tasks (§7) |
-| Fan-in termination | ✅ Weight throwing with scope owners (engine). PoC worker: `live` counters in Redis | |
-| Membership | Static: workers registered at start | Join, drain and crash handling while a run is in progress (§10.4) |
+| Durability | None: the Redis-based recovery of the first proof of concept went with its queues | Upstream backup + write-behind log; idempotency keys for tasks (§7) |
+| Fan-in termination | ✅ Weight throwing with scope owners | |
+| Membership | ✅ Join (register + heartbeats, member list to every worker). No drain; a crashed worker is dropped from membership but its runs are lost | Drain and crash recovery (§10.4) |

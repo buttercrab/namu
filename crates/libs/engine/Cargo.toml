@@ -6,6 +6,7 @@ license = "MIT"
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 namu-core = { path = "../core", version = "0.1.0" }
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }

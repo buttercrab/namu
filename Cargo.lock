@@ -1599,6 +1599,7 @@ name = "namu-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "namu-core",
  "serde",
  "serde_json",
@@ -1646,6 +1647,7 @@ dependencies = [
  "axum",
  "bytes",
  "namu-core",
+ "namu-engine",
  "namu-proto",
  "redis",
  "serde",
@@ -1676,12 +1678,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "libloading",
- "namu-core",
  "namu-engine",
  "namu-proto",
- "redis",
  "reqwest",
- "serde",
  "serde_json",
  "sha2",
  "tar",

@@ -7,18 +7,35 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 
-use serde::Serialize;
+use async_trait::async_trait;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::run::RunSpec;
+
+/// A task at the version a run uses.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct TaskRef {
+    pub id: String,
+    /// Empty for in-process tasks, which are not versioned.
+    pub version: String,
+}
+
 /// Runs tasks on one worker.
+#[async_trait]
 pub trait Tasks: Send + Sync + 'static {
+    /// Called before any branch of `run` runs on this worker, e.g. to load the tasks it uses.
+    async fn prepare(&self, _run: &RunSpec) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Whether this worker can run `task`.
-    fn serves(&self, task: &str) -> bool;
+    fn serves(&self, task: &TaskRef) -> bool;
 
     /// Runs `task` once. `Ok(Err(message))` is the task's own failure, which fails the branch;
     /// `Err` is a failure of the machinery around it.
-    fn call(&self, task: &str, input: Value) -> anyhow::Result<Result<Value, String>>;
+    fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>>;
 }
 
 /// Packs call arguments into one task input.
@@ -43,7 +60,7 @@ pub fn unpack_output(output: Value, arity: usize) -> anyhow::Result<Vec<Value>> 
 type TaskFn = Box<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
 
 /// Tasks implemented as Rust functions in this process: the fastest runtime, with no
-/// serialization boundary beyond JSON values.
+/// serialization boundary beyond JSON values. They are not versioned.
 #[derive(Default)]
 pub struct FnTasks {
     tasks: HashMap<String, TaskFn>,
@@ -76,16 +93,17 @@ impl FnTasks {
     }
 }
 
+#[async_trait]
 impl Tasks for FnTasks {
-    fn serves(&self, task: &str) -> bool {
-        self.tasks.contains_key(task)
+    fn serves(&self, task: &TaskRef) -> bool {
+        self.tasks.contains_key(&task.id)
     }
 
-    fn call(&self, task: &str, input: Value) -> anyhow::Result<Result<Value, String>> {
+    fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {
         let f = self
             .tasks
-            .get(task)
-            .ok_or_else(|| anyhow::anyhow!("task {task} is not served here"))?;
+            .get(&task.id)
+            .ok_or_else(|| anyhow::anyhow!("task {} is not served here", task.id))?;
         Ok(f(input))
     }
 }
@@ -95,6 +113,13 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    fn task(id: &str) -> TaskRef {
+        TaskRef {
+            id: id.to_string(),
+            version: String::new(),
+        }
+    }
 
     #[test]
     fn arguments_follow_the_packing_convention() {
@@ -117,10 +142,16 @@ mod tests {
         let tasks = FnTasks::new()
             .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
             .with("fail", |_: ()| Err::<i32, _>("no"));
-        assert!(tasks.serves("add"));
-        assert!(!tasks.serves("mul"));
-        assert_eq!(tasks.call("add", json!([2, 3])).unwrap(), Ok(json!(5)));
-        assert_eq!(tasks.call("fail", Value::Null).unwrap(), Err("no".into()));
-        assert!(tasks.call("add", json!("x")).unwrap().is_err());
+        assert!(tasks.serves(&task("add")));
+        assert!(!tasks.serves(&task("mul")));
+        assert_eq!(
+            tasks.call(&task("add"), json!([2, 3])).unwrap(),
+            Ok(json!(5))
+        );
+        assert_eq!(
+            tasks.call(&task("fail"), Value::Null).unwrap(),
+            Err("no".into())
+        );
+        assert!(tasks.call(&task("add"), json!("x")).unwrap().is_err());
     }
 }

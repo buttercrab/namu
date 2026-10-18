@@ -38,6 +38,13 @@ let cluster = LocalCluster::uniform(3, Arc::new(tasks));
 let outcome = cluster.run(workflow_ir).await?;
 ```
 
-## Distributed workers
-`namu-worker` still runs the proof-of-concept data plane (Redis queues and commits, `poc.md`) on the
-same kernel. It moves onto the engine's workers, with a network transport, in the next step.
+## Across machines
+The same workers talk over TCP (`TcpTransport`). `namu-worker` runs one engine worker per process,
+with the WASM and native task runtimes, and joins the mesh through the orchestrator, which gives it
+its id and the member list. The orchestrator is itself a member (id 0): it sends a run to the
+worker that will own it and hears back when it is over. `LocalCluster::tcp` runs the same setup on
+localhost, and the test suite checks every workflow on it too.
+
+A worker learns about a run the first time it receives work for it: it asks the run's owner for
+the run's description and prepares the tasks it uses. When a run is over, its owner asks every
+worker to forget it, and each one reports what it did.

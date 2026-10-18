@@ -4,18 +4,17 @@
 //! workflow must produce the same results here as on any number of machines, which is what
 //! makes it the standard the distributed runtime is checked against.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::Context;
 use namu_core::ir::Workflow;
 
 use crate::ids::WorkerId;
 use crate::routes::Routes;
 use crate::run::RunOutcome;
-use crate::tasks::Tasks;
-use crate::transport::LocalTransport;
+use crate::tasks::{TaskRef, Tasks};
+use crate::transport::{LocalTransport, TcpTransport};
 use crate::worker::Worker;
 
 pub struct LocalCluster {
@@ -46,6 +45,37 @@ impl LocalCluster {
         }
     }
 
+    /// Like [`LocalCluster::new`], but the workers talk over TCP on localhost, so every message
+    /// is encoded, sent and decoded exactly as between machines.
+    pub async fn tcp(task_sets: Vec<Arc<dyn Tasks>>) -> std::io::Result<Self> {
+        assert!(!task_sets.is_empty(), "a cluster needs a worker");
+        let mut endpoints = Vec::new();
+        for _ in &task_sets {
+            endpoints.push(TcpTransport::bind(([127, 0, 0, 1], 0).into()).await?);
+        }
+        let ids: Vec<WorkerId> = (1..).take(endpoints.len()).collect();
+        for (transport, _, _) in &endpoints {
+            for (&id, (_, addr, _)) in ids.iter().zip(&endpoints) {
+                transport.set_peer(id, *addr);
+            }
+        }
+        let routes = Arc::new(Routes::default());
+        routes.set_workers(ids.clone());
+        let workers = task_sets
+            .into_iter()
+            .zip(endpoints)
+            .zip(ids)
+            .map(|((tasks, (transport, _, inbox)), id)| {
+                Worker::spawn(id, tasks, routes.clone(), transport, inbox)
+            })
+            .collect();
+        Ok(Self {
+            workers,
+            routes,
+            next_owner: AtomicUsize::new(0),
+        })
+    }
+
     /// Starts `n` workers that all serve `tasks`.
     pub fn uniform(n: usize, tasks: Arc<dyn Tasks>) -> Self {
         Self::new(vec![tasks; n])
@@ -53,23 +83,29 @@ impl LocalCluster {
 
     /// Runs `workflow` to completion.
     pub async fn run(&self, workflow: Workflow) -> anyhow::Result<RunOutcome> {
-        let tasks: BTreeSet<&str> = workflow
+        let tasks: BTreeSet<TaskRef> = workflow
             .operations
             .iter()
-            .filter_map(|op| op.call.as_ref().map(|call| call.task_id.as_str()))
+            .filter_map(|op| op.call.as_ref())
+            .map(|call| TaskRef {
+                id: call.task_id.clone(),
+                version: String::new(),
+            })
             .collect();
         for task in tasks {
-            let servers = self.workers.iter().filter(|w| w.serves(task));
-            self.routes
-                .set_servers(task, servers.map(Worker::id).collect());
+            let servers: Vec<WorkerId> = self
+                .workers
+                .iter()
+                .filter(|w| w.serves(&task))
+                .map(Worker::id)
+                .collect();
+            // Membership is fixed here, so a branch waiting for a server would wait forever.
+            anyhow::ensure!(!servers.is_empty(), "no worker serves task {}", task.id);
+            self.routes.set_servers(task, servers);
         }
 
         let i = self.next_owner.fetch_add(1, Ordering::Relaxed);
         let owner = &self.workers[i % self.workers.len()];
-        let spec = owner.new_run(workflow)?;
-        for worker in &self.workers {
-            worker.install(spec.clone());
-        }
-        owner.start(&spec)?.await.context("run abandoned")
+        owner.run(workflow, BTreeMap::new()).await
     }
 }

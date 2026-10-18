@@ -5,7 +5,7 @@ mod common;
 use std::sync::Arc;
 
 use namu::workflow;
-use namu_engine::{FnTasks, LocalCluster};
+use namu_engine::{FnTasks, LocalCluster, Tasks};
 use serde_json::json;
 
 use crate::common::*;
@@ -234,6 +234,9 @@ async fn branches_move_to_the_worker_that_serves_their_task() {
     // (10 + .. + 80) * 2 + 8
     assert_eq!(outcome.results, [json!(728)]);
     assert!(outcome.succeeded(), "{:?}", outcome.failures);
+    // Worker 1 ran range, the 8 adds and sum; worker 2 the 8 doubles.
+    assert_eq!(outcome.workers[&1].calls, 10);
+    assert_eq!(outcome.workers[&2].calls, 8);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -247,11 +250,19 @@ async fn concurrent_runs_end_exactly_once_with_the_same_result() {
         sum(per_x)
     }
 
-    let cluster = Arc::new(LocalCluster::uniform(4, Arc::new(tasks())));
-    let runs = (0..64).map(|_| {
-        let cluster = cluster.clone();
-        tokio::spawn(async move { cluster.run(wf().to_serializable("stress".into())).await })
-    });
+    let tasks: Arc<dyn Tasks> = Arc::new(tasks());
+    let local = Arc::new(LocalCluster::uniform(4, tasks.clone()));
+    let tcp = Arc::new(LocalCluster::tcp(vec![tasks; 4]).await.unwrap());
+    let runs: Vec<_> = (0..64)
+        .map(|i| {
+            let cluster = if i % 2 == 0 {
+                local.clone()
+            } else {
+                tcp.clone()
+            };
+            tokio::spawn(async move { cluster.run(wf().to_serializable("stress".into())).await })
+        })
+        .collect();
     for run in runs {
         let outcome = run.await.unwrap().unwrap();
         // x = 1..=20 is item 10x, split into 10x..10x+4: each contributes 50x + 10. The part 20
@@ -261,5 +272,8 @@ async fn concurrent_runs_end_exactly_once_with_the_same_result() {
             [json!((1..=20).map(|x| 50 * x + 10).sum::<i32>() - 20)]
         );
         assert_eq!(outcome.failures.len(), 1);
+        // Every worker reported what it did: range, 20 splits, 100 maybe_fails, 20 + 1 sums.
+        let calls: u64 = outcome.workers.values().map(|w| w.calls).sum();
+        assert_eq!(calls, 142);
     }
 }

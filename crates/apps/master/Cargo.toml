@@ -13,8 +13,9 @@ anyhow = { workspace = true }
 axum = { version = "0.8", features = ["multipart"] }
 bytes = "1.10"
 namu-core = { path = "../../libs/core", version = "0.1.0" }
+namu-engine = { path = "../../libs/engine", version = "0.1.0" }
 namu-proto = { path = "../../libs/proto", version = "0.1.0" }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "streams"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
