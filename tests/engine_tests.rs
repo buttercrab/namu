@@ -277,3 +277,28 @@ async fn concurrent_runs_end_exactly_once_with_the_same_result() {
         assert_eq!(calls, 142);
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_loop_holds_a_flat_number_of_nodes() {
+    #[workflow]
+    fn wf() -> i32 {
+        let mut i = 0;
+        let mut total = 0;
+        while less_than(i, 5000) {
+            i = add(i, 1);
+            total = add(total, i);
+        }
+        total
+    }
+
+    let cluster = LocalCluster::uniform(1, Arc::new(tasks()));
+    let outcome = cluster
+        .run(wf().to_serializable("loop".into()))
+        .await
+        .unwrap();
+    // 1 + 2 + .. + 5000, overflowing nothing in i32.
+    assert_eq!(outcome.results, [json!(12502500)]);
+    // 15,000 calls, each creating a node: without placement and sweeping, all would be held.
+    let peak = outcome.workers[&1].peak_nodes;
+    assert!(peak < 2500, "{peak} nodes held at once");
+}

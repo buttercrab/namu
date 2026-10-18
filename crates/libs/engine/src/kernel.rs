@@ -23,12 +23,22 @@ pub trait ValueStore: Sync {
         value: ValueId,
     ) -> impl Future<Output = anyhow::Result<Value>> + Send;
 
-    /// Creates a child of `ctx` holding `values`, and returns it.
+    /// Grows `ctx` by a node holding `values`, created at point `at`, and returns it.
     fn put(
         &self,
         ctx: NodeId,
         values: Vec<(ValueId, Value)>,
+        at: Point,
     ) -> impl Future<Output = anyhow::Result<NodeId>> + Send;
+}
+
+/// Where in an op a node is created, which decides what is still live there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Point {
+    /// After the op's literals and phis.
+    Enter(OpId),
+    /// After the op's action: a call's outputs, a fan-out's item, a collect's list.
+    Action(OpId),
 }
 
 /// Where to continue in the IR.
@@ -78,7 +88,7 @@ pub async fn drive<S: ValueStore>(
     };
     loop {
         let op = operation(workflow, op_id)?;
-        ctx = enter(store, ctx, op, pred).await?;
+        ctx = enter(store, ctx, op_id, op, pred).await?;
         if op.call.is_some() {
             return Ok(Plan::Call { op: op_id, ctx });
         }
@@ -110,6 +120,7 @@ pub fn operation(workflow: &Workflow, op: OpId) -> anyhow::Result<&Operation> {
 async fn enter<S: ValueStore>(
     store: &S,
     ctx: NodeId,
+    op_id: OpId,
     op: &Operation,
     pred: Option<OpId>,
 ) -> anyhow::Result<NodeId> {
@@ -132,7 +143,7 @@ async fn enter<S: ValueStore>(
     if values.is_empty() {
         return Ok(ctx);
     }
-    store.put(ctx, values).await
+    store.put(ctx, values, Point::Enter(op_id)).await
 }
 
 /// The op that follows `op`, or `None` if it returns.

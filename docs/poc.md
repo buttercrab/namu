@@ -93,7 +93,7 @@ Workflows in `examples/distributed/workflows`:
 | Handoff between two local workers (`bench_handoff`, 200 handoffs) | **~65 µs** (13 ms total) | ~140 µs |
 | Handoff macOS ↔ Linux container (Docker Desktop VM network) | **~0.3 ms** | ~0.5 ms |
 | `nested_stats` (606 calls) on 3 local workers | 11 ms | 65 ms |
-| `bench_local` (1,000-iteration loop, 2,001 calls) | ~45 ms (~22 µs/step) | ~40 ms |
+| `bench_local` (1,000-iteration loop, 2,001 calls) | **3 ms** (~1.5 µs/step) | ~40 ms (~20 µs/step) |
 | `doc_stats` (51 calls, task-bound), 1 worker vs 3 | ~80 ms vs ~85 ms | ~85 ms vs ~88 ms |
 
 How to read these:
@@ -101,19 +101,22 @@ How to read these:
   an asynchronous acknowledgement once the receiver has logged it. What remains is TCP on
   localhost, JSON encoding, log writes behind the critical path, and scheduling. Without the log
   (step 2) a handoff took ~50 µs and `nested_stats` 7 ms.
-- **Long loops still pay for walking the parent chain** on every lookup (gap 4).
+- **Long loops stay fast and small.** A node attaches under the deepest node still holding a live
+  value, so a loop's chain stays as short as its live values, and the nodes left behind are swept
+  (design §6.2). A 5,000-iteration loop holds a bounded number of nodes; before this, a long loop
+  paid for walking an ever longer chain on every lookup.
 - **No speedup on one machine is expected** for task-bound work. One worker already uses all
   cores; extra processes on the same host only add coordination.
 
 ## Known gaps
 
 1. **No idempotency keys** for tasks with external side effects.
-2. **The log keeps a run's branch ends and reports until the run ends**; liveness-based GC will
-   bound it for long runs.
+2. **The log keeps a run's branch ends, reports and trail nodes until the run ends.** Workers'
+   memory stays flat (nodes are swept), but the log of a run lasting weeks grows; it needs
+   compaction.
 3. **Values travel as JSON**, inline in messages; there is no binary codec or object-store path
    for large values yet.
-4. **Lookups walk the parent chain** (O(depth)); liveness-based placement will keep chains short.
-5. **Routing is round robin** among the workers that serve a task; load and locality are not
-   considered yet, and there are no credits.
-6. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated
+4. **Routing is round robin** among the workers that serve a task; load and locality are not
+   considered yet (stream credits are local to the source; there is no load feedback).
+5. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated
    stubs come later.

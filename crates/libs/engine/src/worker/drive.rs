@@ -13,12 +13,12 @@ use super::delivery::Release;
 use super::view::View;
 use super::{Inner, Run};
 use crate::ids::{NodeId, ScopeId, WorkerId, owner};
-use crate::kernel::{self, Plan, Start, ValueStore};
+use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Message, Report, Resume};
 use crate::scope::{Continuation, FULL, Scope, Then, Weight, split};
 use crate::tasks::{TaskRef, pack_input, unpack_output};
-use crate::tree::Node;
+use crate::tree::{Node, Pin};
 
 impl Inner {
     pub(super) fn on_handoff(self: &Arc<Self>, message: Message) {
@@ -54,17 +54,19 @@ impl Inner {
     }
 
     pub(super) fn spawn_drive(self: &Arc<Self>, run: Arc<Run>, branch: Branch) {
+        // Pinned now, not when the task starts, so nothing it needs can be swept in between.
+        let at = Driving {
+            since: self.ids.peek(),
+            pin: run.nodes.pin(branch.ctx),
+            branch,
+        };
         let worker = self.clone();
-        tokio::spawn(async move { worker.drive(&run, branch).await });
+        tokio::spawn(async move { worker.drive(&run, at).await });
     }
 
     /// Advances `branch` until it ends or leaves this worker. A branch that cannot go on fails,
     /// and its failure is reported like any other end.
-    async fn drive(self: &Arc<Self>, run: &Arc<Run>, branch: Branch) {
-        let mut at = Driving {
-            arrived: branch.ctx,
-            branch,
-        };
+    async fn drive(self: &Arc<Self>, run: &Arc<Run>, mut at: Driving) {
         if let Err(err) = self.advance(run, &mut at).await {
             self.report(run, &at.branch, Report::Failure(format!("{err:#}")));
         }
@@ -75,6 +77,7 @@ impl Inner {
         let workflow = run.spec.workflow();
         let view = View { worker: self, run };
         loop {
+            at.pin.set(at.branch.ctx);
             let plan = match at.branch.resume {
                 Resume::Kernel(start) => {
                     kernel::drive(workflow, &view, at.branch.ctx, start).await?
@@ -104,7 +107,7 @@ impl Inner {
                         .call
                         .as_ref()
                         .context("op has no call")?;
-                    let next = match self.run_call(&view, task, call, ctx).await? {
+                    let next = match self.run_call(&view, task, op, call, ctx).await? {
                         Ok(next) => next,
                         Err(failure) => {
                             self.report(run, &at.branch, Report::Failure(failure));
@@ -141,9 +144,8 @@ impl Inner {
                         .as_ref()
                         .context("op has no collect")?
                         .output;
-                    at.branch.ctx = view
-                        .put(ctx, vec![(output, Value::Array(Vec::new()))])
-                        .await?;
+                    let list = vec![(output, Value::Array(Vec::new()))];
+                    at.branch.ctx = view.put(ctx, list, Point::Action(collect)).await?;
                     at.branch.resume = Resume::Kernel(Start::After { op: collect });
                 }
                 Plan::Collect { op, ctx } => {
@@ -175,6 +177,7 @@ impl Inner {
         self: &Arc<Self>,
         view: &View<'_>,
         task: &TaskRef,
+        op: OpId,
         call: &Call,
         ctx: NodeId,
     ) -> anyhow::Result<Result<NodeId, String>> {
@@ -202,7 +205,7 @@ impl Inner {
             return Ok(Ok(ctx));
         }
         let values = call.outputs.iter().copied().zip(outputs).collect();
-        Ok(Ok(view.put(ctx, values).await?))
+        Ok(Ok(view.put(ctx, values, Point::Action(op)).await?))
     }
 
     async fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {
@@ -228,7 +231,7 @@ impl Inner {
         ]);
         durable.await.context("recording a checkpoint failed")?;
         self.log.record(vec![left]);
-        at.arrived = at.branch.ctx;
+        at.since = self.ids.peek();
         Ok(())
     }
 
@@ -253,10 +256,8 @@ impl Inner {
             collect: run.spec.collect_ops[op],
         };
         let trail = self.trail(run, at);
-        run.scopes
-            .lock()
-            .unwrap()
-            .insert(scope, Scope::new(Then::Continue(continuation.clone())));
+        let opened = Scope::new(Then::Continue(continuation.clone()));
+        run.open_scope(scope, opened, Some(branch.ctx));
         // The opening branch's record goes once the scope and every child are durable elsewhere.
         let release = Release::new(items.len() + 1, self.gone(run, branch));
         let durable = self.log.append(vec![
@@ -274,14 +275,11 @@ impl Inner {
         self.release_when(durable, release.clone());
 
         let inner: Arc<[_]> = branch.scopes.iter().copied().chain([scope]).collect();
+        let live = run.spec.liveness.after_action(op);
         let shares = split(FULL, items.len());
         for ((index, item), share) in (0..).zip(items).zip(shares) {
-            let child = self.ids.next();
-            let node = Arc::new(Node {
-                parent: Some(branch.ctx),
-                values: vec![(output, item)],
-            });
-            run.nodes.insert(child, node.clone());
+            let child = self.grow(run, branch.ctx, live, vec![(output, item)]);
+            let node = run.nodes.get(child).expect("just grown");
             let mut nodes = vec![(child, node)];
             nodes.extend(trail.iter().cloned());
             let child = Branch {
@@ -310,18 +308,23 @@ pub(super) fn run_task<T>(f: impl FnOnce() -> T) -> T {
 /// A branch being driven on this worker.
 pub(super) struct Driving {
     pub branch: Branch,
-    /// The context it arrived here with: everything below it was created here.
-    pub arrived: NodeId,
+    /// The first id minted after the branch arrived (or passed a checkpoint): nodes of its chain
+    /// with ids from here on were created here for it, and are not durable yet.
+    pub since: NodeId,
+    /// Keeps the branch's context held while it is driven.
+    pub pin: Pin,
 }
 
 impl Inner {
-    /// The nodes created here for the branch at `at`, from its context back to where it arrived.
+    /// The nodes of the branch's chain created here since it arrived, innermost first, and the
+    /// node they hang from if this worker holds it: what a handoff ships and a record logs.
     pub(super) fn trail(&self, run: &Run, at: &Driving) -> Vec<(NodeId, Arc<Node>)> {
         let mut nodes = Vec::new();
         let mut cursor = Some(at.branch.ctx);
         while let Some(id) = cursor {
             let Some(node) = run.nodes.get(id) else { break };
-            cursor = node.parent.filter(|_| id != at.arrived);
+            let created_here = owner(id) == self.id && id >= at.since;
+            cursor = node.parent.filter(|_| created_here);
             nodes.push((id, node));
         }
         nodes

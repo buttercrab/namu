@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use namu_core::OpId;
 use namu_core::ir::Workflow;
+use namu_core::liveness::Liveness;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -40,6 +41,8 @@ pub struct RunSpec {
     pub collect_ops: Vec<Option<OpId>>,
     /// For each op that calls a task, the fan-out that is the only use of its output.
     pub fused: Vec<Option<OpId>>,
+    /// What is live where nodes are created, for placing them (design §6.2).
+    pub liveness: Liveness,
     /// For each op that calls a task, the task at the run's version.
     tasks: Vec<Option<TaskRef>>,
 }
@@ -48,6 +51,7 @@ impl RunSpec {
     pub fn from_info(info: Arc<RunInfo>) -> anyhow::Result<Self> {
         let collect_ops = namu_core::scopes::collect_ops(&info.workflow)?;
         let fused = namu_core::scopes::fused_fan_outs(&info.workflow);
+        let liveness = namu_core::liveness::liveness(&info.workflow);
         let tasks = info
             .workflow
             .operations
@@ -67,6 +71,7 @@ impl RunSpec {
             info,
             collect_ops,
             fused,
+            liveness,
             tasks,
         })
     }
@@ -116,4 +121,6 @@ pub struct WorkerStats {
     pub calls: u64,
     /// Nodes it fetched from other workers.
     pub fetches: u64,
+    /// The most value-tree nodes it held at once: flat, however long the run (design §6.2).
+    pub peak_nodes: u64,
 }

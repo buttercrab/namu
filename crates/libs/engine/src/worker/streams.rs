@@ -23,7 +23,6 @@ use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
 use crate::scope::{Continuation, FULL, Position, SOURCE_INDEX, Scope, Source, Then};
 use crate::tasks::{TaskRef, TaskStream, pack_input};
-use crate::tree::Node;
 
 impl Inner {
     /// Runs the stream task called at `call` as the source of a new scope that feeds `fan_out`.
@@ -89,10 +88,7 @@ impl Inner {
         let credits = Arc::new(Semaphore::new(window.saturating_sub(in_flight as usize)));
         let (ctx, scopes) = (continuation.ctx, continuation.scopes.clone());
         let inner: Arc<[ScopeId]> = scopes.iter().copied().chain([id]).collect();
-        run.scopes
-            .lock()
-            .unwrap()
-            .insert(id, scope.with_credits(credits.clone()));
+        run.open_scope(id, scope.with_credits(credits.clone()), Some(ctx));
 
         let (worker, run) = (self.clone(), run.clone());
         tokio::spawn(async move {
@@ -213,12 +209,9 @@ impl Inner {
             .as_ref()
             .expect("a stream feeds a fan-out")
             .output;
-        let id = self.ids.next();
-        let node = Arc::new(Node {
-            parent: Some(feeding.ctx),
-            values: vec![(output, value)],
-        });
-        run.nodes.insert(id, node.clone());
+        let live = run.spec.liveness.after_action(feeding.source.fan_out);
+        let id = self.grow(run, feeding.ctx, live, vec![(output, value)]);
+        let node = run.nodes.get(id).expect("just grown");
         let branch = Branch {
             id: BranchId {
                 scope: feeding.scope,
@@ -291,7 +284,7 @@ impl Inner {
         let Then::Continue(continuation) = scope.then else {
             unreachable!("a stream feeds a fan-out scope")
         };
-        run.finished.lock().unwrap().insert(id);
+        run.close_scope(id);
         let branch = Branch {
             id: continuation.branch,
             hop: continuation.hop + 1,

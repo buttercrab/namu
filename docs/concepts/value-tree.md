@@ -8,6 +8,11 @@ parallel branches share what they have in common, without copying it and without
 - A **context** is one execution path. Each step that produces values adds a new node: a parent
   pointer and the values the step produced.
 - **Nodes never change**, including their parent. Lookups walk up the ancestors.
+- **A new node attaches under the deepest node that still holds a live value**, not blindly under
+  the current one. Which values are live where is found from the IR before the run; a node's own
+  values shadow older copies of the same value (a loop's phi defines the same value every
+  iteration). So a chain is as deep as the values in use, however long the run, and the nodes left
+  behind hold only dead values (design §6.2).
 - A **fan-out** creates one child per item; siblings share everything above them.
 - A **collect** continues in a new child of the context that fanned out: values from before the
   fan-out are visible again, per-item values are not.
@@ -16,6 +21,11 @@ parallel branches share what they have in common, without copying it and without
   and scope sees them.
 
 ## In the engine
+- Each worker keeps the nodes it holds for a run, and sweeps away the ones no pinned context
+  reaches any more: the contexts of branches being driven, of scopes waiting to continue, of
+  streams and of branches waiting for a batch. A sweep runs when the node count has doubled since
+  the last one, and spares nodes created since then. A node swept here and asked for again (by
+  another worker, say) is read from the log, which holds every node a live branch can reach.
 - A node lives on the worker that created it; its id names that worker. Other workers fetch it
   from there once and cache it, which is always safe because it never changes. A handoff carries
   the branch's own context node, so the receiver usually needs no fetch at all.
