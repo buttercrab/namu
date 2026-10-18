@@ -164,7 +164,7 @@ pub struct WorkerRegisterRequest {
 pub struct WorkerRegisterResponse {
     /// Unique per registration; the worker's identity in the mesh.
     pub worker_id: u64,
-    pub members: Vec<Member>,
+    pub membership: Membership,
 }
 
 /// A participant in the mesh. Id 0 is the control plane (the orchestrator), which serves no
@@ -178,11 +178,14 @@ pub struct Member {
     pub platform: String,
 }
 
-/// Registered workers renew their membership with a heartbeat, which returns the current members.
-/// A worker whose heartbeats stop is no longer a member; if it comes back, it registers anew.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HeartbeatResponse {
+/// The mesh as the control plane sees it. Registered workers renew their membership with a
+/// heartbeat, which returns this. A worker whose heartbeats stop is no longer a member: its
+/// successor takes over its work (design §7.4), and if it comes back, it registers anew.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Membership {
     pub members: Vec<Member>,
+    /// Dead worker -> the worker that took over its work.
+    pub successors: BTreeMap<u64, u64>,
 }
 
 /// How often workers send heartbeats, and how long membership lasts without one.
@@ -198,6 +201,12 @@ pub mod keys {
     pub const WORKER_NAMES: &str = "namu:worker_names";
     /// Round-robin cursor for choosing the owner of a new run.
     pub const OWNER_CURSOR: &str = "namu:owner_cursor";
+    /// Set: workers believed alive. One that is here but has no member record has died.
+    pub const ALIVE: &str = "namu:alive";
+    /// Hash: dead worker -> the worker that took over its work.
+    pub const SUCCESSORS: &str = "namu:successors";
+    /// Set: runs that have not finished.
+    pub const RUNNING: &str = "namu:running";
 
     /// A live member's record; expires unless renewed by heartbeats.
     pub fn member(id: u64) -> String {
@@ -214,7 +223,7 @@ pub mod keys {
         format!("namu:workflow:{id}:{version}")
     }
 
-    /// Hash: status, created_at_ms, finished_at_ms.
+    /// Hash: status, owner, workflow_id, version, created_at_ms, finished_at_ms.
     pub fn run_state(run: Uuid) -> String {
         format!("namu:run:{run}:state")
     }

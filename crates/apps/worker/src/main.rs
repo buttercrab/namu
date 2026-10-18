@@ -1,8 +1,9 @@
 //! NAMU worker: the data plane. It joins the mesh, runs the engine's worker on it, and serves
 //! the WASM and native tasks whose runtimes it supports.
 //!
-//! The orchestrator gives the worker its id and the list of members; heartbeats keep both
-//! current. Everything else, from starting a run to its last branch, happens between workers.
+//! The orchestrator gives the worker its id and the membership; heartbeats keep it current.
+//! Everything else, from starting a run to its last branch, happens between workers. Redis holds
+//! the durable log that lets another worker take over if this one dies.
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -15,11 +16,13 @@ use namu_engine::Worker;
 use namu_engine::routes::Routes;
 use namu_engine::transport::TcpTransport;
 use namu_proto::{
-    HEARTBEAT_INTERVAL_MS, HeartbeatResponse, Member, TaskRuntime, WorkerRegisterRequest,
-    WorkerRegisterResponse, host_platform,
+    HEARTBEAT_INTERVAL_MS, Membership, TaskRuntime, WorkerRegisterRequest, WorkerRegisterResponse,
+    host_platform,
 };
+use redis::aio::ConnectionManager;
 use tracing::{error, info};
 
+mod log;
 mod runtime;
 mod tasks;
 
@@ -31,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "http://localhost:8080".to_string())
         .trim_end_matches('/')
         .to_string();
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
     let platform = host_platform();
     let name = std::env::var("WORKER_ID").unwrap_or_else(|_| {
         format!(
@@ -48,6 +52,12 @@ async fn main() -> anyhow::Result<()> {
             TaskRuntime::Native => format!("native:{platform}"),
         })
         .collect();
+    let task_slots = match std::env::var("NAMU_TASK_SLOTS") {
+        Ok(raw) => raw
+            .parse()
+            .with_context(|| format!("invalid NAMU_TASK_SLOTS {raw:?}"))?,
+        Err(_) => Worker::default_task_slots(),
+    };
     let mesh_bind: SocketAddr = std::env::var("NAMU_MESH_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:0".to_string())
         .parse()
@@ -58,6 +68,8 @@ async fn main() -> anyhow::Result<()> {
     .join(&name);
     tokio::fs::create_dir_all(&cache_dir).await?;
 
+    let redis = ConnectionManager::new(redis::Client::open(redis_url)?).await?;
+    let log = log::RedisLog::spawn(redis);
     let (mesh, mesh_local, inbox) = TcpTransport::bind(mesh_bind).await?;
     let addr = std::env::var("NAMU_ADVERTISE_ADDR")
         .unwrap_or_else(|_| format!("127.0.0.1:{}", mesh_local.port()));
@@ -87,8 +99,16 @@ async fn main() -> anyhow::Result<()> {
         runtime_keys.clone(),
         routes.clone(),
     ));
-    apply_members(&mesh, &tasks, registration.members);
-    let _worker = Worker::spawn(id, tasks.clone(), routes, mesh.clone(), inbox);
+    apply(&mesh, &routes, &tasks, registration.membership);
+    let _worker = Worker::spawn(
+        id,
+        tasks.clone(),
+        routes.clone(),
+        mesh.clone(),
+        log,
+        inbox,
+        task_slots,
+    );
     info!(id, name, addr, ?runtime_keys, "worker ready");
 
     let heartbeat = format!("{orchestrator_url}/workers/{id}/heartbeat");
@@ -108,8 +128,8 @@ async fn main() -> anyhow::Result<()> {
             anyhow::bail!("membership expired; restart to rejoin");
         }
         match response.error_for_status() {
-            Ok(response) => match response.json::<HeartbeatResponse>().await {
-                Ok(beat) => apply_members(&mesh, &tasks, beat.members),
+            Ok(response) => match response.json::<Membership>().await {
+                Ok(membership) => apply(&mesh, &routes, &tasks, membership),
                 Err(err) => error!("bad heartbeat response: {err}"),
             },
             Err(err) => error!("heartbeat failed: {err}"),
@@ -117,15 +137,21 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Points the mesh and the routes at the current members.
-fn apply_members(mesh: &TcpTransport, tasks: &tasks::RuntimeTasks, members: Vec<Member>) {
-    for member in &members {
+/// Points the mesh and the routes at the current membership.
+fn apply(
+    mesh: &TcpTransport,
+    routes: &Routes,
+    tasks: &tasks::RuntimeTasks,
+    membership: Membership,
+) {
+    for member in &membership.members {
         match member.addr.parse() {
             Ok(addr) => mesh.set_peer(member.id, addr),
             Err(err) => error!(member.id, member.addr, "bad member address: {err}"),
         }
     }
-    tasks.set_members(members);
+    routes.set_successors(membership.successors.into_iter().collect());
+    tasks.set_members(membership.members);
 }
 
 fn parse_runtimes(raw: &str) -> anyhow::Result<Vec<TaskRuntime>> {

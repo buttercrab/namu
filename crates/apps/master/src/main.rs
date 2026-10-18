@@ -68,6 +68,18 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let sweeper = state.clone();
+    tokio::spawn(async move {
+        let period = std::time::Duration::from_millis(namu_proto::HEARTBEAT_INTERVAL_MS);
+        let mut interval = tokio::time::interval(period);
+        loop {
+            interval.tick().await;
+            if let Err(err) = routes::sweep(&sweeper).await {
+                tracing::error!("membership sweep failed: {err:#}");
+            }
+        }
+    });
+
     let app = Router::new()
         .route("/healthz", get(routes::healthz))
         .route("/tasks", post(routes::upload_task))

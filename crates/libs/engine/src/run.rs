@@ -1,13 +1,14 @@
 //! What every worker knows about a run.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use namu_core::OpId;
 use namu_core::ir::Workflow;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::{Minter, NodeId, RunId, ScopeId, WorkerId, owner};
+use crate::ids::{NodeId, RunId, ScopeId, WorkerId, owner};
 use crate::tasks::TaskRef;
 
 /// A run as it is described to the workers that take part in it.
@@ -20,12 +21,21 @@ pub struct RunInfo {
     /// The root context node and the root scope, both held by the run's owner.
     pub root: NodeId,
     pub root_scope: ScopeId,
+    /// Who is told the outcome (the control plane), if anyone.
+    pub reply_to: Option<WorkerId>,
+}
+
+impl RunInfo {
+    /// The worker that owns the run: it holds the root scope and receives reports.
+    pub fn owner(&self) -> WorkerId {
+        owner(self.root_scope)
+    }
 }
 
 /// A run's immutable description with what is derived from it once per worker.
 #[derive(Debug)]
 pub struct RunSpec {
-    pub info: RunInfo,
+    pub info: Arc<RunInfo>,
     /// For each op that fans out, the op that collects its scope.
     pub collect_ops: Vec<Option<OpId>>,
     /// For each op that calls a task, the task at the run's version.
@@ -33,22 +43,7 @@ pub struct RunSpec {
 }
 
 impl RunSpec {
-    /// Describes a new run owned by the worker minting its ids.
-    pub fn new(
-        workflow: Workflow,
-        task_versions: BTreeMap<String, String>,
-        ids: &Minter,
-    ) -> anyhow::Result<Self> {
-        Self::from_info(RunInfo {
-            id: RunId::new_v4(),
-            workflow,
-            task_versions,
-            root: ids.next(),
-            root_scope: ids.next(),
-        })
-    }
-
-    pub fn from_info(info: RunInfo) -> anyhow::Result<Self> {
+    pub fn from_info(info: Arc<RunInfo>) -> anyhow::Result<Self> {
         let collect_ops = namu_core::scopes::collect_ops(&info.workflow)?;
         let tasks = info
             .workflow
@@ -90,9 +85,8 @@ impl RunSpec {
         self.tasks.iter().flatten()
     }
 
-    /// The worker that owns the run: it holds the root scope and receives reports.
     pub fn owner(&self) -> WorkerId {
-        owner(self.info.root_scope)
+        self.info.owner()
     }
 }
 

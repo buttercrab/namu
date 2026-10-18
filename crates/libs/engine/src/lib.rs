@@ -8,6 +8,7 @@
 mod cluster;
 pub mod ids;
 pub mod kernel;
+pub mod log;
 pub mod message;
 pub mod routes;
 pub mod run;

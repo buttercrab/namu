@@ -30,6 +30,7 @@ pub struct RuntimeTasks {
 
 struct Task {
     runtime_key: String,
+    checkpoint: bool,
     /// Loaded when this worker serves the task.
     runner: Option<Arc<Runner>>,
 }
@@ -118,6 +119,7 @@ impl Tasks for RuntimeTasks {
             self.route(task, &runtime_key);
             let entry = Task {
                 runtime_key,
+                checkpoint: manifest.checkpoint,
                 runner,
             };
             self.tasks.write().unwrap().insert(task.clone(), entry);
@@ -131,6 +133,14 @@ impl Tasks for RuntimeTasks {
             .unwrap()
             .get(task)
             .is_some_and(|entry| entry.runner.is_some())
+    }
+
+    fn checkpoint(&self, task: &TaskRef) -> bool {
+        self.tasks
+            .read()
+            .unwrap()
+            .get(task)
+            .is_some_and(|entry| entry.checkpoint)
     }
 
     fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {

@@ -18,7 +18,8 @@ runtime each task declares. See `design.md` for the target design and `poc.md` f
   runs, run status. It is a member of the mesh (id 0) but never on the per-step path.
 - **namu-worker** (data plane): an engine worker on the TCP mesh, with the WASM and native task
   runtimes.
-- **Redis**: the control plane's store (registry, members, run status). Workers do not use it.
+- **Redis**: the control plane's store (registry, members, run status), and the workers' durable
+  log, written behind the critical path and read only to take over from a dead worker.
 
 ## Runtime flow
 1. `namu publish` uploads task artifacts and workflow IR. Versions are immutable.

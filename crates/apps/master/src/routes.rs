@@ -12,9 +12,8 @@ use namu_engine::RunOutcome;
 use namu_engine::message::Message;
 use namu_engine::transport::Transport;
 use namu_proto::{
-    HeartbeatResponse, MEMBERSHIP_TTL_MS, Member, RunCreateRequest, RunCreateResponse,
-    RunStatusResponse, TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse,
-    WorkflowUploadRequest, keys,
+    MEMBERSHIP_TTL_MS, Member, Membership, RunCreateRequest, RunCreateResponse, RunStatusResponse,
+    TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse, WorkflowUploadRequest, keys,
 };
 use redis::AsyncCommands;
 use serde_json::{Value as JsonValue, json};
@@ -224,17 +223,14 @@ pub async fn create_run(
     Json(req): Json<RunCreateRequest>,
 ) -> ApiResult<Json<RunCreateResponse>> {
     let mut redis = state.redis.clone();
-    let raw: Option<String> = redis
-        .get(keys::workflow(&req.workflow_id, &req.version))
-        .await
-        .map_err(internal)?;
-    let raw = raw.ok_or((StatusCode::NOT_FOUND, "unknown workflow".to_string()))?;
-    let upload: WorkflowUploadRequest = serde_json::from_str(&raw).map_err(internal)?;
-    let workflow: Workflow = serde_json::from_value(upload.ir).map_err(internal)?;
-
-    let workers: Vec<Member> = members(&state)
+    let start = load_start(&mut redis, &req.workflow_id, &req.version)
         .await
         .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, "unknown workflow".to_string()))?;
+    let workers: Vec<Member> = membership(&state)
+        .await
+        .map_err(internal)?
+        .members
         .into_iter()
         .filter(|member| member.id != 0)
         .collect();
@@ -246,30 +242,127 @@ pub async fn create_run(
     }
     let cursor: u64 = redis.incr(keys::OWNER_CURSOR, 1).await.map_err(internal)?;
     let owner = &workers[cursor as usize % workers.len()];
-    let owner_addr: SocketAddr = owner.addr.parse().map_err(internal)?;
 
     let run_id = Uuid::new_v4();
-    let _: () = redis
+    let _: () = redis::pipe()
         .hset_multiple(
             keys::run_state(run_id),
             &[
                 ("status", "running".to_string()),
+                ("owner", owner.id.to_string()),
+                ("workflow_id", req.workflow_id.clone()),
+                ("version", req.version.clone()),
                 ("created_at_ms", now_ms().to_string()),
             ],
         )
+        .ignore()
+        .sadd(keys::RUNNING, run_id.to_string())
+        .ignore()
+        .query_async(&mut redis)
         .await
         .map_err(internal)?;
-    state.mesh.set_peer(owner.id, owner_addr);
+    send_start(&state, owner, run_id, start).map_err(internal)?;
+    Ok(Json(RunCreateResponse { run_id }))
+}
+
+/// What `Start` carries for a workflow version: its IR and task versions.
+type StartPayload = (Workflow, std::collections::BTreeMap<String, String>);
+
+async fn load_start(
+    redis: &mut redis::aio::ConnectionManager,
+    workflow_id: &str,
+    version: &str,
+) -> anyhow::Result<Option<StartPayload>> {
+    let raw: Option<String> = redis.get(keys::workflow(workflow_id, version)).await?;
+    let Some(raw) = raw else { return Ok(None) };
+    let upload: WorkflowUploadRequest = serde_json::from_str(&raw)?;
+    let workflow: Workflow = serde_json::from_value(upload.ir)?;
+    Ok(Some((workflow, upload.task_versions.into_iter().collect())))
+}
+
+fn send_start(
+    state: &AppState,
+    owner: &Member,
+    run: Uuid,
+    start: StartPayload,
+) -> anyhow::Result<()> {
+    let (workflow, task_versions) = start;
+    state.mesh.set_peer(owner.id, owner.addr.parse()?);
     state.mesh.send(
         owner.id,
         Message::Start {
-            run: run_id,
+            run,
             workflow,
-            task_versions: upload.task_versions.into_iter().collect(),
+            task_versions,
             reply_to: 0,
         },
     );
-    Ok(Json(RunCreateResponse { run_id }))
+    Ok(())
+}
+
+/// Notices members whose heartbeats stopped, names a successor for each, and restarts runs whose
+/// owner died before its run reached the log (the owner's successor ignores a `Start` for a run
+/// it can take over from the log).
+pub async fn sweep(state: &AppState) -> anyhow::Result<()> {
+    let mut redis = state.redis.clone();
+    let membership = membership(state).await?;
+    let live: Vec<u64> = membership
+        .members
+        .iter()
+        .map(|member| member.id)
+        .filter(|&id| id != 0)
+        .collect();
+    let alive: Vec<u64> = redis.smembers(keys::ALIVE).await?;
+    let mut successors = membership.successors;
+    for dead in alive.into_iter().filter(|id| !live.contains(id)) {
+        let Some(&successor) = live.iter().min() else {
+            // Nobody to take over yet; decided once a worker joins.
+            break;
+        };
+        tracing::warn!(dead, successor, "worker died; its successor takes over");
+        let _: () = redis::pipe()
+            .srem(keys::ALIVE, dead)
+            .ignore()
+            .hset(keys::SUCCESSORS, dead, successor)
+            .ignore()
+            .query_async(&mut redis)
+            .await?;
+        successors.insert(dead, successor);
+    }
+
+    let resolve = |mut worker: u64| {
+        for _ in 0..=successors.len() {
+            match successors.get(&worker) {
+                Some(&next) => worker = next,
+                None => break,
+            }
+        }
+        worker
+    };
+    let running: Vec<String> = redis.smembers(keys::RUNNING).await?;
+    for run in running {
+        let run: Uuid = run.parse()?;
+        let fields: BTreeMap<String, String> = redis.hgetall(keys::run_state(run)).await?;
+        let Some(owner) = fields.get("owner").and_then(|o| o.parse::<u64>().ok()) else {
+            continue;
+        };
+        let successor = resolve(owner);
+        if successor == owner {
+            continue;
+        }
+        let (Some(workflow_id), Some(version)) = (fields.get("workflow_id"), fields.get("version"))
+        else {
+            continue;
+        };
+        let Some(member) = membership.members.iter().find(|m| m.id == successor) else {
+            continue;
+        };
+        if let Some(start) = load_start(&mut redis, workflow_id, version).await? {
+            let _: () = redis.hset(keys::run_state(run), "owner", successor).await?;
+            send_start(state, member, run, start)?;
+        }
+    }
+    Ok(())
 }
 
 /// Stores a finished run's outcome, for status queries.
@@ -311,6 +404,8 @@ pub async fn record_outcome(
             ("finished_at_ms", now_ms().to_string()),
         ],
     )
+    .ignore()
+    .srem(keys::RUNNING, run.to_string())
     .ignore();
     pipe.query_async::<()>(&mut redis).await?;
     Ok(())
@@ -392,20 +487,25 @@ pub async fn register_worker(
         .ignore()
         .hset(keys::WORKER_NAMES, worker_id, &member.name)
         .ignore()
+        .sadd(keys::ALIVE, worker_id)
+        .ignore()
         .query_async(&mut redis)
         .await
         .map_err(internal)?;
     state.mesh.set_peer(worker_id, addr);
     tracing::info!(worker_id, name = member.name, %addr, "worker joined");
-    let members = members(&state).await.map_err(internal)?;
-    Ok(Json(WorkerRegisterResponse { worker_id, members }))
+    let membership = membership(&state).await.map_err(internal)?;
+    Ok(Json(WorkerRegisterResponse {
+        worker_id,
+        membership,
+    }))
 }
 
-/// Renews a worker's membership and returns the current members.
+/// Renews a worker's membership and returns the current membership.
 pub async fn heartbeat(
     State(state): State<AppState>,
     Path(worker_id): Path<u64>,
-) -> ApiResult<Json<HeartbeatResponse>> {
+) -> ApiResult<Json<Membership>> {
     let mut redis = state.redis.clone();
     let ttl_ms = MEMBERSHIP_TTL_MS as i64;
     let renewed: bool = redis
@@ -418,17 +518,17 @@ pub async fn heartbeat(
             format!("worker {worker_id} is no longer a member; register again"),
         ));
     }
-    let members = members(&state).await.map_err(internal)?;
-    Ok(Json(HeartbeatResponse { members }))
+    Ok(Json(membership(&state).await.map_err(internal)?))
 }
 
 pub async fn list_workers(State(state): State<AppState>) -> ApiResult<Json<JsonValue>> {
-    let members = members(&state).await.map_err(internal)?;
-    Ok(Json(json!({"workers": members})))
+    let membership = membership(&state).await.map_err(internal)?;
+    Ok(Json(json!({"workers": membership.members})))
 }
 
-/// The orchestrator and every worker whose membership has not expired, by id.
-async fn members(state: &AppState) -> anyhow::Result<Vec<Member>> {
+/// The orchestrator and every worker whose membership has not expired, by id, and who took over
+/// for the dead.
+async fn membership(state: &AppState) -> anyhow::Result<Membership> {
     let mut redis = state.redis.clone();
     let keys: Vec<String> = redis.keys(keys::MEMBER_PATTERN).await?;
     let records: Vec<Option<String>> = if keys.is_empty() {
@@ -447,5 +547,9 @@ async fn members(state: &AppState) -> anyhow::Result<Vec<Member>> {
         members.push(serde_json::from_str(&record)?);
     }
     members.sort_by_key(|member| member.id);
-    Ok(members)
+    let successors = redis.hgetall(keys::SUCCESSORS).await?;
+    Ok(Membership {
+        members,
+        successors,
+    })
 }

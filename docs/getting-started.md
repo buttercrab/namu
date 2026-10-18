@@ -31,7 +31,8 @@ REDIS_URL=redis://127.0.0.1:6379/ BIND_ADDR=127.0.0.1:8080 cargo run --release -
 
 ### 2) Start workers (as many as you like; on other machines, set `NAMU_ADVERTISE_ADDR`)
 ```bash
-NAMU_ORCH_URL=http://127.0.0.1:8080 NAMU_RUNTIMES=wasm,native cargo run --release -p namu-worker
+NAMU_ORCH_URL=http://127.0.0.1:8080 REDIS_URL=redis://127.0.0.1:6379/ \
+NAMU_RUNTIMES=wasm,native cargo run --release -p namu-worker
 ```
 
 ### 3) Build and publish tasks and workflows
