@@ -1,7 +1,8 @@
 # NAMU Design
 
-Status: agreed direction (2026-09-28). This document describes where NAMU is going, not what is
-implemented today. See "Gap vs. current implementation" at the end for the delta.
+Status: agreed direction (2026-09-28; data plane, streams and batching revised 2026-10-18). This
+document describes where NAMU is going, not what is implemented today. See "Gap vs. current
+implementation" at the end for the delta.
 
 ## 1. Goal
 
@@ -12,6 +13,9 @@ A **fast, multi-machine workflow engine** programmed with a **workflow DSL**, fo
 
 Users: the author, AI data scientists, and people coming from other workflow engines (Airflow,
 Beam, Flink, Ray). NAMU runs as a **service** accessed through an API.
+
+Runs can be long: a crawl or a labeling job may run for days or weeks. When a run is too slow,
+the answer is to add machines while it runs.
 
 ## 2. Principles
 
@@ -31,10 +35,15 @@ Beam, Flink, Ray). NAMU runs as a **service** accessed through an API.
    tasks themselves. Durability must not put synchronous I/O on every step.
 6. **Durable by default, via lineage.** Crashes are recovered by recomputing from immutable
    inputs, and synchronous persistence happens only where side effects require it.
+7. **Values move peer to peer.** Workers push work and values directly to the next worker. Shared
+   storage is a cache and a durability log, never the hub every step passes through.
+8. **Elastic.** Machines join and leave a running workflow. Nothing about a run is tied to the
+   set of machines it started on.
 
 ## 3. Non-goals (for now)
 
-- Untrusted code. Task code is trusted, so there is no WASM sandbox and no trust tiers.
+- Untrusted code. Task code is trusted, so there is no sandbox and no trust tiers. (WASM is
+  used as a portable build target, not as a sandbox.)
 - Task marketplace or public registry.
 - Arbitrary Rust expressions in workflows (see §4.3).
 - Keyed joins or shuffles across streams (future work).
@@ -242,31 +251,98 @@ all live values" decides where the path continues.
 - The FanIn completes when `ended && live == 0`. Its result is written into a **new child of F**,
   and execution continues from there. Downstream code sees everything from before the fan-out plus
   the reduced value, but not per-item values.
-- Across machines this is distributed termination detection. The plan is credit-based counting
-  owned by F's home node, so no global lock is needed. For reduce, each machine does a partial
-  fold before sending one combined update.
+- Across machines this is distributed termination detection, done by **weight throwing**. Each
+  scope F has an **owner** (the worker that created it, encoded in F's id). F starts with weight
+  1. A fork splits its branch's weight between the two halves, locally and without a message. A
+  branch that ends sends its weight back to the owner, together with its collect item if it has
+  one. The stream source holds weight too and returns what is left when it ends. F is done when
+  the owner has received the whole weight back. A fork never sends anything, so there is no race
+  between "a branch started" and "a branch ended" messages, and no global lock.
+- Weights are dyadic fractions (stored as exponents), so splitting is exact. A source that splits
+  for weeks never runs out of precision: it borrows a fresh unit from the owner instead.
+- Weight returns are batched per worker. For reduce, each worker folds locally and sends one
+  partial result with the summed weight.
 
-### 6.4 Scheduling
+### 6.4 Hybrid execution
 
-Workers run the IR interpreter (the kernel) themselves. A context advances locally through as many
-steps as possible, and is handed to another machine only when a step needs resources that machine
-has (a GPU, a task that isn't loaded locally, or free capacity).
+Workers run the IR interpreter (the kernel) themselves. A context advances **locally** through as
+many steps as it can: builtins, literals, phis, and calls to tasks loaded on this worker cost no
+hop at all. It moves to another worker only at a **boundary**:
 
-Streams are pipelined: item 1 can be at stage 3 while item 50 is at stage 1.
+- the next task isn't available here (a different runtime or platform, or not loaded),
+- the next task needs resources this worker lacks (a GPU, memory),
+- the next task is a batch task whose batch is gathered elsewhere (§6.6),
+- this worker is overloaded and another has free capacity.
+
+At a boundary the worker **pushes a handoff** directly to the chosen worker (§10.2). Fan-out
+children are handoffs too, and are spread across workers the same way.
+
+This gives both properties the use cases need: cheap steps never pay for the network, and
+expensive steps (GPU, batch) have a home where work gathers.
+
+### 6.5 Streams
+
+A **stream task** yields items over time; it does not return a list. Each item becomes a child
+context of the fan-out scope **as soon as it is yielded**. Streams are pipelined: item 1 can be at
+stage 3 while item 50 is at stage 1.
+
+- **Backpressure.** A worker accepts work only up to the credits it grants (§10.3). When the
+  downstream is saturated, handoffs wait, the branches producing them wait, and the source is
+  not resumed. A slow GPU slows the crawler instead of filling memory.
+- **Resumable sources.** A source that runs for weeks must survive a crash without replaying
+  from the start. A stream task may yield a **cursor** with its items (an offset, a page token,
+  a timestamp). The cursor is persisted with the scope, and after a crash the source restarts
+  from the last persisted cursor. Item ids are deterministic (scope + sequence number), so items
+  that are yielded again are recognized as duplicates.
+- **Bounded vs unbounded.** A bounded stream ends and its scope can be collected. An unbounded
+  stream never ends, so it can only be consumed per item, or through a window (§4.5).
+
+### 6.6 Batching
+
+A **batch task** is written for many items at once (`fn label(xs: Vec<Item>) -> Vec<Label>`) but
+is called per item in the workflow (`label(item)`), like a single task. Batching is a runtime
+concern, not a workflow construct:
+
+- Each branch keeps its own context. Branches that reach the same batch task are pushed to a
+  worker that hosts it, wait in that worker's batch queue, and are run together. Each branch
+  receives its own result and continues independently. It is **not** a fan-in: nothing about
+  the scope changes.
+- A batch runs when it reaches `batch_size`, or when its oldest item has waited `max_wait` (a
+  per-task latency bound).
+- To fill batches, a batch-task worker grants credits in multiples of its batch size, so
+  routing concentrates items on fewer workers rather than spreading them thinly.
+- Items from different scopes, and from different runs of the same task version, may share a
+  batch. This is how one inference worker serves many concurrent labeling runs.
+- A failed batch call fails every branch in it. A task that can fail per item returns a
+  per-item result instead.
 
 ## 7. Durability
 
 Durability comes from **lineage**: every value is the output of a known task applied to known
 immutable inputs.
 
-- **Write-behind**: values are persisted asynchronously and never block the next step.
-- **Recovery**: after a node failure, find each lost value's nearest persisted ancestors and
-  recompute only the missing part.
+- **Write-behind**: nodes, scope state and source cursors are persisted to a **durable log**
+  asynchronously, and never block the next step.
+- **Upstream backup**: a sender keeps each handoff until the receiver acknowledges that the
+  state it created from it is persisted. Write-behind is fast, so this window is milliseconds,
+  and it is bounded by credits. A crash therefore loses nothing that is not still held by a
+  live sender or by the log.
+- **Recovery**: when a worker is declared dead (§10.4), senders re-push their unacknowledged
+  handoffs to other workers. Contexts resume from their last persisted node, scopes it owned are
+  restored on a new owner from the log, and sources restart from their last cursor. Only the
+  unpersisted tail is recomputed.
+- **Exactly-once effects**: handoff ids and branch ids are deterministic (run, parent context,
+  op, item index). Receivers drop duplicate handoffs, and scope owners drop duplicate weight
+  returns and collect items. Effects on NAMU state therefore happen once, even though delivery
+  is at-least-once.
 - **Checkpoint tasks**: tasks with external side effects (writes to DBs or APIs) are marked as
   checkpoints. Their outputs are persisted synchronously before anything downstream runs, so they
   are never re-executed during recovery.
 - Task execution is **at-least-once**. Each call gets a deterministic **idempotency key** (run id +
   context path + op id) so side-effecting tasks can deduplicate.
+- **Long runs stay small.** With liveness-based placement (§6.2), dead nodes are freed, in the log
+  as well as in memory. The persisted state is then the live frontier of the run, not its history,
+  so a run's footprint and its recovery time do not grow with its age.
 
 ## 8. Values and storage
 
@@ -274,17 +350,22 @@ immutable inputs.
 - **Zero-copy when possible**: a Rust task feeding a Rust task on the same machine passes the value
   in memory without serializing it.
 - Storage tiers:
-  1. **Local memory** on the producing worker. The scheduler prefers to run consumers there.
-  2. **Redis**: small values plus a directory of where each value lives.
+  1. **Local memory** on the producing worker. This is the authoritative copy while the worker
+     lives. A node id encodes the worker that created it, so no directory is needed to find it.
+  2. **Durable log** (behind a trait; Redis with persistence first): write-behind copies of
+     nodes, scope state and cursors, used for recovery and for reading nodes whose owner is gone.
   3. **S3-compatible object store**: large values, referenced by hash.
+- **What a handoff carries** is decided by liveness. Values the receiving segment needs that were
+  created in this branch since its last shared ancestor travel **inline**. Values in shared
+  ancestors (e.g. a `cfg` read by every branch) travel **by reference**: the receiver fetches a
+  missing node once from its owner (or the log) and caches it, since nodes never change.
 - Values are content-hashed, so workers can cache them and deduplicate transfers.
 
 ## 9. Tasks
 
 - Language-neutral protocol: serialized inputs in, a serialized result or error out, plus task
   metadata (kind, resources, codec).
-- Kinds: `single`, `batch` (the engine groups items across contexts, and flushes a partial batch
-  after a timeout or when its scope ends), `stream`.
+- Kinds: `single`, `batch` (§6.6), `stream` (§6.5).
 - Execution modes: **in-process** (Rust, fastest) and **out-of-process** (a warm process pool or
   sidecar, used for Python).
 - Tasks may hold state (a loaded model, connections) via `prepare`, and are reused across calls.
@@ -292,12 +373,57 @@ immutable inputs.
 
 ## 10. Distribution
 
+### 10.1 Planes
+
 - **Control plane (orchestrator)**: stores workflows and tasks, starts runs, tracks membership and
-  run status, and makes coarse placement decisions. It is **not** on the per-step path.
-- **Data plane (workers)**: run the kernel, execute tasks, hold local values, and hand contexts
-  to one another directly.
-- Placement algorithm: to be designed. Inputs will include data locality, resource needs (GPU,
-  memory), load, and work stealing.
+  run status, and publishes the routing table. It is **not** on the per-step path.
+- **Data plane (workers)**: run the kernel, execute tasks, hold their nodes in memory, and push
+  handoffs to one another directly.
+- **Durable log**: written behind by workers, read only on recovery and cache misses (§7, §8).
+
+### 10.2 Handoffs
+
+A handoff is the only message on the per-step path:
+
+```
+Handoff { id, run, resume_at: op, parent: node ref, values: inline live values, weight }
+```
+
+The receiver creates a node under `parent` holding `values`, and continues the kernel at
+`resume_at`. Handoffs between a pair of workers share one connection and are batched when they
+queue up. The transport is a trait: TCP or QUIC between machines, and channels between workers in
+one process (which is also how a workflow runs locally and in tests: one engine, no special
+local mode).
+
+The in-process configuration is the **reference**: every workflow must produce the same result on
+it as on any number of machines, and a conformance suite checks this for every example.
+
+### 10.3 Routing and credits
+
+- The orchestrator publishes a versioned **routing table**: for each task, the workers that can
+  run it (runtime, platform, resources, whether it is loaded). Workers cache it; a change is pushed
+  to them.
+- Each worker **grants credits** to its peers: how many more handoffs it will accept, per task.
+  Credits are how load is balanced and how backpressure works (§6.5).
+- At a boundary, the sender picks among the candidate workers that have granted it credit,
+  preferring (in order) one that already holds the context's referenced nodes, then the least
+  loaded. With no credit available, the context parks on the sender.
+- **Work stealing**: an idle worker may take parked contexts from a busy one.
+
+### 10.4 Membership and elasticity
+
+- **Join**: a new worker registers its capabilities. The orchestrator adds it to the routing
+  table, the new worker starts granting credits, and work flows to it. No rebalancing step is
+  needed, because contexts move only at boundaries and the newcomer simply becomes a candidate.
+- **Leave (drain)**: the worker stops granting credits, finishes or hands off what it holds,
+  transfers ownership of its scopes, flushes its nodes to the log, then deregisters. Nodes it
+  created stay readable from the log.
+- **Crash**: workers hold a heartbeat lease with the orchestrator. When it expires, the worker is
+  declared dead, the routing table moves to a new version without it, and recovery (§7) starts.
+  A worker that comes back after being declared dead rejoins as a new member.
+
+So capacity can be added to a slow run while it runs, and removed when it is done, without
+stopping the run.
 
 ## 11. Service API
 
@@ -308,19 +434,24 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 ## 12. Performance targets
 
 - Same machine: framework overhead per step of **≤ ~10 µs**.
-- Across machines: **about one network round trip** per handoff, and nothing more.
+- Across machines: **one one-way network message** per handoff; the acknowledgment is
+  asynchronous.
 - No synchronous durable write on the common path (§7).
+- A run's memory and durable footprint stay flat over days of running (§6.2, §7).
 
 ## 13. Open questions
 
 1. Deployment: how task code reaches workers (on-demand artifacts, container images, prebuilt
    worker images), and what "fast deploy" means concretely.
-2. Placement and scheduling algorithm (§10).
+2. Placement policy details (§10.3): how locality, load, batch filling and GPU memory are weighed.
 3. Syntax for reduce and window (collect is implicit via `Vec<T>` parameters), and how ambiguous
    cases such as `Vec<Vec<T>>` resolve.
-4. Windowing semantics and backpressure for unbounded streams.
+4. Windowing semantics for unbounded streams.
 5. Type system: how Rust and Python type information is represented and checked in the IR.
-6. The exact termination-detection protocol for fan-in across machines.
+6. Upgrading a task or workflow version while a long run is in progress.
+7. Level-2 dedup at compile time: hoisting values that depend only on parent-scope inputs out of
+   a fan-out, instead of coordinating pending values between siblings at runtime (§6.1).
+8. Bounding the duplicate-detection state of unbounded scopes (ids seen by scope owners).
 
 ## 14. Gap vs. current implementation
 
@@ -339,9 +470,11 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Literals | ✅ JSON-encoded; string literals are `String` | Typed IR values |
 | Values | JSON at every boundary in the distributed runtime; unchecked `Any` in `SimpleEngine` | Codec abstraction plus types, zero-copy locally |
 | Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
-| Distributed path | ✅ Worker-local kernel; orchestrator is control plane only (Redis, no Postgres) | Direct worker-to-worker handoff with ancestors attached |
-| Streams (distributed) | Stream task output is fanned out once complete | Pipelined per item |
-| Batch | Partial batch hangs in `SimpleEngine`; batch tasks not supported by workers | Cross-context batching with flush |
+| Distributed path | ✅ Worker-local kernel; orchestrator is control plane only. Every handoff goes through Redis streams (~140 µs) | Peer-to-peer handoffs with credits; Redis only as cache and durable log (§10) |
+| Streams (distributed) | Stream task output is fanned out once complete | Pipelined per item, backpressure, resumable cursors (§6.5) |
+| Batch | Partial batch hangs in `SimpleEngine`; batch tasks not supported by workers | Runtime batching across branches and runs, `batch_size` / `max_wait` (§6.6) |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; bodiless `#[task]` signatures in workflows | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform. Trust tiers removed from enforcement (manifest field kept) | Python, containers, GPU |
-| Durability | ✅ Work items commit atomically (exactly-once effects); expired leases are reclaimed and recomputed from the last committed context; poison items fail after 3 attempts; `checkpoint` tasks commit immediately (see `poc.md`) | Idempotency keys for tasks; Redis persistence |
+| Durability | ✅ Work items commit atomically through Redis (exactly-once effects); expired leases are reclaimed; poison items fail after 3 attempts; `checkpoint` tasks commit immediately (see `poc.md`) | Upstream backup + write-behind log; idempotency keys for tasks (§7) |
+| Fan-in termination | Per-scope `live` counters in Redis, updated by the commit script | Weight throwing with scope owners (§6.3) |
+| Membership | Workers register; no heartbeat-based removal, no drain | Join, drain and crash handling while a run is in progress (§10.4) |
