@@ -4,11 +4,15 @@
 //! and keeps it, so messages to each peer arrive in order. Frames are a big-endian `u32` length
 //! followed by the message as JSON; messages queued while a frame is written go out in the same
 //! flush.
+//!
+//! A worker can hear from a peer before it learns where the peer listens: a worker that just
+//! joined is in the membership the orchestrator gives it, but its peers learn of it only at their
+//! next heartbeat. Messages to such a peer wait in its queue, and go out once its address arrives.
 
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -25,10 +29,21 @@ const MAX_FRAME: u32 = 1 << 30;
 /// How long a sender keeps trying to reach a peer that is not accepting connections yet.
 const CONNECT_PATIENCE: Duration = Duration::from_secs(10);
 
+type Queue = mpsc::UnboundedReceiver<Message>;
+
 #[derive(Debug, Default)]
 pub struct TcpTransport {
-    addrs: RwLock<HashMap<WorkerId, SocketAddr>>,
-    links: Mutex<HashMap<WorkerId, mpsc::UnboundedSender<Message>>>,
+    peers: Mutex<Peers>,
+}
+
+#[derive(Debug, Default)]
+struct Peers {
+    addrs: HashMap<WorkerId, SocketAddr>,
+    /// The queue of messages to each peer, written out by its connection.
+    links: HashMap<WorkerId, mpsc::UnboundedSender<Message>>,
+    /// The queues of peers whose address is not known yet: no connection writes them out until
+    /// it is.
+    unplaced: HashMap<WorkerId, Queue>,
 }
 
 impl TcpTransport {
@@ -46,36 +61,47 @@ impl TcpTransport {
 
     /// Records where `worker` listens.
     pub fn set_peer(&self, worker: WorkerId, addr: SocketAddr) {
-        let previous = self.addrs.write().unwrap().insert(worker, addr);
+        let mut peers = self.peers.lock().unwrap();
+        let previous = peers.addrs.insert(worker, addr);
         if previous.is_some_and(|previous| previous != addr) {
             // It moved: the next message opens a new connection.
-            self.links.lock().unwrap().remove(&worker);
+            peers.links.remove(&worker);
+        }
+        if let Some(queue) = peers.unplaced.remove(&worker) {
+            tokio::spawn(write(worker, addr, queue));
         }
     }
 
     pub fn remove_peer(&self, worker: WorkerId) {
-        self.addrs.write().unwrap().remove(&worker);
-        self.links.lock().unwrap().remove(&worker);
+        let mut peers = self.peers.lock().unwrap();
+        peers.addrs.remove(&worker);
+        peers.links.remove(&worker);
+        peers.unplaced.remove(&worker);
     }
 
-    fn link(&self, to: WorkerId) -> Option<mpsc::UnboundedSender<Message>> {
-        let mut links = self.links.lock().unwrap();
-        if let Some(link) = links.get(&to).filter(|link| !link.is_closed()) {
-            return Some(link.clone());
+    fn link(&self, to: WorkerId) -> mpsc::UnboundedSender<Message> {
+        let mut peers = self.peers.lock().unwrap();
+        if let Some(link) = peers.links.get(&to).filter(|link| !link.is_closed()) {
+            return link.clone();
         }
-        let addr = *self.addrs.read().unwrap().get(&to)?;
         let (link, queue) = mpsc::unbounded_channel();
-        tokio::spawn(write(to, addr, queue));
-        links.insert(to, link.clone());
-        Some(link)
+        match peers.addrs.get(&to) {
+            Some(&addr) => {
+                tokio::spawn(write(to, addr, queue));
+            }
+            None => {
+                peers.unplaced.insert(to, queue);
+            }
+        }
+        peers.links.insert(to, link.clone());
+        link
     }
 }
 
 impl Transport for TcpTransport {
     fn send(&self, to: WorkerId, message: Message) {
-        match self.link(to) {
-            Some(link) if link.send(message).is_ok() => {}
-            _ => tracing::error!(to, "message to an unknown or unreachable worker dropped"),
+        if self.link(to).send(message).is_err() {
+            tracing::error!(to, "message to an unreachable worker dropped");
         }
     }
 }
@@ -117,7 +143,7 @@ async fn read(stream: TcpStream, peer: SocketAddr, inbox: mpsc::UnboundedSender<
     }
 }
 
-async fn write(to: WorkerId, addr: SocketAddr, mut queue: mpsc::UnboundedReceiver<Message>) {
+async fn write(to: WorkerId, addr: SocketAddr, mut queue: Queue) {
     let Some(stream) = connect(addr).await else {
         tracing::error!(to, %addr, "could not connect; dropping its messages");
         return;
@@ -162,5 +188,22 @@ async fn connect(addr: SocketAddr) -> Option<TcpStream> {
             }
             Err(_) => return None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn messages_wait_for_the_address_of_their_peer() {
+        let any = "127.0.0.1:0".parse().unwrap();
+        let (sender, _, _) = TcpTransport::bind(any).await.unwrap();
+        let (_, addr, mut inbox) = TcpTransport::bind(any).await.unwrap();
+        let run = uuid::Uuid::new_v4();
+        sender.send(7, Message::RunOver { run });
+        sender.set_peer(7, addr);
+        let message = tokio::time::timeout(Duration::from_secs(5), inbox.recv()).await;
+        assert!(matches!(message, Ok(Some(Message::RunOver { run: got })) if got == run));
     }
 }

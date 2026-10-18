@@ -44,6 +44,7 @@ jobs:
   e2e:
     name: E2E (distributed runtime)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain and Redis
@@ -55,6 +56,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run e2e
         run: ./scripts/e2e.sh
+      - name: Cluster logs
+        if: failure() || cancelled()
+        run: tail -n 40 data/e2e/*.log data/e2e/*/logs/*.log
 
   fmt:
     name: Format
