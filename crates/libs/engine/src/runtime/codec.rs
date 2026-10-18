@@ -17,7 +17,7 @@ impl ValueRuntime for CoreValueRuntime {
         let val = match raw {
             "true" => Value::new(true),
             "false" => Value::new(false),
-            "()" => Value::new(()),
+            "()" | "null" => Value::new(()),
             _ => {
                 if let Ok(n) = raw.parse::<i32>() {
                     Value::new(n)
@@ -44,19 +44,12 @@ impl ValueRuntime for JsonRuntime {
     type Value = serde_json::Value;
 
     fn parse_literal(&self, raw: &str) -> anyhow::Result<Self::Value> {
-        let val = match raw {
-            "true" => serde_json::Value::Bool(true),
-            "false" => serde_json::Value::Bool(false),
-            "()" => serde_json::Value::Null,
-            _ => {
-                if let Ok(n) = raw.parse::<i32>() {
-                    serde_json::Value::Number(n.into())
-                } else {
-                    serde_json::Value::String(raw.trim_matches('"').to_string())
-                }
-            }
-        };
-        Ok(val)
+        // Literals are JSON; "()" is the unit placeholder for empty blocks.
+        if raw == "()" {
+            return Ok(serde_json::Value::Null);
+        }
+        Ok(serde_json::from_str(raw)
+            .unwrap_or_else(|_| serde_json::Value::String(raw.trim_matches('"').to_string())))
     }
 
     fn as_bool(&self, value: &Self::Value) -> anyhow::Result<bool> {

@@ -1,0 +1,14 @@
+[package]
+name = "namu-task-reject-short"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1"
+namu-guest = { path = "../../../../crates/libs/guest", version = "0.1.0" }
+
+[workspace]

@@ -5,6 +5,10 @@ Welcome to the NAMU docs. Start with Getting Started for a runnable local stack,
 ## Start here
 - `getting-started.md` - quick local run, manual steps, and first workflow.
 
+## Design
+- `design.md` - agreed target design: goals, execution model, value tree, durability.
+- `poc.md` - the distribution proof of concept: what it shows, measurements, known gaps.
+
 ## Concepts
 - `concepts/ir.md` - the JSON IR produced by macros and consumed by the engine.
 - `concepts/value-tree.md` - immutable value tree, caching, and storage model.
@@ -25,4 +29,5 @@ Welcome to the NAMU docs. Start with Getting Started for a runnable local stack,
 
 ## Examples
 - `examples/basic` - minimal tasks and workflows.
-- `examples/advanced` - ETL, ML, and media pipelines with branching, batching, and streaming.
+- `examples/advanced` - in-process pipelines with branching, batching, and streaming.
+- `examples/distributed` - WASM and native tasks with fan-out/fan-in across workers.

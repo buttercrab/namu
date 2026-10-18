@@ -8,6 +8,10 @@ pub mod batch_task {
     #[allow(non_camel_case_types)]
     pub struct Task;
     #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
+    #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
         #[inline]
@@ -55,16 +59,18 @@ pub mod batch_task {
         mut inputs: Vec<::namu::__macro_exports::Value>,
     ) -> ::namu::__macro_exports::Value {
         if true {
-            match (&inputs.len(), &1) {
-                (left_val, right_val) => {
-                    if !(*left_val == *right_val) {
-                        let kind = ::core::panicking::AssertKind::Eq;
-                        ::core::panicking::assert_failed(
-                            kind,
-                            &*left_val,
-                            &*right_val,
-                            ::core::option::Option::None,
-                        );
+            {
+                match (&inputs.len(), &1) {
+                    (left_val, right_val) => {
+                        if !(*left_val == *right_val) {
+                            let kind = ::core::panicking::AssertKind::Eq;
+                            ::core::panicking::assert_failed(
+                                kind,
+                                &*left_val,
+                                &*right_val,
+                                ::core::option::Option::None,
+                            );
+                        }
                     }
                 }
             };
@@ -75,17 +81,24 @@ pub mod batch_task {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        <[_]>::into_vec(::alloc::boxed::box_new([val]))
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [val],
+            ),
+        )
     }
 }
 #[allow(non_snake_case)]
 pub fn batch_task<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
-    inputs: ::namu::__macro_exports::TracedValue<i32>,
+    inputs: impl ::namu::__macro_exports::IntoArg<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "batch_task",
-        <[_]>::into_vec(::alloc::boxed::box_new([inputs.id])),
-    )
+    let __namu_inputs = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+        ::alloc::intrinsics::write_box_via_move(
+            ::alloc::boxed::Box::new_uninit(),
+            [::namu::__macro_exports::IntoArg::into_arg(inputs, builder)],
+        ),
+    );
+    ::namu::__macro_exports::call(builder, "batch_task", __namu_inputs)
 }

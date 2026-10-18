@@ -25,6 +25,14 @@ pub enum NodeKind {
     Phi {
         from: Vec<(BlockId, ValueId)>,
     },
+    /// Fan out over the list `input`; the single output is bound to each element.
+    FanOut {
+        input: ValueId,
+    },
+    /// Collect `input` from every branch of the innermost fan-out scope into a list.
+    Collect {
+        input: ValueId,
+    },
 }
 
 impl NodeKind {

@@ -8,6 +8,10 @@ pub mod is_positive {
     #[allow(non_camel_case_types)]
     pub struct Task;
     #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
+    #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
         #[inline]
@@ -53,16 +57,18 @@ pub mod is_positive {
         mut inputs: Vec<::namu::__macro_exports::Value>,
     ) -> ::namu::__macro_exports::Value {
         if true {
-            match (&inputs.len(), &1) {
-                (left_val, right_val) => {
-                    if !(*left_val == *right_val) {
-                        let kind = ::core::panicking::AssertKind::Eq;
-                        ::core::panicking::assert_failed(
-                            kind,
-                            &*left_val,
-                            &*right_val,
-                            ::core::option::Option::None,
-                        );
+            {
+                match (&inputs.len(), &1) {
+                    (left_val, right_val) => {
+                        if !(*left_val == *right_val) {
+                            let kind = ::core::panicking::AssertKind::Eq;
+                            ::core::panicking::assert_failed(
+                                kind,
+                                &*left_val,
+                                &*right_val,
+                                ::core::option::Option::None,
+                            );
+                        }
                     }
                 }
             };
@@ -73,19 +79,26 @@ pub mod is_positive {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        <[_]>::into_vec(::alloc::boxed::box_new([val]))
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [val],
+            ),
+        )
     }
 }
 #[allow(non_snake_case)]
 pub fn is_positive<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
-    a: ::namu::__macro_exports::TracedValue<i32>,
+    a: impl ::namu::__macro_exports::IntoArg<i32>,
 ) -> ::namu::__macro_exports::TracedValue<bool> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "is_positive",
-        <[_]>::into_vec(::alloc::boxed::box_new([a.id])),
-    )
+    let __namu_inputs = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+        ::alloc::intrinsics::write_box_via_move(
+            ::alloc::boxed::Box::new_uninit(),
+            [::namu::__macro_exports::IntoArg::into_arg(a, builder)],
+        ),
+    );
+    ::namu::__macro_exports::call(builder, "is_positive", __namu_inputs)
 }
 #[allow(non_snake_case)]
 pub mod action_if_true {
@@ -95,6 +108,10 @@ pub mod action_if_true {
     }
     #[allow(non_camel_case_types)]
     pub struct Task;
+    #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
     #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
@@ -146,14 +163,20 @@ pub mod action_if_true {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        <[_]>::into_vec(::alloc::boxed::box_new([val]))
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [val],
+            ),
+        )
     }
 }
 #[allow(non_snake_case)]
 pub fn action_if_true<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
 ) -> ::namu::__macro_exports::TracedValue<()> {
-    ::namu::__macro_exports::call(&builder, "action_if_true", ::alloc::vec::Vec::new())
+    let __namu_inputs = ::alloc::vec::Vec::new();
+    ::namu::__macro_exports::call(builder, "action_if_true", __namu_inputs)
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]

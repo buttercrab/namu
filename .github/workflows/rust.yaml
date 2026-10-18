@@ -39,6 +39,21 @@ jobs:
         run: |
           cargo doc --workspace --all-features --no-deps
 
+  e2e:
+    name: E2E (distributed runtime)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain and Redis
+        run: |
+          rustup update --no-self-update
+          rustup target add wasm32-wasip2
+          sudo apt-get update && sudo apt-get install -y redis-server
+          sudo systemctl stop redis-server || true
+      - uses: Swatinem/rust-cache@v2
+      - name: Run e2e
+        run: ./scripts/e2e.sh
+
   fmt:
     name: Format
     runs-on: ubuntu-latest

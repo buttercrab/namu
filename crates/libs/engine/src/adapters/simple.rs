@@ -313,6 +313,11 @@ async fn drive_from(
         } => {
             dispatch_call(run_ctx, op_id, ctx_id, &call).await?;
         }
+        KernelPlan::FanOut { .. } | KernelPlan::Collect { .. } => {
+            return Err(anyhow::anyhow!(
+                "fan-out and collect are only supported by the distributed runtime (namu-worker)"
+            ));
+        }
         KernelPlan::Return { ctx_id, return_var } => {
             if let Some(var) = return_var {
                 let val = run_ctx.store.get_value(ctx_id, var).await?;
@@ -339,13 +344,17 @@ async fn dispatch_call(
     let packed = if let Some(pack_fn) = pack_fn {
         (pack_fn)(inputs)
     } else {
-        debug_assert_eq!(
-            inputs.len(),
-            1,
-            "Task '{}' missing pack fn and inputs >1",
-            call.task_id
-        );
-        inputs.into_iter().next().unwrap()
+        match inputs.len() {
+            0 => Value::new(()),
+            1 => inputs.into_iter().next().unwrap(),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "task '{}' missing pack fn for {} inputs",
+                    call.task_id,
+                    inputs.len()
+                ));
+            }
+        }
     };
 
     let sender = run_ctx
@@ -391,7 +400,7 @@ async fn handle_event(run_ctx: &RunContext<'_>, event: TaskEvent) -> anyhow::Res
                     .set_value(child_ctx, call.outputs[0], out_vals[0].clone())
                     .await?;
             } else {
-                for (out_id, val) in call.outputs.iter().copied().zip(out_vals.into_iter()) {
+                for (out_id, val) in call.outputs.iter().copied().zip(out_vals) {
                     run_ctx.store.set_value(child_ctx, out_id, val).await?;
                 }
             }

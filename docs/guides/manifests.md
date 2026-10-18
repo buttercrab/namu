@@ -38,36 +38,26 @@ version = "0.1.0"
 Use `namu sync` to update `Cargo.toml` dependencies and `.cargo/config.toml` registries.
 
 ## Task manifest (`manifest.json`)
-When building from task directories directly, each task directory should include a `manifest.json` that matches `namu_proto::TaskManifest`. When using `namu.toml`, the CLI generates this manifest for you during `namu build`.
+When building from task directories directly, each task directory contains a `manifest.json`
+matching `namu_proto::TaskManifest`. With `namu.toml`, `namu build` generates it.
 
-Example:
+Minimal example:
 ```json
 {
-  "task_id": "add",
+  "task_id": "analyze",
   "version": "0.1.0",
   "task_kind": "single",
-  "trust": "trusted",
-  "runtime": "native",
-  "requires_gpu": false,
-  "resource_class": "cpu.small",
-  "capabilities": ["cpu"],
+  "runtime": "wasm",
   "input_arity": 2,
-  "output_arity": 1,
-  "input_schema": { "type": "array", "items": [ {"type": "integer"}, {"type": "integer"} ] },
-  "output_schema": { "type": "integer" },
-  "checksum": "",
-  "abi_version": "1",
-  "build_toolchain": "rust-1.75.0",
-  "created_at": "2026-01-18T00:00:00Z"
+  "output_arity": 1
 }
 ```
 
-Rules enforced by the orchestrator:
-- `trust = untrusted` requires `runtime = wasm`.
-- `runtime = wasm` requires `trust = untrusted`.
-- `requires_gpu = true` requires `runtime = native` and `trust != untrusted`.
-
-`checksum` is filled in by `namu build` when packaging artifacts.
+`runtime` is `wasm` (a WASM component, runs anywhere) or `native` (a shared library, runs only on
+the platform it was built for). `namu build` fills in `checksum` (sha256 of the binary) and, for
+native tasks, `platform`. The orchestrator rejects artifacts whose binary does not match the
+checksum, and treats versions as immutable: republishing the same version with a different
+artifact is refused.
 
 ## Workflow upload payload
 `namu build` copies workflow IR JSON files into `dist/workflows/`. `namu publish` uploads them as:

@@ -1,5 +1,10 @@
 [workspace]
-exclude = ["tasks/*", "pipelines/*", "tests/e2e/tasks/*"]
+exclude = [
+  "tasks/*",
+  "pipelines/*",
+  "tests/e2e/tasks/*",
+  "examples/distributed/tasks/*",
+]
 members = [
   "crates/apps/cli",
   "crates/apps/master",
@@ -7,10 +12,12 @@ members = [
   "crates/libs/core",
   "crates/libs/engine",
   "crates/libs/flow",
+  "crates/libs/guest",
   "crates/libs/macros",
   "crates/libs/proto",
 
   "examples/basic/simple",
+  "examples/distributed/workflows",
   "examples/basic/tasks/add",
   "examples/basic/tasks/is_less",
   "examples/advanced/workflows",

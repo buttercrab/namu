@@ -1,0 +1,13 @@
+[package]
+name = "namu-guest"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "SDK for writing NAMU tasks as WASM components or native libraries"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wit-bindgen = "0.63"

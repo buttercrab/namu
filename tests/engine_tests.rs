@@ -101,3 +101,42 @@ fn engine_stream_failure_only_stops_leaf() {
         .collect::<Vec<_>>();
     assert_eq!(vals, vec![10, 30]);
 }
+
+#[test]
+fn stream_task_setup_error_does_not_panic() {
+    #[workflow]
+    fn stream_error_workflow() -> i32 {
+        let a = 1;
+        fail_stream(a)
+    }
+
+    let graph = stream_error_workflow();
+    let wf_ir = graph.to_serializable("stream_error".to_string());
+    let result_val = run_workflow(wf_ir);
+
+    assert!(result_val.is_empty());
+}
+
+#[test]
+fn loop_phis_are_parallel_assignments() {
+    // `t = a; a = b; b = t;` swaps a and b. Phis that were applied one at a time used to read
+    // the freshly written `a` and produce a == b == 2.
+    #[workflow]
+    fn swap_workflow() -> i32 {
+        let mut a = 1;
+        let mut b = 2;
+        let mut i = 0;
+        while less_than(i, 1) {
+            let t = a;
+            a = b;
+            b = t;
+            i = add(i, 1);
+        }
+        add(add(a, a), b)
+    }
+
+    let graph = swap_workflow();
+    let result_val = run_workflow(graph.to_serializable("swap".to_string()));
+    // a = 2, b = 1 -> 2 + 2 + 1
+    assert_eq!(*result_val[0].downcast_ref::<i32>().unwrap(), 5);
+}

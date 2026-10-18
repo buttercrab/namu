@@ -8,6 +8,10 @@ pub mod less_than {
     #[allow(non_camel_case_types)]
     pub struct Task;
     #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
+    #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
         #[inline]
@@ -53,16 +57,18 @@ pub mod less_than {
         mut inputs: Vec<::namu::__macro_exports::Value>,
     ) -> ::namu::__macro_exports::Value {
         if true {
-            match (&inputs.len(), &2usize) {
-                (left_val, right_val) => {
-                    if !(*left_val == *right_val) {
-                        let kind = ::core::panicking::AssertKind::Eq;
-                        ::core::panicking::assert_failed(
-                            kind,
-                            &*left_val,
-                            &*right_val,
-                            ::core::option::Option::None,
-                        );
+            {
+                match (&inputs.len(), &2usize) {
+                    (left_val, right_val) => {
+                        if !(*left_val == *right_val) {
+                            let kind = ::core::panicking::AssertKind::Eq;
+                            ::core::panicking::assert_failed(
+                                kind,
+                                &*left_val,
+                                &*right_val,
+                                ::core::option::Option::None,
+                            );
+                        }
                     }
                 }
             };
@@ -81,20 +87,30 @@ pub mod less_than {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        <[_]>::into_vec(::alloc::boxed::box_new([val]))
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [val],
+            ),
+        )
     }
 }
 #[allow(non_snake_case)]
 pub fn less_than<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
-    a: ::namu::__macro_exports::TracedValue<i32>,
-    b: ::namu::__macro_exports::TracedValue<i32>,
+    a: impl ::namu::__macro_exports::IntoArg<i32>,
+    b: impl ::namu::__macro_exports::IntoArg<i32>,
 ) -> ::namu::__macro_exports::TracedValue<bool> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "less_than",
-        <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
-    )
+    let __namu_inputs = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+        ::alloc::intrinsics::write_box_via_move(
+            ::alloc::boxed::Box::new_uninit(),
+            [
+                ::namu::__macro_exports::IntoArg::into_arg(a, builder),
+                ::namu::__macro_exports::IntoArg::into_arg(b, builder),
+            ],
+        ),
+    );
+    ::namu::__macro_exports::call(builder, "less_than", __namu_inputs)
 }
 #[allow(non_snake_case)]
 pub mod add {
@@ -104,6 +120,10 @@ pub mod add {
     }
     #[allow(non_camel_case_types)]
     pub struct Task;
+    #[automatically_derived]
+    #[doc(hidden)]
+    #[allow(non_camel_case_types)]
+    unsafe impl ::core::clone::TrivialClone for Task {}
     #[automatically_derived]
     #[allow(non_camel_case_types)]
     impl ::core::clone::Clone for Task {
@@ -150,16 +170,18 @@ pub mod add {
         mut inputs: Vec<::namu::__macro_exports::Value>,
     ) -> ::namu::__macro_exports::Value {
         if true {
-            match (&inputs.len(), &2usize) {
-                (left_val, right_val) => {
-                    if !(*left_val == *right_val) {
-                        let kind = ::core::panicking::AssertKind::Eq;
-                        ::core::panicking::assert_failed(
-                            kind,
-                            &*left_val,
-                            &*right_val,
-                            ::core::option::Option::None,
-                        );
+            {
+                match (&inputs.len(), &2usize) {
+                    (left_val, right_val) => {
+                        if !(*left_val == *right_val) {
+                            let kind = ::core::panicking::AssertKind::Eq;
+                            ::core::panicking::assert_failed(
+                                kind,
+                                &*left_val,
+                                &*right_val,
+                                ::core::option::Option::None,
+                            );
+                        }
                     }
                 }
             };
@@ -178,20 +200,30 @@ pub mod add {
     pub fn unpack(
         val: ::namu::__macro_exports::Value,
     ) -> Vec<::namu::__macro_exports::Value> {
-        <[_]>::into_vec(::alloc::boxed::box_new([val]))
+        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+            ::alloc::intrinsics::write_box_via_move(
+                ::alloc::boxed::Box::new_uninit(),
+                [val],
+            ),
+        )
     }
 }
 #[allow(non_snake_case)]
 pub fn add<G: 'static>(
     builder: &::namu::__macro_exports::Builder<G>,
-    a: ::namu::__macro_exports::TracedValue<i32>,
-    b: ::namu::__macro_exports::TracedValue<i32>,
+    a: impl ::namu::__macro_exports::IntoArg<i32>,
+    b: impl ::namu::__macro_exports::IntoArg<i32>,
 ) -> ::namu::__macro_exports::TracedValue<i32> {
-    ::namu::__macro_exports::call(
-        &builder,
-        "add",
-        <[_]>::into_vec(::alloc::boxed::box_new([a.id, b.id])),
-    )
+    let __namu_inputs = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+        ::alloc::intrinsics::write_box_via_move(
+            ::alloc::boxed::Box::new_uninit(),
+            [
+                ::namu::__macro_exports::IntoArg::into_arg(a, builder),
+                ::namu::__macro_exports::IntoArg::into_arg(b, builder),
+            ],
+        ),
+    );
+    ::namu::__macro_exports::call(builder, "add", __namu_inputs)
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
@@ -214,10 +246,11 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __a_phi_val_0 = {
                 let __phi_id = __builder
                     .phi(
-                        <[_]>::into_vec(
-                            ::alloc::boxed::box_new([
-                                (__while_parent_predecessor_0, __pre_while_a_0.id),
-                            ]),
+                        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+                            ::alloc::intrinsics::write_box_via_move(
+                                ::alloc::boxed::Box::new_uninit(),
+                                [(__while_parent_predecessor_0, __pre_while_a_0.id)],
+                            ),
                         ),
                     );
                 ::namu::__macro_exports::TracedValue::new(__phi_id)
@@ -227,10 +260,11 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __b_phi_val_0 = {
                 let __phi_id = __builder
                     .phi(
-                        <[_]>::into_vec(
-                            ::alloc::boxed::box_new([
-                                (__while_parent_predecessor_0, __pre_while_b_0.id),
-                            ]),
+                        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+                            ::alloc::intrinsics::write_box_via_move(
+                                ::alloc::boxed::Box::new_uninit(),
+                                [(__while_parent_predecessor_0, __pre_while_b_0.id)],
+                            ),
                         ),
                     );
                 ::namu::__macro_exports::TracedValue::new(__phi_id)
@@ -240,10 +274,11 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __i_phi_val_0 = {
                 let __phi_id = __builder
                     .phi(
-                        <[_]>::into_vec(
-                            ::alloc::boxed::box_new([
-                                (__while_parent_predecessor_0, __pre_while_i_0.id),
-                            ]),
+                        ::alloc::boxed::box_assume_init_into_vec_unsafe(
+                            ::alloc::intrinsics::write_box_via_move(
+                                ::alloc::boxed::Box::new_uninit(),
+                                [(__while_parent_predecessor_0, __pre_while_i_0.id)],
+                            ),
                         ),
                     );
                 ::namu::__macro_exports::TracedValue::new(__phi_id)
@@ -280,11 +315,14 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
                 },
             ) = __builder.arena_mut().nodes.get_mut(__a_phi_node_id_0)
             {
-                *from = <[_]>::into_vec(
-                    ::alloc::boxed::box_new([
-                        (__while_parent_predecessor_0, __pre_while_a_0.id),
-                        (__body_predecessor_id_0, __post_body_a_0.id),
-                    ]),
+                *from = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+                    ::alloc::intrinsics::write_box_via_move(
+                        ::alloc::boxed::Box::new_uninit(),
+                        [
+                            (__while_parent_predecessor_0, __pre_while_a_0.id),
+                            (__body_predecessor_id_0, __post_body_a_0.id),
+                        ],
+                    ),
                 );
             }
             if let Some(
@@ -294,11 +332,14 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
                 },
             ) = __builder.arena_mut().nodes.get_mut(__b_phi_node_id_0)
             {
-                *from = <[_]>::into_vec(
-                    ::alloc::boxed::box_new([
-                        (__while_parent_predecessor_0, __pre_while_b_0.id),
-                        (__body_predecessor_id_0, __post_body_b_0.id),
-                    ]),
+                *from = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+                    ::alloc::intrinsics::write_box_via_move(
+                        ::alloc::boxed::Box::new_uninit(),
+                        [
+                            (__while_parent_predecessor_0, __pre_while_b_0.id),
+                            (__body_predecessor_id_0, __post_body_b_0.id),
+                        ],
+                    ),
                 );
             }
             if let Some(
@@ -308,11 +349,14 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
                 },
             ) = __builder.arena_mut().nodes.get_mut(__i_phi_node_id_0)
             {
-                *from = <[_]>::into_vec(
-                    ::alloc::boxed::box_new([
-                        (__while_parent_predecessor_0, __pre_while_i_0.id),
-                        (__body_predecessor_id_0, __post_body_i_0.id),
-                    ]),
+                *from = ::alloc::boxed::box_assume_init_into_vec_unsafe(
+                    ::alloc::intrinsics::write_box_via_move(
+                        ::alloc::boxed::Box::new_uninit(),
+                        [
+                            (__while_parent_predecessor_0, __pre_while_i_0.id),
+                            (__body_predecessor_id_0, __post_body_i_0.id),
+                        ],
+                    ),
                 );
             }
             __builder.switch_to_block(__while_exit_block_0);

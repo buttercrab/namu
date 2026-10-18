@@ -1,23 +1,21 @@
 # Engine
 
-The engine interprets workflow IR, manages contexts, and dispatches task calls. It is designed to be replaceable for different runtime strategies.
+The engine interprets workflow IR, manages contexts, and dispatches task calls.
 
-## Engine responsibilities
-- Walk operations in the IR.
-- Resolve inputs from the value tree.
-- Dispatch task calls and wait for outputs.
-- Advance contexts and track run progress.
+## The kernel
+`EngineKernel` (in `namu-engine`) is shared by every engine. It walks operations, applies literals
+and phis as one step (phis read all their sources before writing, so swaps work), and stops at the
+next action:
+- `Dispatch`: a task call,
+- `FanOut`: split into one branch per list item,
+- `Collect`: this branch reached a fan-in,
+- `Return`.
 
-## Current implementations
-- **EngineKernel** (in `namu-engine`): a reusable interpreter that drives execution until it needs to dispatch a task or return.
-- **SimpleEngine**: a single-process engine used for local testing and examples.
-- **OrchestratorEngine**: used by `namu-master` to plan work and enqueue tasks.
+The kernel is generic over a `ValueStore`, so each engine brings its own storage.
 
-## Context management
-`namu-engine` abstracts context storage behind a trait so engines can plug in different backends (in-memory, Redis-backed, or cached hybrids).
-
-## Extending the engine
-To add a new runtime engine:
-1. Implement the engine trait in `namu-engine`.
-2. Provide a context manager that matches your storage and caching strategy.
-3. Wire task dispatch to your execution backend (local, distributed, GPU, or WASM).
+## Engines
+- **namu-worker** (distributed): each worker drives contexts with the kernel, stores values in the
+  immutable value tree (Redis), runs WASM and native tasks, and hands work to other workers. See
+  `poc.md`.
+- **SimpleEngine** (in-process): thread-per-task with channels, for tests and embedding. It does not
+  support fan-out and collect yet.

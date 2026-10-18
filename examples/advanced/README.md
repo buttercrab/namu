@@ -22,33 +22,7 @@ cargo run -p namu-advanced-workflows --bin run -- ml
 cargo run -p namu-advanced-workflows --bin run -- media
 ```
 
-## Export workflow JSON (for orchestrator)
+## Distributed execution
 
-```bash
-cargo run -p namu-advanced-workflows --bin export
-```
-
-By default this writes to `examples/advanced/dist/workflows`.
-
-## Build & publish to orchestrator
-
-```bash
-cargo run -p namu-cli -- build \
-  --tasks-dir examples/advanced/tasks \
-  --workflows-dir examples/advanced/dist/workflows \
-  --out-dir examples/advanced/dist
-
-NAMU_ORCH_URL=http://localhost:8080 \
-  cargo run -p namu-cli -- publish --out-dir examples/advanced/dist
-```
-
-## Value refs & large payloads (optional)
-
-To exercise value refs, set a low inline limit in your worker/orchestrator environment:
-
-```bash
-export NAMU_INLINE_INPUT_LIMIT_BYTES=32
-```
-
-Then run a workflow that passes larger values; the orchestrator will store them in the object store
-and workers will fetch by reference.
+These tasks use the in-process `#[task]` / `register_task!` API and run on the `SimpleEngine`.
+For tasks that run on workers (WASM components and native libraries), see `examples/distributed`.

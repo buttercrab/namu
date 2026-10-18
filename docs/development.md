@@ -22,9 +22,10 @@ This runs format, check, clippy, tests, docs, and security checks.
 ```bash
 ./scripts/e2e.sh
 ```
-Use `PG_PORT`, `REDIS_PORT`, `BIND_PORT`, `MINIO_PORT`, and `MINIO_CONSOLE_PORT` to avoid port conflicts.
+Runs the distributed example on a local cluster and checks the results. Needs `redis-server` and
+the `wasm32-wasip2` target. Use `REDIS_PORT` and `ORCH_PORT` to avoid port conflicts.
 
 ## Helpful paths
-- `tests/e2e/` - end-to-end fixtures used by `scripts/e2e.sh`
+- `examples/distributed/` - tasks and workflows used by `scripts/e2e.sh`
 - `examples/basic/` - minimal workflow + tasks
 - `examples/advanced/` - extended pipelines and workflow export

@@ -102,7 +102,15 @@ impl VisitMut for WorkflowVisitor {
             }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
-                *i = parse_quote! { ::namu::__macro_exports::literal(&#builder_ident, #lit) };
+                // Workflow values are owned, so string literals are `String`, matching task
+                // parameters (a `&str` could never cross a task boundary anyway).
+                *i = if matches!(lit.lit, syn::Lit::Str(_)) {
+                    parse_quote! {
+                        ::namu::__macro_exports::literal(&#builder_ident, ::std::string::String::from(#lit))
+                    }
+                } else {
+                    parse_quote! { ::namu::__macro_exports::literal(&#builder_ident, #lit) }
+                };
                 self.last_expr_has_value = true;
             }
             _ => visit_mut::visit_expr_mut(self, i),

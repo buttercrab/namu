@@ -79,6 +79,17 @@ pub fn split(n: i32, k: i32) -> Result<impl Iterator<Item = Result<i32>>> {
 
 register_task! { method = split, name = "split", author = "test", version = "0.1" }
 
+#[task(stream)]
+pub fn fail_stream(_v: i32) -> Result<impl Iterator<Item = Result<i32>>> {
+    if _v == i32::MIN {
+        Ok(std::iter::empty())
+    } else {
+        anyhow::bail!("stream setup failed")
+    }
+}
+
+register_task! { method = fail_stream, name = "fail_stream", author = "test", version = "0.1" }
+
 #[task(single)]
 #[allow(unreachable_code)]
 pub fn panicker() -> Result<i32> {

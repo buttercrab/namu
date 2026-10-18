@@ -25,15 +25,28 @@ By default the workflow id is the function name. You can override it:
 fn pipeline() -> i32 { /* ... */ }
 ```
 
+## Fan-out and fan-in
+Parallelism comes from types, not loops:
+
+```rust
+let docs = split_docs(48);       // Vec<String>
+let stats = analyze(docs, cfg);  // analyze(doc: String, ...): one branch per document
+summarize(stats)                 // summarize(stats: Vec<Stats>): collect every branch
+```
+
+- A `Vec<T>` passed where a task takes `T` fans out. Everything after it runs once per item.
+- A per-item value passed where a task takes `Vec<T>` collects the surviving branches.
+- Values from before the fan-out (like `cfg`) are shared by every branch.
+- A failed branch is dropped from the collect, and the run ends `partial_failed`.
+
 ## Supported control flow
 - `if` / `if-else`
 - `while` loops
 
 Not yet supported:
-- `for` loops
 - `match`
-- `break` / `continue`
-- tuple destructuring beyond arity 2
+- `break` / `continue` / early `return`
 
 ## Outputs
-Workflow outputs are serialized and stored as run values. The orchestrator marks the run as `succeeded` or `partial_failed` depending on leaf failures.
+Each `return` reached adds to the run's results. The run is `succeeded`, or `partial_failed` if any
+branch failed.

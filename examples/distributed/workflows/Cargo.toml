@@ -1,0 +1,18 @@
+[package]
+name = "namu-distributed-workflows"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "export"
+path = "src/bin/export.rs"
+# Same name as the advanced example's exporter; only one can be documented.
+doc = false
+
+[dependencies]
+namu = { path = "../../../", version = "0.1.0" }
+namu-core = { path = "../../../crates/libs/core", version = "0.1.0" }
+namu-proto = { path = "../../../crates/libs/proto", version = "0.1.0" }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

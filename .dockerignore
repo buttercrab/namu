@@ -1,0 +1,7 @@
+target
+**/target
+data
+.git
+**/.DS_Store
+examples/**/dist
+tests/e2e/dist
