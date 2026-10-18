@@ -48,3 +48,11 @@ localhost, and the test suite checks every workflow on it too.
 A worker learns about a run the first time it receives work for it: it asks the run's owner for
 the run's description and prepares the tasks it uses. When a run is over, its owner asks every
 worker to forget it, and each one reports what it did.
+
+## Crashes
+Everything that moves responsibility for a branch (a handoff, a branch's end, a report) is kept
+by its sender until the receiver has logged what it produced, behind the critical path (the `Log`
+trait: Redis on workers, memory in `LocalCluster`). When a worker dies, the control plane names
+its successor, which takes over its runs, scopes and branches from the log; every branch has a
+stable id, so work that runs twice counts once. `LocalCluster::kill` simulates a crash, and the
+recovery tests kill workers at every moment of a run. See `design.md` §7.

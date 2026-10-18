@@ -1539,6 +1539,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing-subscriber",
  "trybuild",
 ]
 
@@ -1680,6 +1681,7 @@ dependencies = [
  "libloading",
  "namu-engine",
  "namu-proto",
+ "redis",
  "reqwest",
  "serde_json",
  "sha2",

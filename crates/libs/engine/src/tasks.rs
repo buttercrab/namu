@@ -4,7 +4,7 @@
 //! a fixed convention, shared with every task runtime: no arguments is `null`, one is the value
 //! itself, several are an array; a task with several outputs returns an array.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 
 use async_trait::async_trait;
@@ -32,6 +32,12 @@ pub trait Tasks: Send + Sync + 'static {
 
     /// Whether this worker can run `task`.
     fn serves(&self, task: &TaskRef) -> bool;
+
+    /// Whether `task` has external side effects that must not be repeated by recovery (design
+    /// §7.5). The branch is recorded past such a task before it continues.
+    fn checkpoint(&self, _task: &TaskRef) -> bool {
+        false
+    }
 
     /// Runs `task` once. `Ok(Err(message))` is the task's own failure, which fails the branch;
     /// `Err` is a failure of the machinery around it.
@@ -64,6 +70,7 @@ type TaskFn = Box<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
 #[derive(Default)]
 pub struct FnTasks {
     tasks: HashMap<String, TaskFn>,
+    checkpoints: HashSet<String>,
 }
 
 impl FnTasks {
@@ -91,12 +98,22 @@ impl FnTasks {
         self.tasks.insert(task.to_string(), Box::new(call));
         self
     }
+
+    /// Marks `task` as a checkpoint: it has side effects that recovery must not repeat.
+    pub fn checkpoint(mut self, task: &str) -> Self {
+        self.checkpoints.insert(task.to_string());
+        self
+    }
 }
 
 #[async_trait]
 impl Tasks for FnTasks {
     fn serves(&self, task: &TaskRef) -> bool {
         self.tasks.contains_key(&task.id)
+    }
+
+    fn checkpoint(&self, task: &TaskRef) -> bool {
+        self.checkpoints.contains(&task.id)
     }
 
     fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {
