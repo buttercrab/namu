@@ -59,6 +59,18 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
+    let lease_ms = match std::env::var("NAMU_LEASE_MS") {
+        Ok(raw) => raw
+            .parse::<usize>()
+            .with_context(|| format!("invalid NAMU_LEASE_MS {raw:?}"))?,
+        Err(_) => 30_000,
+    };
+    // Leases are renewed every third of the lease; below this, renewal can lose the race against
+    // expiry and healthy work gets reclaimed.
+    anyhow::ensure!(
+        lease_ms >= MIN_LEASE_MS,
+        "NAMU_LEASE_MS must be at least {MIN_LEASE_MS} (got {lease_ms})"
+    );
     let cache_dir = PathBuf::from(
         std::env::var("ARTIFACT_CACHE").unwrap_or_else(|_| "./data/cache".to_string()),
     )
@@ -108,10 +120,6 @@ async fn main() -> anyhow::Result<()> {
         "worker ready"
     );
 
-    let lease_ms = std::env::var("NAMU_LEASE_MS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(30_000);
     let shared = Arc::new(Shared {
         executor,
         redis: redis.clone(),
@@ -143,8 +151,13 @@ async fn main() -> anyhow::Result<()> {
         };
         // COUNT applies per stream, so one read can return an item from every queue. Each one is
         // now pending for this worker and must be handled.
+        let items = items(reply);
+        // Track them right away so their leases are renewed while they wait for a slot.
+        for (queue, id, _) in &items {
+            shared.track(queue, id);
+        }
         let mut first_permit = Some(first_permit);
-        for (queue, id, item) in items(reply) {
+        for (queue, id, item) in items {
             let permit = match first_permit.take() {
                 Some(permit) => permit,
                 None => shared.permits.clone().acquire_owned().await?,
@@ -153,6 +166,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 }
+
+const MIN_LEASE_MS: usize = 1_000;
 
 struct Shared {
     executor: Arc<exec::Executor>,
@@ -163,8 +178,25 @@ struct Shared {
     worker_id: String,
 }
 
-/// Processes a delivery in the background. Success commits and acks it; failure leaves it
-/// pending, to be reclaimed and retried once its lease expires.
+impl Shared {
+    fn track(&self, queue: &str, id: &str) {
+        self.inflight
+            .lock()
+            .unwrap()
+            .entry(queue.to_string())
+            .or_default()
+            .insert(id.to_string());
+    }
+
+    fn untrack(&self, queue: &str, id: &str) {
+        if let Some(ids) = self.inflight.lock().unwrap().get_mut(queue) {
+            ids.remove(id);
+        }
+    }
+}
+
+/// Processes a tracked delivery in the background. Success commits and acks it; failure leaves
+/// it pending, to be reclaimed and retried once its lease expires.
 fn dispatch(
     shared: Arc<Shared>,
     permit: OwnedSemaphorePermit,
@@ -182,16 +214,10 @@ fn dispatch(
                 error!("bad work item {queue}/{id}: {err:#}");
                 let mut redis = shared.redis.clone();
                 let _: RedisResult<()> = redis.xack(&queue, keys::CONSUMER_GROUP, &[&id]).await;
+                shared.untrack(&queue, &id);
                 return;
             }
         };
-        shared
-            .inflight
-            .lock()
-            .unwrap()
-            .entry(queue.clone())
-            .or_default()
-            .insert(id.clone());
         let delivery = commit::Delivery {
             queue: queue.clone(),
             id: id.clone(),
@@ -200,15 +226,13 @@ fn dispatch(
         if let Err(err) = shared.executor.handle(item, &delivery).await {
             error!("work item {queue}/{id} failed (attempt {attempts}), will retry: {err:#}");
         }
-        if let Some(ids) = shared.inflight.lock().unwrap().get_mut(&queue) {
-            ids.remove(&id);
-        }
+        shared.untrack(&queue, &id);
     });
 }
 
 /// Keeps the leases of in-flight deliveries fresh so other workers don't reclaim them.
 async fn renew_leases(shared: Arc<Shared>, lease_ms: usize) {
-    let mut interval = tokio::time::interval(Duration::from_millis((lease_ms / 3).max(100) as u64));
+    let mut interval = tokio::time::interval(Duration::from_millis((lease_ms / 3) as u64));
     loop {
         interval.tick().await;
         let inflight: Vec<(String, Vec<String>)> = shared
@@ -248,6 +272,18 @@ async fn reclaim(shared: Arc<Shared>, queues: Vec<String>, lease_ms: usize) {
         interval.tick().await;
         let mut redis = shared.redis.clone();
         for queue in &queues {
+            // Claim only what can start now: every claim counts as a delivery attempt, so items
+            // claimed and left waiting could be retried away without ever running.
+            let mut permits = Vec::new();
+            while permits.len() < 16 {
+                match shared.permits.clone().try_acquire_owned() {
+                    Ok(permit) => permits.push(permit),
+                    Err(_) => break,
+                }
+            }
+            if permits.is_empty() {
+                break;
+            }
             let claimed: RedisResult<StreamAutoClaimReply> = redis
                 .xautoclaim_options(
                     queue,
@@ -255,7 +291,7 @@ async fn reclaim(shared: Arc<Shared>, queues: Vec<String>, lease_ms: usize) {
                     &shared.worker_id,
                     lease_ms,
                     "0-0",
-                    StreamAutoClaimOptions::default().count(16),
+                    StreamAutoClaimOptions::default().count(permits.len()),
                 )
                 .await;
             let claimed = match claimed {
@@ -265,6 +301,9 @@ async fn reclaim(shared: Arc<Shared>, queues: Vec<String>, lease_ms: usize) {
                     continue;
                 }
             };
+            for entry in &claimed {
+                shared.track(queue, &entry.id);
+            }
             for entry in claimed {
                 let pending: RedisResult<StreamPendingCountReply> = redis
                     .xpending_count(queue, keys::CONSUMER_GROUP, &entry.id, &entry.id, 1)
@@ -280,8 +319,8 @@ async fn reclaim(shared: Arc<Shared>, queues: Vec<String>, lease_ms: usize) {
                     "reclaimed expired work item"
                 );
                 let item = parse_item(&entry);
-                let Ok(permit) = shared.permits.clone().acquire_owned().await else {
-                    return;
+                let Some(permit) = permits.pop() else {
+                    break;
                 };
                 dispatch(
                     shared.clone(),

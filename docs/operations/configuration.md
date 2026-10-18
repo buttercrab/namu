@@ -17,7 +17,7 @@ Redis holds all run state. For runs to survive a Redis restart, run it with pers
   routed to workers on the platform they were built for (`<os>-<arch>`).
 - `NAMU_CONCURRENCY` (default: number of CPUs): work items processed concurrently.
 - `NAMU_LEASE_MS` (default: `30000`): how long a work item can go without its worker renewing it
-  before another worker takes it over. Lower values recover faster from crashes.
+  before another worker takes it over (minimum `1000`). Lower values recover faster from crashes.
 - `WORKER_ID` (default: `<platform>-<random>`)
 - `ARTIFACT_CACHE` (default: `./data/cache`)
 
