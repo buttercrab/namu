@@ -1,13 +1,19 @@
 //! Executes work items: drives contexts through the workflow IR on this worker, runs the tasks
 //! it can run, and hands everything else to other workers.
 //!
-//! Branch accounting (fan-in termination):
+//! Processing a work item never changes shared state directly. It drives the context locally
+//! until one terminal action (a handoff, fan-out, collect, return, or failure) and returns the
+//! resulting [`Effects`], which are committed atomically with the ack (see `commit`). A worker
+//! that crashes mid-item therefore leaves no trace: the item is redelivered and recomputed from
+//! its context, which is durable.
+//!
+//! Branch accounting (fan-in termination) lives in the commit script:
 //! - A fan-out over `n` items replaces its branch with `n` child branches in a new scope whose
 //!   `live` counter starts at `n`. The scope id is the id of the context that fanned out.
 //! - A branch that ends (returns, fails, or arrives at a collect) decrements its innermost scope.
-//!   The branch that brings it to zero fires the collect continuation, if any branch reached the
-//!   collect. Otherwise the scope's own branch has ended too, and the decrement moves one scope
-//!   outwards.
+//!   The branch that brings it to zero schedules the collect continuation (a `CollectReady` item)
+//!   if any branch reached the collect. Otherwise the scope's own branch has ended too, and the
+//!   decrement moves one scope outwards.
 //! - Branches outside any scope count against the run's `live` counter; the run finishes when that
 //!   reaches zero.
 
@@ -24,6 +30,7 @@ use redis::aio::ConnectionManager;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+use crate::commit::{Delivery, Effects, commit};
 use crate::runtime::{Runtimes, encode_input};
 use crate::tree::{IdMinter, RunTree, TreeStore, Writer};
 
@@ -33,6 +40,17 @@ struct Step {
     op: usize,
     pred: Option<usize>,
 }
+
+/// How a step of local driving ends.
+enum Outcome {
+    /// Keep driving locally.
+    Step(Step),
+    /// The work item is finished; these are its effects.
+    Done(Effects),
+}
+
+/// Deliveries beyond this many fail the branch instead of retrying (poison items).
+pub const MAX_ATTEMPTS: usize = 3;
 
 pub struct Run {
     pub id: Uuid,
@@ -81,35 +99,64 @@ impl Executor {
         }
     }
 
-    pub async fn handle(&self, item: WorkItem) -> anyhow::Result<()> {
-        tracing::debug!(?item, "handle");
+    /// Processes one delivery and commits its effects. An error leaves the delivery pending, so
+    /// it is retried (by any worker) once its lease expires.
+    pub async fn handle(&self, item: WorkItem, delivery: &Delivery) -> anyhow::Result<()> {
+        tracing::debug!(?item, ?delivery, "handle");
         let run = self.run(item.run_id()).await?;
-        let result = match &item {
-            WorkItem::Continue { ctx, op, pred, .. } => {
-                self.drive(
-                    &run,
-                    Step {
-                        ctx: *ctx,
-                        op: *op,
-                        pred: *pred,
-                    },
-                )
-                .await
-            }
-            WorkItem::Call { ctx, op, .. } => match self.call(&run, *ctx, *op).await {
-                Ok(Some(step)) => self.drive(&run, step).await,
-                Ok(None) => Ok(()),
-                Err(err) => Err(err),
-            },
+        let effects = if delivery.attempts > MAX_ATTEMPTS {
+            self.give_up(&run, &item, delivery).await?
+        } else {
+            self.process(&run, &item).await?
         };
-        if let Err(err) = result {
-            // An infrastructure error: record it and end the branch so the run still finishes.
-            let ctx = match item {
-                WorkItem::Continue { ctx, .. } | WorkItem::Call { ctx, .. } => ctx,
-            };
-            self.fail_branch(&run, ctx, format!("{err:#}")).await?;
+        // Every node the effects can expose must be readable before they are committed.
+        self.writer.flush().await;
+        let mut redis = self.redis.clone();
+        if !commit(&mut redis, run.id, delivery, &effects, now_ms()).await? {
+            tracing::info!(?delivery, "already committed by an earlier attempt");
         }
         Ok(())
+    }
+
+    async fn process(&self, run: &Run, item: &WorkItem) -> anyhow::Result<Effects> {
+        let outcome = match item {
+            WorkItem::Continue { ctx, op, pred, .. } => Outcome::Step(Step {
+                ctx: *ctx,
+                op: *op,
+                pred: *pred,
+            }),
+            WorkItem::Call { ctx, op, .. } => self.call(run, *ctx, *op).await?,
+            WorkItem::CollectReady { scope, op, .. } => {
+                self.collect_ready(run, *scope, *op).await?
+            }
+        };
+        match outcome {
+            Outcome::Step(step) => self.drive(run, step).await,
+            Outcome::Done(effects) => Ok(effects),
+        }
+    }
+
+    /// A delivery that keeps failing: fail its branch so the run can finish.
+    async fn give_up(
+        &self,
+        run: &Run,
+        item: &WorkItem,
+        delivery: &Delivery,
+    ) -> anyhow::Result<Effects> {
+        let mut effects = Effects::default();
+        effects.failure(format!(
+            "gave up after {} attempts: {item:?}",
+            delivery.attempts - 1
+        ));
+        let scopes = match item {
+            WorkItem::Continue { ctx, .. } | WorkItem::Call { ctx, .. } => {
+                run.tree.node(*ctx).await?.scopes.clone()
+            }
+            // The continuation never ran: the branch that fanned out ends.
+            WorkItem::CollectReady { scope, .. } => run.tree.node(*scope).await?.scopes.clone(),
+        };
+        effects.end_branch(&scopes);
+        Ok(effects)
     }
 
     async fn run(&self, run_id: Uuid) -> anyhow::Result<Arc<Run>> {
@@ -143,34 +190,36 @@ impl Executor {
         Ok(run)
     }
 
-    /// Drives a context locally for as long as possible.
-    async fn drive(&self, run: &Run, mut step: Step) -> anyhow::Result<()> {
+    /// Drives a context locally until a terminal action.
+    async fn drive(&self, run: &Run, mut step: Step) -> anyhow::Result<Effects> {
         let store = TreeStore(&run.tree);
         loop {
             let plan = self
                 .kernel
                 .drive_until_action(&run.workflow, &store, step.ctx as usize, step.op, step.pred)
                 .await?;
-            let next = match plan {
+            let outcome = match plan {
                 KernelPlan::Dispatch {
                     op_id,
                     ctx_id,
                     call,
                     ..
                 } => {
-                    let manifest = run.manifest(&call.task_id)?;
-                    let key = manifest.runtime_key();
+                    let key = run.manifest(&call.task_id)?.runtime_key();
                     if self.runtime_keys.contains(&key) {
                         self.call(run, ctx_id as u64, op_id).await?
                     } else {
                         // Hand off to a worker that has this runtime.
-                        let item = WorkItem::Call {
-                            run_id: run.id,
-                            ctx: ctx_id as u64,
-                            op: op_id,
-                        };
-                        self.enqueue(&keys::queue_runtime(&key), &[item]).await?;
-                        None
+                        let mut effects = Effects::default();
+                        effects.enqueue(
+                            &keys::queue_runtime(&key),
+                            &WorkItem::Call {
+                                run_id: run.id,
+                                ctx: ctx_id as u64,
+                                op: op_id,
+                            },
+                        )?;
+                        Outcome::Done(effects)
                     }
                 }
                 KernelPlan::FanOut {
@@ -182,8 +231,10 @@ impl Executor {
                     let JsonValue::Array(items) = list else {
                         anyhow::bail!("fan-out input is not a list");
                     };
-                    self.fan_out(run, ctx_id as u64, op_id, fan_out.output, items)
-                        .await?
+                    Outcome::Done(
+                        self.fan_out(run, ctx_id as u64, op_id, fan_out.output, items)
+                            .await?,
+                    )
                 }
                 KernelPlan::Collect {
                     op_id,
@@ -191,40 +242,30 @@ impl Executor {
                     collect,
                 } => {
                     let ctx = ctx_id as u64;
-                    tracing::debug!(ctx, op_id, "collect: arrive");
                     let node = run.tree.node(ctx).await?;
                     let scope = *node
                         .scopes
                         .last()
                         .context("collect outside of any fan-out")?;
                     let item = run.tree.get_value(ctx, collect.input).await?;
-                    tracing::debug!(ctx, scope, "collect: push");
-                    let mut redis = self.redis.clone();
-                    let _: () = redis
-                        .rpush(
-                            keys::scope_items(run.id, scope),
-                            serde_json::to_string(&item)?,
-                        )
-                        .await?;
-                    let _: () = redis
-                        .hset(keys::scope(run.id, scope), "collect_op", op_id)
-                        .await?;
-                    self.end_branch(run, ctx).await?
+                    let mut effects = Effects::default();
+                    effects.collect(scope, op_id, &item)?;
+                    effects.end_branch(&node.scopes);
+                    Outcome::Done(effects)
                 }
                 KernelPlan::Return { ctx_id, return_var } => {
-                    self.finish_return(run, ctx_id as u64, return_var).await?
+                    Outcome::Done(self.finish_return(run, ctx_id as u64, return_var).await?)
                 }
             };
-            match next {
-                Some(next) => step = next,
-                None => return Ok(()),
+            match outcome {
+                Outcome::Step(next) => step = next,
+                Outcome::Done(effects) => return Ok(effects),
             }
         }
     }
 
-    /// Executes the call at `op_id` (whose inputs are visible from `ctx`) and returns where the
-    /// context continues, if it continues on this worker.
-    async fn call(&self, run: &Run, ctx: u64, op_id: usize) -> anyhow::Result<Option<Step>> {
+    /// Executes the call at `op_id` (whose inputs are visible from `ctx`).
+    async fn call(&self, run: &Run, ctx: u64, op_id: usize) -> anyhow::Result<Outcome> {
         let operation = &run.workflow.operations[op_id];
         let call = operation.call.as_ref().context("operation has no call")?;
         let manifest = run.manifest(&call.task_id)?;
@@ -232,11 +273,7 @@ impl Executor {
         let inputs = store.get_values(ctx as usize, &call.inputs).await?;
         let input = encode_input(manifest.input_arity, inputs)?;
 
-        tracing::debug!(task = %call.task_id, ctx, "call: loading runner");
         let runner = self.runtimes.runner(manifest).await?;
-        tracing::debug!(task = %call.task_id, ctx, "call: running");
-        // Task calls are CPU-bound; run them on this worker thread instead of hopping to the
-        // blocking pool (the hop alone costs microseconds per step).
         // Task calls are CPU-bound; run them on this worker thread instead of hopping to the
         // blocking pool (the hop alone costs microseconds per step).
         let output = tokio::task::block_in_place(|| runner.call(&input))?;
@@ -246,12 +283,13 @@ impl Executor {
         let output = match output {
             Ok(output) => output,
             Err(task_error) => {
-                self.fail_branch(run, ctx, format!("{}: {task_error}", call.task_id))
-                    .await?;
-                return Ok(None);
+                // The task itself failed: deterministic, so the branch fails without retrying.
+                let mut effects = Effects::default();
+                effects.failure(format!("{}: {task_error}", call.task_id));
+                effects.end_branch(&run.tree.node(ctx).await?.scopes);
+                return Ok(Outcome::Done(effects));
             }
         };
-        tracing::debug!(task = %call.task_id, ctx, "call: returned");
         let output: JsonValue = serde_json::from_str(&output).context("task output is not JSON")?;
 
         if manifest.task_kind == TaskKind::Stream {
@@ -260,7 +298,9 @@ impl Executor {
                 anyhow::bail!("stream task {} did not return a list", call.task_id);
             };
             let output_id = *call.outputs.first().context("stream task has no output")?;
-            return self.fan_out(run, ctx, op_id, output_id, items).await;
+            return Ok(Outcome::Done(
+                self.fan_out(run, ctx, op_id, output_id, items).await?,
+            ));
         }
 
         let values = match call.outputs.len() {
@@ -283,8 +323,44 @@ impl Executor {
         } else {
             run.tree.create_child(ctx, values).await?
         };
-        tracing::debug!(ctx, child, "call: child created");
-        self.advance(run, child, op_id, &operation.next).await
+        let outcome = self.advance(run, child, op_id, &operation.next).await?;
+        if manifest.checkpoint
+            && let Outcome::Step(step) = outcome
+        {
+            // Commit the output now: recovery resumes after this task instead of re-running it.
+            let mut effects = Effects::default();
+            effects.enqueue(
+                keys::QUEUE_ANY,
+                &WorkItem::Continue {
+                    run_id: run.id,
+                    ctx: step.ctx,
+                    op: step.op,
+                    pred: step.pred,
+                },
+            )?;
+            return Ok(Outcome::Done(effects));
+        }
+        Ok(outcome)
+    }
+
+    /// Builds the collected list for a finished scope and continues after the collect.
+    async fn collect_ready(&self, run: &Run, scope: u64, op: usize) -> anyhow::Result<Outcome> {
+        let mut redis = self.redis.clone();
+        let raw: Vec<String> = redis
+            .lrange(keys::scope_items(run.id, scope), 0, -1)
+            .await?;
+        let items = raw
+            .iter()
+            .map(|item| serde_json::from_str(item))
+            .collect::<Result<Vec<JsonValue>, _>>()?;
+        let operation = &run.workflow.operations[op];
+        let collect = operation.collect.as_ref().context("op is not a collect")?;
+        // The continuation hangs off the scope's context: per-item values are out of scope.
+        let cont = run
+            .tree
+            .create_child(scope, vec![(collect.output, JsonValue::Array(items))])
+            .await?;
+        self.advance(run, cont, op, &operation.next).await
     }
 
     /// Follows `next` from `op_id`, handling a return terminator in place.
@@ -294,10 +370,10 @@ impl Executor {
         ctx: u64,
         op_id: usize,
         next: &Next,
-    ) -> anyhow::Result<Option<Step>> {
+    ) -> anyhow::Result<Outcome> {
         let store = TreeStore(&run.tree);
         match self.kernel.resolve_next(&store, ctx as usize, next).await? {
-            Some(op) => Ok(Some(Step {
+            Some(op) => Ok(Outcome::Step(Step {
                 ctx,
                 op,
                 pred: Some(op_id),
@@ -307,7 +383,7 @@ impl Executor {
                     Next::Return { var } => *var,
                     _ => None,
                 };
-                self.finish_return(run, ctx, var).await
+                Ok(Outcome::Done(self.finish_return(run, ctx, var).await?))
             }
         }
     }
@@ -320,37 +396,37 @@ impl Executor {
         op_id: usize,
         output_id: usize,
         items: Vec<JsonValue>,
-    ) -> anyhow::Result<Option<Step>> {
-        if items.is_empty() {
-            return self.end_branch(run, ctx).await;
-        }
-        let mut redis = self.redis.clone();
-        let _: () = redis
-            .hset(keys::scope(run.id, ctx), "live", items.len())
-            .await?;
-
+    ) -> anyhow::Result<Effects> {
         let parent = run.tree.node(ctx).await?;
+        let mut effects = Effects::default();
+        if items.is_empty() {
+            effects.end_branch(&parent.scopes);
+            return Ok(effects);
+        }
+        effects.set_scope(ctx, items.len());
         let mut scopes = parent.scopes.clone();
         scopes.push(ctx);
         let next = &run.workflow.operations[op_id].next;
-        let mut work = Vec::with_capacity(items.len());
         for item in items {
             let child = run.tree.create(NodeRecord {
                 parent: Some(ctx),
                 scopes: scopes.clone(),
                 values: vec![(output_id, item)],
             })?;
-            if let Some(step) = self.advance(run, child, op_id, next).await? {
-                work.push(WorkItem::Continue {
-                    run_id: run.id,
-                    ctx: step.ctx,
-                    op: step.op,
-                    pred: step.pred,
-                });
+            match self.advance(run, child, op_id, next).await? {
+                Outcome::Step(step) => effects.enqueue(
+                    keys::QUEUE_ANY,
+                    &WorkItem::Continue {
+                        run_id: run.id,
+                        ctx: step.ctx,
+                        op: step.op,
+                        pred: step.pred,
+                    },
+                )?,
+                Outcome::Done(child_effects) => effects.merge(child_effects),
             }
         }
-        self.enqueue(keys::QUEUE_ANY, &work).await?;
-        Ok(None)
+        Ok(effects)
     }
 
     async fn finish_return(
@@ -358,115 +434,13 @@ impl Executor {
         run: &Run,
         ctx: u64,
         var: Option<usize>,
-    ) -> anyhow::Result<Option<Step>> {
+    ) -> anyhow::Result<Effects> {
+        let mut effects = Effects::default();
         if let Some(var) = var {
-            let value = run.tree.get_value(ctx, var).await?;
-            let mut redis = self.redis.clone();
-            let _: () = redis
-                .rpush(keys::run_results(run.id), serde_json::to_string(&value)?)
-                .await?;
+            effects.result(&run.tree.get_value(ctx, var).await?)?;
         }
-        self.end_branch(run, ctx).await
-    }
-
-    async fn fail_branch(&self, run: &Run, ctx: u64, message: String) -> anyhow::Result<()> {
-        tracing::warn!(run = %run.id, ctx, "branch failed: {message}");
-        let mut redis = self.redis.clone();
-        let _: () = redis.rpush(keys::run_failures(run.id), message).await?;
-        if let Some(step) = self.end_branch(run, ctx).await? {
-            Box::pin(self.drive(run, step)).await?;
-        }
-        Ok(())
-    }
-
-    /// Ends the branch `ctx`. Returns the collect continuation if this was the last branch of a
-    /// scope that has one.
-    async fn end_branch(&self, run: &Run, ctx: u64) -> anyhow::Result<Option<Step>> {
-        // Every write this worker made for the branch must be visible before others can observe
-        // the decrement.
-        tracing::debug!(ctx, "end_branch: flush");
-        self.writer.flush().await;
-        tracing::debug!(ctx, "end_branch: flushed");
-        let mut redis = self.redis.clone();
-        let mut ctx = ctx;
-        loop {
-            let node = run.tree.node(ctx).await?;
-            let Some(&scope) = node.scopes.last() else {
-                let live: i64 = redis.hincr(keys::run_state(run.id), "live", -1).await?;
-                if live == 0 {
-                    self.finish_run(run).await?;
-                }
-                return Ok(None);
-            };
-            let live: i64 = redis.hincr(keys::scope(run.id, scope), "live", -1).await?;
-            if live > 0 {
-                return Ok(None);
-            }
-            let collect_op: Option<usize> =
-                redis.hget(keys::scope(run.id, scope), "collect_op").await?;
-            let Some(collect_op) = collect_op else {
-                // Every branch of the scope ended without reaching a collect: the branch that
-                // fanned out has ended too.
-                ctx = scope;
-                continue;
-            };
-            let raw: Vec<String> = redis
-                .lrange(keys::scope_items(run.id, scope), 0, -1)
-                .await?;
-            let items = raw
-                .iter()
-                .map(|item| serde_json::from_str(item))
-                .collect::<Result<Vec<JsonValue>, _>>()?;
-            let operation = &run.workflow.operations[collect_op];
-            let collect = operation.collect.as_ref().context("op is not a collect")?;
-            // The continuation hangs off the scope's context: per-item values are out of scope.
-            let cont = run
-                .tree
-                .create_child(scope, vec![(collect.output, JsonValue::Array(items))])
-                .await?;
-            return Box::pin(self.advance(run, cont, collect_op, &operation.next)).await;
-        }
-    }
-
-    async fn finish_run(&self, run: &Run) -> anyhow::Result<()> {
-        let mut redis = self.redis.clone();
-        let failures: usize = redis.llen(keys::run_failures(run.id)).await?;
-        let status = if failures > 0 {
-            "partial_failed"
-        } else {
-            "succeeded"
-        };
-        let _: () = redis
-            .hset_multiple(
-                keys::run_state(run.id),
-                &[
-                    ("status", status.to_string()),
-                    ("finished_at_ms", now_ms().to_string()),
-                ],
-            )
-            .await?;
-        tracing::info!(run = %run.id, status, "run finished");
-        Ok(())
-    }
-
-    async fn enqueue(&self, queue: &str, items: &[WorkItem]) -> anyhow::Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
-        // The receiver may run on another machine: make every node it could read visible first.
-        self.writer.flush().await;
-        let mut pipe = redis::pipe();
-        for item in items {
-            pipe.cmd("XADD")
-                .arg(queue)
-                .arg("*")
-                .arg("item")
-                .arg(serde_json::to_string(item)?)
-                .ignore();
-        }
-        let mut redis = self.redis.clone();
-        pipe.query_async::<()>(&mut redis).await?;
-        Ok(())
+        effects.end_branch(&run.tree.node(ctx).await?.scopes);
+        Ok(effects)
     }
 }
 
