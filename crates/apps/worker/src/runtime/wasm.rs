@@ -1,10 +1,11 @@
-//! Runs tasks compiled as WASM components (`namu:task` world). One compiled component is shared
+//! Runs tasks compiled as WASM components (`namu:task` worlds). One compiled component is shared
 //! by all calls; instances are pooled. A trap or panic only fails that call and that instance.
 
 use std::path::Path;
 use std::sync::Mutex;
 
-use wasmtime::component::{Component, InstancePre, Linker, ResourceTable, TypedFunc};
+use namu_engine::tasks::{StreamItem, TaskStream};
+use wasmtime::component::{Component, InstancePre, Linker, ResourceAny, ResourceTable, TypedFunc};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
@@ -79,5 +80,86 @@ impl WasmTask {
             .call(&mut instance.store, (input.to_string(),))?;
         self.idle.lock().unwrap().push(instance);
         Ok(result)
+    }
+}
+
+mod source {
+    wasmtime::component::bindgen!({
+        path: "../../libs/guest/wit",
+        world: "stream-task",
+    });
+}
+
+/// A stream task compiled as a WASM component (`stream-task` world). Each open stream gets its
+/// own instance, which lives as long as the stream.
+pub struct WasmStreamTask {
+    engine: Engine,
+    pre: source::StreamTaskPre<Host>,
+}
+
+impl WasmStreamTask {
+    pub fn load(engine: &Engine, path: &Path) -> anyhow::Result<Self> {
+        let component = Component::from_file(engine, path)
+            .map_err(|err| anyhow::anyhow!("compile wasm component {}: {err:?}", path.display()))?;
+        let mut linker = Linker::<Host>::new(engine);
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+        let pre = source::StreamTaskPre::new(linker.instantiate_pre(&component)?)?;
+        Ok(Self {
+            engine: engine.clone(),
+            pre,
+        })
+    }
+
+    /// Opens the stream. The outer error is an infrastructure failure; the inner one is the
+    /// task's own error.
+    pub fn open(&self, input: &str) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+        let host = Host {
+            wasi: WasiCtx::builder().inherit_stderr().build(),
+            table: ResourceTable::new(),
+        };
+        let mut store = Store::new(&self.engine, host);
+        let instance = self.pre.instantiate(&mut store)?;
+        let items = match instance.namu_task_source().call_open(&mut store, input)? {
+            Ok(items) => items,
+            Err(message) => return Ok(Err(message)),
+        };
+        Ok(Ok(Box::new(WasmItems {
+            store,
+            instance,
+            items: Some(items),
+        })))
+    }
+}
+
+struct WasmItems {
+    store: Store<Host>,
+    instance: source::StreamTask,
+    /// Taken when the stream is dropped, to run the guest's destructor.
+    items: Option<ResourceAny>,
+}
+
+impl TaskStream for WasmItems {
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
+        let items = self.items.expect("the stream is open");
+        let item = self
+            .instance
+            .namu_task_source()
+            .items()
+            .call_next(&mut self.store, items)?;
+        Ok(item.map(|item| {
+            let value = serde_json::from_str(&item?).map_err(|err| format!("bad item: {err}"))?;
+            Ok(StreamItem {
+                value,
+                cursor: None,
+            })
+        }))
+    }
+}
+
+impl Drop for WasmItems {
+    fn drop(&mut self) {
+        if let Some(items) = self.items.take() {
+            let _ = items.resource_drop(&mut self.store);
+        }
     }
 }

@@ -14,7 +14,7 @@ use namu_engine::RunInfo;
 use namu_engine::ids::{NodeId, RunId, WorkerId, owner};
 use namu_engine::log::{Durable, EndRecord, Log, Record, ReportRecord, RunEstate, ScopeEstate};
 use namu_engine::message::{Branch, BranchId};
-use namu_engine::scope::Continuation;
+use namu_engine::scope::{Continuation, Position, Source};
 use namu_engine::tree::Node;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
@@ -115,13 +115,18 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             run,
             scope,
             continuation,
+            source,
         } => {
-            pipe.hset(
-                key(*run, "scopes"),
-                scope,
-                serde_json::to_string(continuation)?,
-            )
-            .ignore();
+            let record = serde_json::to_string(&(continuation, source))?;
+            pipe.hset(key(*run, "scopes"), scope, record).ignore();
+        }
+        Record::Position {
+            run,
+            scope,
+            position,
+        } => {
+            let position = serde_json::to_string(position)?;
+            pipe.hset(key(*run, "positions"), scope, position).ignore();
         }
         Record::ScopeGone { run, scope } => {
             pipe.hdel(key(*run, "scopes"), scope).ignore();
@@ -135,10 +140,16 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 .ignore();
         }
         Record::RunGone(run) => {
-            let keys: Vec<String> = ["info", "nodes", "branches", "scopes", "ends", "reports"]
-                .iter()
-                .map(|part| key(*run, part))
-                .collect();
+            let parts = [
+                "info",
+                "nodes",
+                "branches",
+                "scopes",
+                "positions",
+                "ends",
+                "reports",
+            ];
+            let keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
             pipe.del(keys).ignore().srem(RUNS, run.to_string()).ignore();
         }
     }
@@ -183,11 +194,19 @@ impl Log for RedisLog {
                 .collect::<Result<Vec<_>, _>>()?;
 
             let scopes: HashMap<u64, String> = redis.hgetall(key(run, "scopes")).await?;
-            let owned: HashMap<u64, Option<Continuation>> = scopes
+            let mut owned: HashMap<u64, (Option<Continuation>, Option<Source>)> = scopes
                 .into_iter()
                 .filter(|(scope, _)| owner(*scope) == worker)
                 .map(|(scope, raw)| Ok((scope, serde_json::from_str(&raw)?)))
                 .collect::<anyhow::Result<_>>()?;
+            if owned.values().any(|(_, source)| source.is_some()) {
+                let positions: HashMap<u64, String> = redis.hgetall(key(run, "positions")).await?;
+                for (scope, raw) in positions {
+                    if let Some((_, Some(source))) = owned.get_mut(&scope) {
+                        source.position = serde_json::from_str::<Position>(&raw)?;
+                    }
+                }
+            }
             let mut ends: HashMap<u64, Vec<EndRecord>> = HashMap::new();
             if !owned.is_empty() {
                 let raw: Vec<String> = redis.lrange(key(run, "ends"), 0, -1).await?;
@@ -200,9 +219,10 @@ impl Log for RedisLog {
             }
             let scopes: Vec<ScopeEstate> = owned
                 .into_iter()
-                .map(|(scope, continuation)| ScopeEstate {
+                .map(|(scope, (continuation, source))| ScopeEstate {
                     scope,
                     continuation,
+                    source,
                     ends: ends.remove(&scope).unwrap_or_default(),
                 })
                 .collect();

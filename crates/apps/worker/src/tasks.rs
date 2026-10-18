@@ -11,8 +11,9 @@ use std::sync::{Arc, RwLock};
 use anyhow::Context;
 use async_trait::async_trait;
 use namu_engine::routes::Routes;
+use namu_engine::tasks::{DEFAULT_WINDOW, TaskStream};
 use namu_engine::{RunSpec, TaskRef, Tasks};
-use namu_proto::{Member, TaskManifest};
+use namu_proto::{Member, TaskKind, TaskManifest};
 use serde_json::Value;
 
 use crate::runtime::{Runner, Runtimes, safe_segment};
@@ -31,11 +32,26 @@ pub struct RuntimeTasks {
 struct Task {
     runtime_key: String,
     checkpoint: bool,
+    stream: bool,
+    window: Option<usize>,
     /// Loaded when this worker serves the task.
     runner: Option<Arc<Runner>>,
 }
 
 impl RuntimeTasks {
+    fn entry(&self, task: &TaskRef, f: impl FnOnce(&Task) -> bool) -> bool {
+        self.tasks.read().unwrap().get(task).is_some_and(f)
+    }
+
+    fn runner(&self, task: &TaskRef) -> anyhow::Result<Arc<Runner>> {
+        self.tasks
+            .read()
+            .unwrap()
+            .get(task)
+            .and_then(|entry| entry.runner.clone())
+            .with_context(|| format!("task {} is not loaded here", task.id))
+    }
+
     pub fn new(
         http: reqwest::Client,
         orchestrator_url: String,
@@ -120,6 +136,8 @@ impl Tasks for RuntimeTasks {
             let entry = Task {
                 runtime_key,
                 checkpoint: manifest.checkpoint,
+                stream: manifest.task_kind == TaskKind::Stream,
+                window: manifest.window,
                 runner,
             };
             self.tasks.write().unwrap().insert(task.clone(), entry);
@@ -128,29 +146,37 @@ impl Tasks for RuntimeTasks {
     }
 
     fn serves(&self, task: &TaskRef) -> bool {
-        self.tasks
-            .read()
-            .unwrap()
-            .get(task)
-            .is_some_and(|entry| entry.runner.is_some())
+        self.entry(task, |entry| entry.runner.is_some())
     }
 
     fn checkpoint(&self, task: &TaskRef) -> bool {
+        self.entry(task, |entry| entry.checkpoint)
+    }
+
+    fn is_stream(&self, task: &TaskRef) -> bool {
+        self.entry(task, |entry| entry.stream)
+    }
+
+    fn window(&self, task: &TaskRef) -> usize {
         self.tasks
             .read()
             .unwrap()
             .get(task)
-            .is_some_and(|entry| entry.checkpoint)
+            .and_then(|entry| entry.window)
+            .unwrap_or(DEFAULT_WINDOW)
+    }
+
+    fn open(
+        &self,
+        task: &TaskRef,
+        input: Value,
+        _cursor: Option<String>,
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+        self.runner(task)?.open(&input.to_string())
     }
 
     fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {
-        let runner = self
-            .tasks
-            .read()
-            .unwrap()
-            .get(task)
-            .and_then(|entry| entry.runner.clone())
-            .with_context(|| format!("task {} is not loaded here", task.id))?;
+        let runner = self.runner(task)?;
         let output = match runner.call(&input.to_string())? {
             Ok(output) => output,
             Err(message) => return Ok(Err(message)),

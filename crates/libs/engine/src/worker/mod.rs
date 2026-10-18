@@ -13,6 +13,7 @@ mod delivery;
 mod drive;
 mod recovery;
 mod scopes;
+mod streams;
 mod view;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -262,6 +263,7 @@ impl Inner {
                 run: id,
                 scope: info.root_scope,
                 continuation: None,
+                source: None,
             },
             Record::Branch {
                 run: id,

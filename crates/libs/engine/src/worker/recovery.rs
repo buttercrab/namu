@@ -15,7 +15,7 @@ use super::{Inner, Run};
 use crate::ids::{WorkerId, owner};
 use crate::log::{Record, ReportRecord, RunEstate, ScopeEstate};
 use crate::message::{Branch, Message};
-use crate::scope::{Ended, Finish, Scope, Then};
+use crate::scope::{Ended, Finish, SOURCE_INDEX, Scope, Then};
 
 /// How often orphans are reconsidered even without a membership change.
 const ORPHAN_PATIENCE: Duration = Duration::from_secs(1);
@@ -120,8 +120,15 @@ impl Inner {
         };
         let mut scope = Scope::new(then);
         let mut over = false;
+        let mut source_ended = false;
         for end in estate.ends {
+            source_ended |= end.branch.index == SOURCE_INDEX;
             over |= scope.end(end.branch, end.weight, end.item) == Ended::Over;
+        }
+        if let Some(source) = estate.source
+            && !source_ended
+        {
+            return self.adopt_stream(run, id, scope, source);
         }
         match over {
             true => self.scope_over(run, id, scope),

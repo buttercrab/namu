@@ -41,6 +41,7 @@ pub struct TaskConfig {
     pub runtime: TaskRuntime,
     pub trust: TaskTrust,
     pub checkpoint: bool,
+    pub window: Option<usize>,
     pub requires_gpu: bool,
     pub resource_class: String,
     pub capabilities: Vec<String>,
@@ -215,6 +216,10 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
             .get("checkpoint")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let window = entry
+            .get("window")
+            .and_then(|v| v.as_integer())
+            .map(|v| v as usize);
         let requires_gpu = entry
             .get("requires_gpu")
             .and_then(|v| v.as_bool())
@@ -263,6 +268,7 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
                 runtime,
                 trust,
                 checkpoint,
+                window,
                 requires_gpu,
                 resource_class,
                 capabilities,

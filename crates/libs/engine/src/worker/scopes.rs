@@ -49,7 +49,11 @@ impl Inner {
                 drop(scopes);
                 return self.unknown_scope(&state, *scope_id, message);
             };
-            match scope.end(*branch, *weight, item.clone()) {
+            let ended = scope.end(*branch, *weight, item.clone());
+            if ended != Ended::Again {
+                Self::free_credit(scope, *branch);
+            }
+            match ended {
                 Ended::Again => {
                     drop(scopes);
                     return self.ack(*delivery);

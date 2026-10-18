@@ -12,11 +12,11 @@ use tokio::runtime::{Handle, RuntimeFlavor};
 use super::delivery::Release;
 use super::view::View;
 use super::{Inner, Run};
-use crate::ids::{NodeId, WorkerId, owner};
+use crate::ids::{NodeId, ScopeId, WorkerId, owner};
 use crate::kernel::{self, Plan, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Message, Report, Resume};
-use crate::scope::{Continuation, FULL, Scope, Then, split};
+use crate::scope::{Continuation, FULL, Scope, Then, Weight, split};
 use crate::tasks::{TaskRef, pack_input, unpack_output};
 use crate::tree::Node;
 
@@ -92,6 +92,12 @@ impl Inner {
                         let to = self.routes.wait_for_server(task).await;
                         at.branch.resume = Resume::Call { op };
                         self.move_branch(run, at, to);
+                        return Ok(());
+                    }
+                    if let Some(fan_out) = run.spec.fused[op]
+                        && self.tasks.is_stream(task)
+                    {
+                        self.start_stream(run, at, op, fan_out);
                         return Ok(());
                     }
                     let call = kernel::operation(workflow, op)?
@@ -176,7 +182,11 @@ impl Inner {
         for &input in &call.inputs {
             args.push(view.get(ctx, input).await?);
         }
-        let output = self.call(task, pack_input(args)).await?;
+        let output = match self.tasks.is_stream(task) {
+            // Not feeding a fan-out: the stream is read to its end into a list.
+            true => self.read_stream(task, pack_input(args)).await?,
+            false => self.call(task, pack_input(args)).await?,
+        };
         view.run.calls.fetch_add(1, Ordering::Relaxed);
         let output = match output {
             Ok(output) => output,
@@ -193,13 +203,7 @@ impl Inner {
 
     async fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {
         let _slot = self.task_slots.acquire().await?;
-        // Tasks are CPU-bound; run them on this thread rather than hopping to the blocking pool.
-        match Handle::current().runtime_flavor() {
-            RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| self.tasks.call(task, input))
-            }
-            _ => self.tasks.call(task, input),
-        }
+        run_task(|| self.tasks.call(task, input))
     }
 
     /// Records the branch past a checkpoint task, and waits until that is durable, so recovery
@@ -260,6 +264,7 @@ impl Inner {
                 run: run.id(),
                 scope,
                 continuation: Some(continuation),
+                source: None,
             },
         ]);
         self.release_when(durable, release.clone());
@@ -284,8 +289,17 @@ impl Inner {
                 scopes: inner.clone(),
             };
             let to = self.routes.any().unwrap_or(self.id);
-            self.hand_off(run, to, child, nodes, release.clone());
+            self.hand_off(run, to, child, nodes, Some(release.clone()));
         }
+    }
+}
+
+/// Runs task code. Tasks are CPU-bound; they run on this thread rather than hopping to the
+/// blocking pool.
+pub(super) fn run_task<T>(f: impl FnOnce() -> T) -> T {
+    match Handle::current().runtime_flavor() {
+        RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
+        _ => f(),
     }
 }
 
@@ -326,7 +340,7 @@ impl Inner {
             hop: at.branch.hop + 1,
             ..at.branch.clone()
         };
-        self.hand_off(run, to, branch, self.trail(run, at), release);
+        self.hand_off(run, to, branch, self.trail(run, at), Some(release));
     }
 
     pub(super) fn hand_off(
@@ -335,7 +349,7 @@ impl Inner {
         to: WorkerId,
         branch: Branch,
         nodes: Vec<(NodeId, Arc<Node>)>,
-        release: Arc<Release>,
+        release: Option<Arc<Release>>,
     ) {
         let run = run.id();
         self.send_kept(
@@ -346,7 +360,7 @@ impl Inner {
                 nodes,
                 delivery,
             },
-            Some(release),
+            release,
         );
     }
 
@@ -371,22 +385,42 @@ impl Inner {
     /// The branch reports to the run's owner, which returns its weight once the report is
     /// recorded.
     pub(super) fn report(self: &Arc<Self>, run: &Run, branch: &Branch, report: Report) {
+        let release = Release::new(1, self.gone(run, branch));
+        self.send_report(
+            run,
+            branch.scope(),
+            branch.id,
+            branch.weight,
+            report,
+            Some(release),
+        );
+    }
+
+    /// Sends a report, with the weight of `branch` in `scope`, to the run's owner.
+    pub(super) fn send_report(
+        self: &Arc<Self>,
+        run: &Run,
+        scope: ScopeId,
+        branch: BranchId,
+        weight: Weight,
+        report: Report,
+        release: Option<Arc<Release>>,
+    ) {
         if let Report::Failure(failure) = &report {
             tracing::warn!(run = %run.id(), "branch failed: {failure}");
         }
-        let release = Release::new(1, self.gone(run, branch));
-        let (run_id, scope, id, weight) = (run.id(), branch.scope(), branch.id, branch.weight);
+        let run_id = run.id();
         self.send_kept(
             run.spec.owner(),
             |delivery| Message::Report {
                 run: run_id,
                 scope,
-                branch: id,
+                branch,
                 weight,
                 report,
                 delivery,
             },
-            Some(release),
+            release,
         );
     }
 }

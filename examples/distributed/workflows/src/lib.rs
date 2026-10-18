@@ -143,3 +143,21 @@ pub fn doc_stats_poison() -> Summary {
     let stats = analyze(long_docs, cfg);
     summarize(stats)
 }
+
+/// The same documents as `split_docs`, yielded one at a time, like a crawler.
+#[task(stream)]
+pub fn stream_docs(n: i32, delay_ms: i32) -> Result<impl Iterator<Item = Result<String>>>;
+
+/// `doc_stats` with the documents streamed in: each is analyzed as soon as it arrives, while the
+/// rest are still coming. Same result as `doc_stats`.
+#[workflow(id = "stream_stats")]
+pub fn stream_stats() -> Summary {
+    let min_len = 6;
+    let rounds = 4000;
+    let n = 48;
+    let delay_ms = 5;
+    let cfg = make_config(min_len, rounds);
+    let docs = stream_docs(n, delay_ms);
+    let stats = analyze(docs, cfg);
+    summarize(stats)
+}

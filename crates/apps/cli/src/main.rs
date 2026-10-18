@@ -243,7 +243,7 @@ fn set_build_info(manifest: &mut TaskManifest) {
         TaskRuntime::Native => Some(namu_proto::host_platform()),
         TaskRuntime::Wasm => None,
     };
-    manifest.abi_version = "2".to_string();
+    manifest.abi_version = "3".to_string();
 }
 
 fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
@@ -255,6 +255,7 @@ fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
         runtime: task.runtime,
         platform: None,
         checkpoint: task.checkpoint,
+        window: task.window,
         requires_gpu: task.requires_gpu,
         resource_class: task.resource_class.clone(),
         capabilities: task.capabilities.clone(),
@@ -263,7 +264,7 @@ fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
         input_schema: task.input_schema.clone(),
         output_schema: task.output_schema.clone(),
         checksum: String::new(),
-        abi_version: "2".to_string(),
+        abi_version: "3".to_string(),
         build_toolchain: "unknown".to_string(),
         created_at: "unknown".to_string(),
     }

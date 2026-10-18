@@ -4,14 +4,18 @@ pub mod native;
 pub mod wasm;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
-use namu_proto::{TaskManifest, TaskRuntime};
+use namu_engine::tasks::TaskStream;
+use namu_proto::{TaskKind, TaskManifest, TaskRuntime};
 use sha2::Digest;
 
 pub enum Runner {
     Wasm(wasm::WasmTask),
+    WasmStream(wasm::WasmStreamTask),
     Native(native::NativeTask),
+    NativeStream(Arc<native::NativeStreamTask>),
 }
 
 impl Runner {
@@ -19,6 +23,17 @@ impl Runner {
         match self {
             Runner::Wasm(task) => task.call(input),
             Runner::Native(task) => task.call(input),
+            Runner::WasmStream(_) | Runner::NativeStream(_) => {
+                anyhow::bail!("a stream task is opened, not called")
+            }
+        }
+    }
+
+    pub fn open(&self, input: &str) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+        match self {
+            Runner::WasmStream(task) => task.open(input),
+            Runner::NativeStream(task) => task.open(input),
+            Runner::Wasm(_) | Runner::Native(_) => anyhow::bail!("not a stream task"),
         }
     }
 }
@@ -46,10 +61,17 @@ impl Runtimes {
         let path = self.fetch_artifact(manifest).await?;
         let engine = self.engine.clone();
         let runtime = manifest.runtime;
+        let stream = manifest.task_kind == TaskKind::Stream;
         tokio::task::spawn_blocking(move || -> anyhow::Result<Runner> {
-            Ok(match runtime {
-                TaskRuntime::Wasm => Runner::Wasm(wasm::WasmTask::load(&engine, &path)?),
-                TaskRuntime::Native => Runner::Native(native::NativeTask::load(&path)?),
+            Ok(match (runtime, stream) {
+                (TaskRuntime::Wasm, false) => Runner::Wasm(wasm::WasmTask::load(&engine, &path)?),
+                (TaskRuntime::Wasm, true) => {
+                    Runner::WasmStream(wasm::WasmStreamTask::load(&engine, &path)?)
+                }
+                (TaskRuntime::Native, false) => Runner::Native(native::NativeTask::load(&path)?),
+                (TaskRuntime::Native, true) => {
+                    Runner::NativeStream(Arc::new(native::NativeStreamTask::load(&path)?))
+                }
             })
         })
         .await?
