@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use namu_core::ir::{Next, Workflow};
-use namu_engine::kernel::{EngineKernel, JsonRuntime, KernelPlan, ValueStore};
+use namu_engine::kernel::{self, Plan, Start, ValueStore};
 use namu_proto::{NodeRecord, RunMeta, TaskKind, TaskManifest, WorkItem, keys};
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
@@ -74,7 +74,6 @@ pub struct Executor {
     writer: Writer,
     ids: Arc<IdMinter>,
     runtimes: Runtimes,
-    kernel: EngineKernel<JsonRuntime>,
     runs: tokio::sync::Mutex<HashMap<Uuid, Arc<Run>>>,
 }
 
@@ -94,7 +93,6 @@ impl Executor {
             writer,
             ids,
             runtimes,
-            kernel: EngineKernel::new(JsonRuntime),
             runs: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -194,20 +192,20 @@ impl Executor {
     async fn drive(&self, run: &Run, mut step: Step) -> anyhow::Result<Effects> {
         let store = TreeStore(&run.tree);
         loop {
-            let plan = self
-                .kernel
-                .drive_until_action(&run.workflow, &store, step.ctx as usize, step.op, step.pred)
-                .await?;
+            let start = Start::At {
+                op: step.op,
+                pred: step.pred,
+            };
+            let plan = kernel::drive(&run.workflow, &store, step.ctx, start).await?;
             let outcome = match plan {
-                KernelPlan::Dispatch {
-                    op_id,
-                    ctx_id,
-                    call,
-                    ..
-                } => {
+                Plan::Call { op: op_id, ctx } => {
+                    let call = run.workflow.operations[op_id]
+                        .call
+                        .as_ref()
+                        .context("op has no call")?;
                     let key = run.manifest(&call.task_id)?.runtime_key();
                     if self.runtime_keys.contains(&key) {
-                        self.call(run, ctx_id as u64, op_id).await?
+                        self.call(run, ctx, op_id).await?
                     } else {
                         // Hand off to a worker that has this runtime.
                         let mut effects = Effects::default();
@@ -215,33 +213,29 @@ impl Executor {
                             &keys::queue_runtime(&key),
                             &WorkItem::Call {
                                 run_id: run.id,
-                                ctx: ctx_id as u64,
+                                ctx,
                                 op: op_id,
                             },
                         )?;
                         Outcome::Done(effects)
                     }
                 }
-                KernelPlan::FanOut {
-                    op_id,
-                    ctx_id,
-                    fan_out,
-                } => {
-                    let list = run.tree.get_value(ctx_id as u64, fan_out.input).await?;
+                Plan::FanOut { op: op_id, ctx } => {
+                    let fan_out = run.workflow.operations[op_id]
+                        .fan_out
+                        .as_ref()
+                        .context("op has no fan-out")?;
+                    let list = run.tree.get_value(ctx, fan_out.input).await?;
                     let JsonValue::Array(items) = list else {
                         anyhow::bail!("fan-out input is not a list");
                     };
-                    Outcome::Done(
-                        self.fan_out(run, ctx_id as u64, op_id, fan_out.output, items)
-                            .await?,
-                    )
+                    Outcome::Done(self.fan_out(run, ctx, op_id, fan_out.output, items).await?)
                 }
-                KernelPlan::Collect {
-                    op_id,
-                    ctx_id,
-                    collect,
-                } => {
-                    let ctx = ctx_id as u64;
+                Plan::Collect { op: op_id, ctx } => {
+                    let collect = run.workflow.operations[op_id]
+                        .collect
+                        .as_ref()
+                        .context("op has no collect")?;
                     let node = run.tree.node(ctx).await?;
                     let scope = *node
                         .scopes
@@ -253,8 +247,8 @@ impl Executor {
                     effects.end_branch(&node.scopes);
                     Outcome::Done(effects)
                 }
-                KernelPlan::Return { ctx_id, return_var } => {
-                    Outcome::Done(self.finish_return(run, ctx_id as u64, return_var).await?)
+                Plan::Return { ctx, value } => {
+                    Outcome::Done(self.finish_return(run, ctx, value).await?)
                 }
             };
             match outcome {
@@ -270,7 +264,10 @@ impl Executor {
         let call = operation.call.as_ref().context("operation has no call")?;
         let manifest = run.manifest(&call.task_id)?;
         let store = TreeStore(&run.tree);
-        let inputs = store.get_values(ctx as usize, &call.inputs).await?;
+        let mut inputs = Vec::with_capacity(call.inputs.len());
+        for &input in &call.inputs {
+            inputs.push(store.get(ctx, input).await?);
+        }
         let input = encode_input(manifest.input_arity, inputs)?;
 
         let runner = self.runtimes.runner(manifest).await?;
@@ -372,7 +369,7 @@ impl Executor {
         next: &Next,
     ) -> anyhow::Result<Outcome> {
         let store = TreeStore(&run.tree);
-        match self.kernel.resolve_next(&store, ctx as usize, next).await? {
+        match kernel::leave(&run.workflow, &store, ctx, op_id).await? {
             Some(op) => Ok(Outcome::Step(Step {
                 ctx,
                 op,

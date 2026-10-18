@@ -82,12 +82,12 @@ impl<T> Graph<T> {
         let mut ops: Vec<Operation> = Vec::new();
         let mut block_first_op: Vec<Option<usize>> = vec![None; self.blocks.len()];
         let mut block_last_op: Vec<Option<usize>> = vec![None; self.blocks.len()];
-
-        // Track max ValueId encountered so we can allocate placeholders if needed
-        let mut next_value_id: usize = 0;
+        // Constants depend on nothing, so they are evaluated once, in the root context, where
+        // every branch and every scope can see them (see "level 2 dedup" in docs/design.md).
+        let mut constants: Vec<Literal> = Vec::new();
 
         // First pass: convert every Node into an Operation and link linear flow within block.
-        // An Operation holds literals and phis followed by at most one action (call, fan-out or
+        // An Operation holds phis followed by at most one action (call, fan-out or
         // collect), so a new Operation starts whenever another node follows an action.
         for (block_idx, block) in self.blocks.iter().enumerate() {
             let mut prev_op_idx: Option<usize> = None;
@@ -97,11 +97,6 @@ impl<T> Graph<T> {
 
             for &node_id in &block.instructions {
                 let node = &self.arena.nodes[node_id];
-
-                // Update next_value_id
-                if let Some(max_out) = node.outputs.iter().max() {
-                    next_value_id = next_value_id.max(max_out + 1);
-                }
 
                 if pending.has_action() {
                     let op_idx = pending.flush(&mut ops);
@@ -115,10 +110,10 @@ impl<T> Graph<T> {
                 }
 
                 match &node.kind {
-                    NodeKind::Literal { debug_repr, .. } => {
-                        pending.literals.push(Literal {
+                    NodeKind::Literal { json } => {
+                        constants.push(Literal {
                             output: node.outputs[0],
-                            value: debug_repr.clone(),
+                            value: json.clone(),
                         });
                     }
                     NodeKind::Phi { from } => {
@@ -164,23 +159,15 @@ impl<T> Graph<T> {
             // Record last op for this block
             block_last_op[block_idx] = prev_op_idx;
 
-            // If block had no instructions, create a synthetic placeholder so that
-            // control-flow edges can still target a valid op.
+            // An empty block still needs an operation for control flow to target; its
+            // terminator is patched in below.
             if prev_op_idx.is_none() {
-                let placeholder_value = next_value_id;
-                next_value_id += 1;
-                let op = Operation {
-                    literals: vec![Literal {
-                        output: placeholder_value,
-                        value: "()".to_string(),
-                    }],
-                    phis: Vec::new(),
-                    call: None,
-                    fan_out: None,
-                    collect: None,
-                    next: Next::Return { var: None },
-                };
-                ops.push(op);
+                ops.push(Operation::new(
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Next::return_unit(),
+                ));
                 block_first_op[block_idx] = Some(ops.len() - 1);
                 block_last_op[block_idx] = Some(ops.len() - 1);
             }
@@ -220,6 +207,9 @@ impl<T> Graph<T> {
             }
         }
 
+        // Block 0 is the entry, and its first operation is op 0.
+        ops[0].literals = constants;
+
         Workflow {
             name,
             operations: ops,
@@ -233,8 +223,8 @@ impl<T> Graph<T> {
             for &node_id in &block.instructions {
                 let node = &self.arena.nodes[node_id];
                 let line = match &node.kind {
-                    NodeKind::Literal { debug_repr, .. } => {
-                        format!("  let var{} = {};\n", node_id, debug_repr)
+                    NodeKind::Literal { json } => {
+                        format!("  let var{} = {};\n", node_id, json)
                     }
                     NodeKind::Call { task_id, inputs } => {
                         let parent_vars: Vec<String> =
@@ -294,7 +284,6 @@ impl<T> Graph<T> {
 
 #[derive(Default)]
 struct PendingOp {
-    literals: Vec<Literal>,
     phis: Vec<Phi>,
     call: Option<Call>,
     fan_out: Option<FanOut>,
@@ -307,13 +296,13 @@ impl PendingOp {
     }
 
     fn is_empty(&self) -> bool {
-        self.literals.is_empty() && self.phis.is_empty() && !self.has_action()
+        self.phis.is_empty() && !self.has_action()
     }
 
     fn flush(&mut self, ops: &mut Vec<Operation>) -> usize {
         let taken = std::mem::take(self);
         ops.push(Operation {
-            literals: taken.literals,
+            literals: Vec::new(),
             phis: taken.phis,
             call: taken.call,
             fan_out: taken.fan_out,

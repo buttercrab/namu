@@ -1,40 +1,31 @@
-//! The `#[task]` procedural macro.
+//! The `#[task]` attribute: declares a task that a workflow can call.
 //!
-//! This macro is the primary way to define a computational task. It transforms
-//! a standard Rust function into a struct that implements the `task::Task`
-//! and `task::SingleTask` (or `BatchedTask`/`StreamTask`) traits.
+//! A task is declared by its signature only. Its implementation lives elsewhere (a WASM component,
+//! a native library, or an in-process function registered with the engine), so a workflow is
+//! type-checked against the signature without linking any task code:
 //!
-//! ## Macro Arguments
-//! The macro can be used in several ways:
-//!   - `#[task]` on a function: Defines a `SingleTask` (default).
-//!   - `#[task]` on a struct/enum/impl: Registers a direct task implementation.
-//!   - `#[task(batch)]`: Defines a `BatchedTask` with a default batch size.
-//!   - `#[task(batch, batch_size = 16)]`: Defines a `BatchedTask` with a specific batch size.
-//!   - `#[task(stream)]`: Defines a `StreamTask`.
+//! ```ignore
+//! #[task]
+//! pub fn analyze(doc: String, cfg: Config) -> Result<Stats>;
 //!
-//! ## Generated Code
-//! 1. **Renamed Original Function**: The user's function is preserved with a prefix (e.g.,
-//!    `__impl_my_task`).
-//! 2. **Task Struct**: A unit struct (e.g., `__my_task`) is created to serve as the task's identity
-//!    and method container.
-//! 3. **`task::Task` Implementation**: An `impl<Id, C> task::Task<Id, C> for ...` block is
-//!    generated. This contains the `prepare` and `run` methods. The `run` logic is taken from the
-//!    default implementations on the specialized traits (`SingleTask`, etc.).
-//! 4. **Specialized Trait Implementation**: An `impl` for `task::SingleTask`, `task::BatchedTask`,
-//!    or `task::StreamTask` is created. This defines the `Input` and `Output` associated types and
-//!    implements the `call` method, which invokes the renamed original function.
-//! 5. **Graph Constructor**: A function with the same name as the original is generated. This
-//!    function is what's called inside a `#[workflow]`. It takes `TracedValue`s as input, registers
-//!    the task with the executor's registry, and adds a `Call` node to the graph via the `Builder`
-//!    API.
+//! #[task(batch)]
+//! pub fn embed(texts: Vec<String>) -> Vec<Result<Embedding>>;
+//!
+//! #[task(stream)]
+//! pub fn crawl(seed: Url) -> Result<impl Iterator<Item = Result<Page>>>;
+//! ```
+//!
+//! The macro replaces the signature with a graph constructor of the same name. Inside a
+//! `#[workflow]` it adds a `Call` node, and each argument goes through `IntoArg`, which is where
+//! fan-out and collect are resolved from the parameter types.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    AngleBracketedGenericArguments, GenericArgument, Ident, LitInt, Pat, Path, PathArguments,
-    PathSegment, ReturnType, Token, Type, TypePath, parse_macro_input, parse_quote,
+    GenericArgument, Ident, Pat, PathArguments, ReturnType, Token, Type, TypePath,
+    parse_macro_input,
 };
 
 /// Returns a compile error spanning `tokens` from the enclosing function.
@@ -44,121 +35,164 @@ macro_rules! bail {
     };
 }
 
-// --- Attribute Parsing ---
-
-#[derive(Debug, Clone, Copy)]
-enum TaskType {
-    Direct, // no code generation; user implements Task manually
+/// How a task is called. It changes only the types the constructor accepts and returns.
+#[derive(Debug, Clone, Copy, Default)]
+enum TaskKind {
+    /// One input, one result.
+    #[default]
     Single,
+    /// Written for a list of inputs, called per item; the engine groups the items.
     Batch,
+    /// Yields its results over time.
     Stream,
 }
 
-#[derive(Debug, Default)]
-struct TaskArgs {
-    task_type: Option<TaskType>,
-    batch_size: Option<usize>,
-}
-
-impl Parse for TaskArgs {
+impl Parse for TaskKind {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut args = TaskArgs::default();
         if input.is_empty() {
-            return Ok(args);
+            return Ok(Self::default());
         }
-
-        let task_type_ident: Ident = input.parse()?;
-        match task_type_ident.to_string().as_str() {
-            "single" => args.task_type = Some(TaskType::Single),
-            "batch" => args.task_type = Some(TaskType::Batch),
-            "stream" => args.task_type = Some(TaskType::Stream),
-            "direct" => args.task_type = Some(TaskType::Direct),
-            _ => {
-                return Err(syn::Error::new(
-                    task_type_ident.span(),
-                    "expected `single`, `batch`, `stream`, or `direct`",
-                ));
-            }
-        }
-
+        let ident: Ident = input.parse()?;
+        let kind = match ident.to_string().as_str() {
+            "single" => Self::Single,
+            "batch" => Self::Batch,
+            "stream" => Self::Stream,
+            _ => bail!(ident, "expected `single`, `batch`, or `stream`"),
+        };
         if !input.is_empty() {
-            input.parse::<Token![,]>()?;
+            return Err(input.error("unexpected task argument"));
         }
-
-        if !input.is_empty() {
-            let lookahead = input.lookahead1();
-            if lookahead.peek(Ident) {
-                let ident: Ident = input.parse()?;
-                if ident == "batch_size" {
-                    input.parse::<Token![=]>()?;
-                    let lit: LitInt = input.parse()?;
-                    args.batch_size = Some(lit.base10_parse()?);
-                }
-            }
-        }
-
-        Ok(args)
+        Ok(kind)
     }
 }
 
-// --- Type-parsing Helpers ---
+/// `pub fn name(args...) -> Ret;`
+struct TaskSignature {
+    vis: syn::Visibility,
+    sig: syn::Signature,
+}
 
-/// Extracts the inner type `T` from a `Result<T, E>`.
-fn extract_result_type(ty: &Type) -> syn::Result<&Type> {
-    let Type::Path(TypePath {
-        qself: None,
-        path: Path {
-            leading_colon: None,
-            segments,
-            ..
-        },
-        ..
+impl Parse for TaskSignature {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.call(syn::Attribute::parse_outer)?;
+        let vis = input.parse()?;
+        let sig: syn::Signature = input.parse()?;
+        if input.peek(syn::token::Brace) {
+            return Err(input.error(
+                "a task is declared by its signature only (end it with `;`); \
+                 its implementation is registered with the engine or built with `namu_guest`",
+            ));
+        }
+        input.parse::<Token![;]>()?;
+        Ok(Self { vis, sig })
+    }
+}
+
+pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let kind = parse_macro_input!(attr as TaskKind);
+    let signature = parse_macro_input!(item as TaskSignature);
+    constructor(kind, &signature.vis, &signature.sig)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+fn constructor(
+    kind: TaskKind,
+    vis: &syn::Visibility,
+    sig: &syn::Signature,
+) -> syn::Result<TokenStream2> {
+    let name = &sig.ident;
+    let mut params = Vec::new();
+    for arg in &sig.inputs {
+        let syn::FnArg::Typed(pt) = arg else {
+            bail!(arg, "tasks cannot take `self`");
+        };
+        let Pat::Ident(pat) = &*pt.pat else {
+            bail!(pt, "task arguments must be plain identifiers");
+        };
+        params.push((pat.ident.clone(), (*pt.ty).clone()));
+    }
+    let ReturnType::Type(_, ret) = &sig.output else {
+        bail!(sig.output, "a task must return a `Result`");
+    };
+
+    // What one call yields, per item for batch and stream tasks.
+    let output = match kind {
+        TaskKind::Single => result_inner(ret)?,
+        TaskKind::Batch => {
+            let [(_, input)] = params.as_mut_slice() else {
+                bail!(
+                    sig.inputs,
+                    "a batch task takes exactly one `Vec<T>` argument"
+                );
+            };
+            *input = generic_arg(input, "Vec", "a batch task takes a `Vec<T>`")?.clone();
+            result_inner(generic_arg(
+                ret,
+                "Vec",
+                "a batch task returns `Vec<Result<T>>`",
+            )?)?
+        }
+        TaskKind::Stream => result_inner(iterator_item(result_inner(ret)?)?)?,
+    };
+
+    let arg_names = params.iter().map(|(name, _)| name);
+    let arg_decls = params
+        .iter()
+        .map(|(name, ty)| quote! { #name: impl ::namu::__macro_exports::IntoArg<#ty> });
+
+    // A non-empty tuple is several outputs; anything else (including `()`) is one.
+    let (ret_ty, call_fn) = match output {
+        Type::Tuple(tuple) if !tuple.elems.is_empty() => {
+            let elems = tuple.elems.iter();
+            (
+                quote! { ( #( ::namu::__macro_exports::TracedValue<#elems> ),* ) },
+                format_ident!("call{}", tuple.elems.len()),
+            )
+        }
+        ty => (
+            quote! { ::namu::__macro_exports::TracedValue<#ty> },
+            format_ident!("call"),
+        ),
+    };
+
+    Ok(quote! {
+        #vis fn #name<G: 'static>(
+            __builder: &::namu::__macro_exports::Builder<G>,
+            #( #arg_decls ),*
+        ) -> #ret_ty {
+            // Resolving an argument may emit a fan-out or collect, so arguments are resolved in
+            // order before the call.
+            let __inputs = ::std::vec::Vec::from([
+                #( ::namu::__macro_exports::IntoArg::into_arg(#arg_names, __builder) ),*
+            ]);
+            ::namu::__macro_exports::#call_fn(__builder, stringify!(#name), __inputs)
+        }
+    })
+}
+
+/// `T` from `Result<T>` or `Result<T, E>`.
+fn result_inner(ty: &Type) -> syn::Result<&Type> {
+    generic_arg(ty, "Result", "a task must return a `Result`")
+}
+
+/// The first type argument of `ty` if its last path segment is `outer`.
+fn generic_arg<'a>(ty: &'a Type, outer: &str, msg: &str) -> syn::Result<&'a Type> {
+    if let Type::Path(TypePath {
+        qself: None, path, ..
     }) = ty
-    else {
-        bail!(ty, "Task function must return a `Result`");
-    };
-
-    let Some(PathSegment {
-        ident,
-        arguments: PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }),
-    }) = segments.last()
-    else {
-        bail!(ty, "Task function must return a `Result`");
-    };
-
-    if ident != "Result" {
-        bail!(ty, "Task function must return a `Result`");
+        && let Some(segment) = path.segments.last()
+        && segment.ident == outer
+        && let PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(GenericArgument::Type(inner)) = args.args.first()
+    {
+        return Ok(inner);
     }
-
-    let Some(GenericArgument::Type(inner_type)) = args.first() else {
-        bail!(ty, "Result must have a type argument, e.g., Result<i32>");
-    };
-
-    Ok(inner_type)
+    bail!(ty, msg)
 }
 
-/// Extracts the inner type `T` from a `Vec<T>`.
-fn extract_vec_inner_type(ty: &Type) -> syn::Result<&Type> {
-    let Type::Path(TypePath { path, .. }) = ty else {
-        bail!(ty, "Expected a Vec<T> type.");
-    };
-    let Some(segment) = path.segments.last() else {
-        bail!(path, "Invalid type path.");
-    };
-    if segment.ident != "Vec" {
-        bail!(segment, "Expected a Vec for batch task.");
-    }
-    let PathArguments::AngleBracketed(args) = &segment.arguments else {
-        bail!(segment, "Vec must have a generic argument.");
-    };
-    let Some(GenericArgument::Type(inner)) = args.args.first() else {
-        bail!(args, "Vec must have a type argument.");
-    };
-    Ok(inner)
-}
-
-/// Extracts the item type `T` from a type that is `impl Iterator<Item = T>`.
-fn extract_iterator_item_type(ty: &Type) -> syn::Result<&Type> {
+/// `T` from `impl Iterator<Item = T>`.
+fn iterator_item(ty: &Type) -> syn::Result<&Type> {
     if let Type::ImplTrait(impl_trait) = ty {
         for bound in &impl_trait.bounds {
             if let syn::TypeParamBound::Trait(trait_bound) = bound
@@ -178,568 +212,6 @@ fn extract_iterator_item_type(ty: &Type) -> syn::Result<&Type> {
     }
     bail!(
         ty,
-        "Stream task must return `impl Iterator<Item = Result<...>>`"
-    );
-}
-
-// --- Generator Functions ---
-
-struct TaskDefinition<'a> {
-    func_name: &'a Ident,
-    struct_name: &'a Ident,
-    impl_func_name: &'a Ident,
-    task_type: TaskType,
-    batch_size: Option<usize>,
-    arg_names: &'a [Ident],
-    arg_types: &'a [Type],
-    return_ty: &'a Type,
-}
-
-// Generates the unit-struct plus the blanket `Task` impl that simply forwards to the
-// given specialization trait's `run` method (e.g. `SingleTask`, `BatchedTask`, `StreamTask`).
-fn generate_common_task_prelude(struct_name: &Ident, specialization_trait: &Ident) -> TokenStream2 {
-    quote! {
-        #[allow(non_camel_case_types)]
-        #[derive(Clone, Copy)]
-        pub struct #struct_name;
-
-        impl<C> ::namu::__macro_exports::Task<C> for #struct_name
-        where
-            C: ::namu::__macro_exports::TaskContext,
-        {
-            fn prepare(&mut self) -> ::namu::__macro_exports::Result<()> { Ok(()) }
-
-            fn clone_boxed(&self) -> Box<dyn ::namu::__macro_exports::Task<C> + Send + Sync> {
-                Box::new(*self)
-            }
-
-            fn run(&mut self, context: C) -> ::namu::__macro_exports::Result<()> {
-                ::namu::__macro_exports::#specialization_trait::run(self, context)
-            }
-        }
-    }
-}
-
-fn generate_single_task_impl(def: &TaskDefinition) -> syn::Result<TokenStream2> {
-    let arg_types = def.arg_types;
-    let arg_names = def.arg_names;
-    let struct_name = def.struct_name;
-    let impl_func_name = def.impl_func_name;
-
-    let output_type = extract_result_type(def.return_ty)?;
-    let input_type = if arg_types.len() == 1 {
-        let ty = &arg_types[0];
-        quote! { #ty }
-    } else if arg_types.is_empty() {
-        quote! { () }
-    } else {
-        quote! { (#(#arg_types),*) }
-    };
-
-    let input_destructuring = if arg_names.len() > 1 {
-        quote! { let (#(#arg_names),*) = input; }
-    } else if !arg_names.is_empty() {
-        let name = &arg_names[0];
-        quote! { let #name = input; }
-    } else {
-        quote! { let () = input; }
-    };
-
-    let call_args = quote! { #(#arg_names),* };
-
-    // Generate the common struct + Task impl once
-    let common = {
-        let trait_ident = format_ident!("SingleTask");
-        generate_common_task_prelude(struct_name, &trait_ident)
-    };
-
-    Ok(quote! {
-        #common
-
-        impl<C> ::namu::__macro_exports::SingleTask<C> for #struct_name
-        where
-            C: ::namu::__macro_exports::TaskContext,
-        {
-            type Input = #input_type;
-            type Output = #output_type;
-            fn call(&mut self, input: Self::Input) -> ::namu::__macro_exports::Result<Self::Output> {
-                #input_destructuring
-                #impl_func_name(#call_args)
-            }
-        }
-    })
-}
-
-fn generate_batch_task_impl(def: &TaskDefinition) -> syn::Result<TokenStream2> {
-    let struct_name = def.struct_name;
-    let impl_func_name = def.impl_func_name;
-
-    if def.arg_types.len() != 1 {
-        bail!(
-            def.func_name,
-            "Batch task must have exactly one argument: Vec<Input>"
-        );
-    }
-    let batch_size = def.batch_size.unwrap_or(16);
-    let input_vec_type = &def.arg_types[0];
-    let input_type = extract_vec_inner_type(input_vec_type)?;
-
-    let output_result_type = extract_vec_inner_type(def.return_ty)?;
-    let output_type = extract_result_type(output_result_type)?;
-
-    // Common struct + Task impl
-    let common = {
-        let trait_ident = format_ident!("BatchedTask");
-        generate_common_task_prelude(struct_name, &trait_ident)
-    };
-
-    Ok(quote! {
-        #common
-
-        impl<C> ::namu::__macro_exports::BatchedTask<C> for #struct_name
-        where
-            C: ::namu::__macro_exports::TaskContext,
-        {
-            type Input = #input_type;
-            type Output = #output_type;
-
-            fn batch_size(&self) -> usize { #batch_size }
-
-            fn call(&mut self, input: Vec<Self::Input>) -> Vec<::namu::__macro_exports::Result<Self::Output>> {
-                #impl_func_name(input)
-            }
-        }
-    })
-}
-
-fn generate_stream_task_impl(def: &TaskDefinition) -> syn::Result<TokenStream2> {
-    let arg_types = def.arg_types;
-    let arg_names = def.arg_names;
-    let struct_name = def.struct_name;
-    let impl_func_name = def.impl_func_name;
-
-    let input_type = if arg_types.len() == 1 {
-        let ty = &arg_types[0];
-        quote! { #ty }
-    } else if arg_types.is_empty() {
-        quote! { () }
-    } else {
-        quote! { (#(#arg_types),*) }
-    };
-
-    let input_destructuring = if arg_names.len() > 1 {
-        quote! { let (#(#arg_names),*) = input; }
-    } else if !arg_names.is_empty() {
-        let name = &arg_names[0];
-        quote! { let #name = input; }
-    } else {
-        quote! { let () = input; }
-    };
-
-    let call_args = quote! { #(#arg_names),* };
-
-    let output_iterator_type = extract_result_type(def.return_ty)?;
-    let output_type = extract_result_type(extract_iterator_item_type(output_iterator_type)?)?;
-
-    // Common struct + Task impl
-    let common = {
-        let trait_ident = format_ident!("StreamTask");
-        generate_common_task_prelude(struct_name, &trait_ident)
-    };
-
-    Ok(quote! {
-        #common
-
-        impl<C> ::namu::__macro_exports::StreamTask<C> for #struct_name
-        where
-            C: ::namu::__macro_exports::TaskContext,
-        {
-            type Input = #input_type;
-            type Output = #output_type;
-            fn call(&mut self, input: Self::Input) -> impl Iterator<Item = ::namu::__macro_exports::Result<Self::Output>> {
-                #input_destructuring
-                match #impl_func_name(#call_args) {
-                    Ok(iter) => {
-                        Box::new(iter)
-                            as Box<dyn Iterator<Item = ::namu::__macro_exports::Result<Self::Output>>>
-                    }
-                    Err(err) => {
-                        Box::new(::std::iter::once(Err(err)))
-                            as Box<dyn Iterator<Item = ::namu::__macro_exports::Result<Self::Output>>>
-                    }
-                }
-            }
-        }
-    })
-}
-
-fn generate_constructor(
-    def: &TaskDefinition,
-    original_sig: &syn::Signature,
-) -> syn::Result<TokenStream2> {
-    let func_name = def.func_name;
-    let arg_names = def.arg_names;
-    let arg_types = def.arg_types;
-
-    // Determine output element type(s)
-    let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.task_type {
-        TaskType::Single => {
-            let ty = extract_result_type(def.return_ty)?.clone();
-            // Treat `()` as non-tuple scalar; any tuple with at least 1 element is handled as tuple
-            if let Type::Tuple(tuple) = &ty {
-                if tuple.elems.is_empty() {
-                    (ty.clone(), false, Vec::new())
-                } else {
-                    (ty.clone(), true, tuple.elems.iter().cloned().collect())
-                }
-            } else {
-                (ty.clone(), false, Vec::new())
-            }
-        }
-        TaskType::Batch => {
-            let output_result_type = extract_vec_inner_type(def.return_ty)?;
-            let ty = extract_result_type(output_result_type)?.clone();
-            (ty.clone(), false, Vec::new())
-        }
-        TaskType::Stream => {
-            let output_iterator_type = extract_result_type(def.return_ty)?;
-            let ty =
-                extract_result_type(extract_iterator_item_type(output_iterator_type)?)?.clone();
-            (ty.clone(), false, Vec::new())
-        }
-        _ => unreachable!(),
-    };
-
-    let mut constructor_sig = original_sig.clone();
-    constructor_sig.generics = parse_quote! { <G: 'static> };
-    constructor_sig.inputs.clear();
-    constructor_sig
-        .inputs
-        .push(parse_quote! { builder: &::namu::__macro_exports::Builder<G> });
-
-    match def.task_type {
-        TaskType::Single | TaskType::Stream => {
-            for (name, ty) in arg_names.iter().zip(arg_types.iter()) {
-                constructor_sig
-                    .inputs
-                    .push(parse_quote! { #name: impl ::namu::__macro_exports::IntoArg<#ty> });
-            }
-        }
-        TaskType::Batch => {
-            let name = &arg_names[0];
-            let vec_ty = &arg_types[0];
-            let inner_ty = extract_vec_inner_type(vec_ty)?;
-            constructor_sig
-                .inputs
-                .push(parse_quote! { #name: impl ::namu::__macro_exports::IntoArg<#inner_ty> });
-        }
-        _ => unreachable!(),
-    }
-
-    if is_tuple {
-        constructor_sig.output =
-            parse_quote! { -> ( #( ::namu::__macro_exports::TracedValue<#tuple_elems> ),* ) };
-    } else {
-        constructor_sig.output =
-            parse_quote! { -> ::namu::__macro_exports::TracedValue<#output_type> };
-    }
-
-    // Resolving each argument may emit a fan-out or collect node before the call, so arguments
-    // are resolved in order and the call uses the resulting ids.
-    let input_ids = arg_names.iter().map(|name| {
-        quote! { ::namu::__macro_exports::IntoArg::into_arg(#name, builder) }
-    });
-
-    let call_fn_ident = if is_tuple {
-        let arity = tuple_elems.len();
-        format_ident!("call{}", arity)
-    } else {
-        format_ident!("call")
-    };
-
-    let constructor_body = quote! {
-        let __namu_inputs = vec![#(#input_ids),*];
-        ::namu::__macro_exports::#call_fn_ident(builder, stringify!(#func_name), __namu_inputs)
-    };
-
-    Ok(quote! {
-        #[allow(non_snake_case)]
-        pub #constructor_sig {
-            #constructor_body
-        }
-    })
-}
-
-// --- Helper generators for pack/unpack and wrapper module ---
-
-fn generate_pack_fn(def: &TaskDefinition) -> TokenStream2 {
-    let pack_fn_ident = format_ident!("pack");
-    let arg_types = def.arg_types;
-
-    let arg_count = arg_types.len();
-
-    match arg_count {
-        0 => quote! {
-            #[allow(dead_code)]
-            pub fn #pack_fn_ident(_inputs: Vec<::namu::__macro_exports::Value>) -> ::namu::__macro_exports::Value {
-                ::namu::__macro_exports::Value::new(())
-            }
-        },
-        1 => quote! {
-            #[allow(dead_code)]
-            pub fn #pack_fn_ident(mut inputs: Vec<::namu::__macro_exports::Value>) -> ::namu::__macro_exports::Value {
-                debug_assert_eq!(inputs.len(), 1);
-                inputs.pop().unwrap()
-            }
-        },
-        _ => {
-            // Multiple arguments – downcast each then pack into tuple
-            let idxs: Vec<_> = (0..arg_count).collect();
-            let vars: Vec<Ident> = idxs.iter().map(|i| format_ident!("v{i}")).collect();
-            let downcasts = vars.iter().zip(arg_types.iter()).map(|(v, ty)| {
-                quote! {
-                    let #v = {
-                        let val = inputs.remove(0);
-                        (*val.downcast_ref::<#ty>().expect("pack downcast failed")).clone()
-                    };
-                }
-            });
-            let tuple = quote! { (#(#vars),*) };
-            quote! {
-                #[allow(dead_code)]
-                pub fn #pack_fn_ident(mut inputs: Vec<::namu::__macro_exports::Value>) -> ::namu::__macro_exports::Value {
-                    debug_assert_eq!(inputs.len(), #arg_count);
-                    #(#downcasts)*
-                    ::namu::__macro_exports::Value::new(#tuple)
-                }
-            }
-        }
-    }
-}
-
-fn generate_unpack_fn(def: &TaskDefinition) -> syn::Result<TokenStream2> {
-    let unpack_fn_ident = format_ident!("unpack");
-
-    // Determine output arity similar to constructor logic
-    let (output_type, is_tuple, tuple_elems): (Type, bool, Vec<Type>) = match def.task_type {
-        TaskType::Single => {
-            let ty = extract_result_type(def.return_ty)?.clone();
-            if let Type::Tuple(tuple) = &ty {
-                if tuple.elems.is_empty() {
-                    (ty.clone(), false, Vec::new())
-                } else {
-                    (ty.clone(), true, tuple.elems.iter().cloned().collect())
-                }
-            } else {
-                (ty.clone(), false, Vec::new())
-            }
-        }
-        TaskType::Batch => {
-            let output_result_type = extract_vec_inner_type(def.return_ty)?;
-            let ty = extract_result_type(output_result_type)?.clone();
-            (ty, false, Vec::new())
-        }
-        TaskType::Stream => {
-            let output_iterator_type = extract_result_type(def.return_ty)?;
-            let ty =
-                extract_result_type(extract_iterator_item_type(output_iterator_type)?)?.clone();
-            (ty, false, Vec::new())
-        }
-        _ => unreachable!(),
-    };
-
-    if is_tuple {
-        // Need to downcast to tuple then split
-        let arity = tuple_elems.len();
-        let idxs: Vec<_> = (0..arity).collect();
-        let vars: Vec<Ident> = idxs.iter().map(|i| format_ident!("o{i}")).collect();
-        Ok(quote! {
-            #[allow(dead_code)]
-            pub fn #unpack_fn_ident(val: ::namu::__macro_exports::Value) -> Vec<::namu::__macro_exports::Value> {
-                let tuple_val: #output_type = val
-                    .take::<#output_type>()
-                    .expect("unpack: task output has an unexpected type");
-                let (#(#vars),*) = tuple_val;
-                vec![#(::namu::__macro_exports::Value::new(#vars)),*]
-            }
-        })
-    } else {
-        Ok(quote! {
-            #[allow(dead_code)]
-            pub fn #unpack_fn_ident(val: ::namu::__macro_exports::Value) -> Vec<::namu::__macro_exports::Value> {
-                vec![val]
-            }
-        })
-    }
-}
-
-// --- Main Macro Logic ---
-
-/// A task signature without a body, e.g. `pub fn analyze(doc: String) -> Result<Stats>;`.
-/// It declares a task implemented elsewhere (a WASM component or native library), so a workflow
-/// can call it and be type-checked without linking the implementation.
-struct TaskSignature {
-    sig: syn::Signature,
-}
-
-impl Parse for TaskSignature {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let _attrs = input.call(syn::Attribute::parse_outer)?;
-        let _vis: syn::Visibility = input.parse()?;
-        let sig: syn::Signature = input.parse()?;
-        input.parse::<Token![;]>()?;
-        Ok(Self { sig })
-    }
-}
-
-fn signature_args(sig: &syn::Signature) -> syn::Result<(Vec<Ident>, Vec<Type>)> {
-    let mut names = Vec::new();
-    let mut types = Vec::new();
-    for arg in &sig.inputs {
-        {
-            let syn::FnArg::Typed(pt) = arg else {
-                bail!(arg, "`self` arguments are not supported in tasks");
-            };
-            let Pat::Ident(pat_ident) = &*pt.pat else {
-                bail!(
-                    pt,
-                    "Only simple identifiers are supported for task arguments"
-                );
-            };
-            names.push(pat_ident.ident.clone());
-            types.push((*pt.ty).clone());
-        }
-    }
-    Ok((names, types))
-}
-
-fn task_signature(args: TaskArgs, signature: TaskSignature) -> syn::Result<TokenStream2> {
-    let task_type = match args.task_type {
-        None | Some(TaskType::Single) => TaskType::Single,
-        Some(TaskType::Batch) => TaskType::Batch,
-        Some(TaskType::Stream) => TaskType::Stream,
-        Some(TaskType::Direct) => {
-            bail!(signature.sig, "task signatures cannot be `direct`")
-        }
-    };
-    let sig = &signature.sig;
-    let (arg_names, arg_types) = signature_args(sig)?;
-    let ReturnType::Type(_, return_ty) = &sig.output else {
-        bail!(sig.output, "Task function must have a return type");
-    };
-    let struct_name = format_ident!("Task");
-    let impl_func_name = format_ident!("task_impl");
-    let def = TaskDefinition {
-        func_name: &sig.ident,
-        struct_name: &struct_name,
-        impl_func_name: &impl_func_name,
-        task_type,
-        batch_size: args.batch_size,
-        arg_names: &arg_names,
-        arg_types: &arg_types,
-        return_ty,
-    };
-    generate_constructor(&def, sig)
-}
-
-pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr as TaskArgs);
-    task_impl(args, item)
-        .unwrap_or_else(|err| err.to_compile_error())
-        .into()
-}
-
-fn task_impl(args: TaskArgs, item: TokenStream) -> syn::Result<TokenStream2> {
-    if let Ok(signature) = syn::parse::<TaskSignature>(item.clone()) {
-        return task_signature(args, signature);
-    }
-    let item: syn::Item = syn::parse(item)?;
-
-    let task_type = match args.task_type {
-        Some(task_type) => task_type,
-        None => match &item {
-            syn::Item::Fn(_) => TaskType::Single,
-            syn::Item::Struct(_) | syn::Item::Enum(_) | syn::Item::Impl(_) => TaskType::Direct,
-            _ => TaskType::Direct,
-        },
-    };
-
-    // If this is a "direct" task, we simply return the item unchanged.
-    if matches!(task_type, TaskType::Direct) {
-        // We allow only structs/enums/impls for direct tasks; functions should specify kind.
-        match &item {
-            syn::Item::Struct(_) | syn::Item::Enum(_) | syn::Item::Impl(_) => {}
-            syn::Item::Fn(f) => {
-                bail!(
-                    f,
-                    "Function tasks must specify kind (e.g. #[task(single)]) or omit args for the default single task"
-                );
-            }
-            _ => {}
-        }
-        return Ok(quote! { #item });
-    }
-
-    // For non-direct (function-style) tasks we expect an ItemFn
-    let func = match item {
-        syn::Item::Fn(f) => f,
-        _ => bail!(
-            item,
-            "Only functions are supported for single/batch/stream tasks"
-        ),
-    };
-
-    let func_name = &func.sig.ident;
-    let struct_name = format_ident!("Task");
-    let impl_func_name = format_ident!("task_impl");
-
-    let impl_func = {
-        let mut f = func.clone();
-        f.sig.ident = impl_func_name.clone();
-        quote! { #f }
-    };
-
-    let (arg_names, arg_types) = signature_args(&func.sig)?;
-
-    let ReturnType::Type(_, return_ty) = &func.sig.output else {
-        bail!(func.sig.output, "Task function must have a return type");
-    };
-
-    let def = TaskDefinition {
-        func_name,
-        struct_name: &struct_name,
-        impl_func_name: &impl_func_name,
-        task_type,
-        batch_size: args.batch_size,
-        arg_names: &arg_names,
-        arg_types: &arg_types,
-        return_ty,
-    };
-
-    let task_trait_impl = match task_type {
-        TaskType::Single => generate_single_task_impl(&def),
-        TaskType::Batch => generate_batch_task_impl(&def),
-        TaskType::Stream => generate_stream_task_impl(&def),
-        _ => unreachable!(),
-    }?;
-
-    let constructor = generate_constructor(&def, &func.sig)?;
-
-    let pack_fn = generate_pack_fn(&def);
-    let unpack_fn = generate_unpack_fn(&def)?;
-
-    let module_ident = func_name;
-
-    Ok(quote! {
-        #[allow(non_snake_case)]
-        pub mod #module_ident {
-            use super::*;
-            #impl_func
-            #task_trait_impl
-            #pack_fn
-            #unpack_fn
-        }
-
-        #constructor
-    })
+        "a stream task returns `Result<impl Iterator<Item = Result<T>>>`"
+    )
 }

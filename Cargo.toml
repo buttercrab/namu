@@ -16,19 +16,8 @@ members = [
   "crates/libs/macros",
   "crates/libs/proto",
 
-  "examples/basic/simple",
+  "examples/basic",
   "examples/distributed/workflows",
-  "examples/basic/tasks/add",
-  "examples/basic/tasks/is_less",
-  "examples/advanced/workflows",
-  "examples/advanced/tasks/add",
-  "examples/advanced/tasks/less_than",
-  "examples/advanced/tasks/is_even",
-  "examples/advanced/tasks/id_range",
-  "examples/advanced/tasks/normalize",
-  "examples/advanced/tasks/embed_batch",
-  "examples/advanced/tasks/score",
-  "examples/advanced/tasks/maybe_fail",
 ]
 resolver = "3"
 
@@ -36,13 +25,7 @@ resolver = "3"
 anyhow = "1"
 async-trait = "0.1"
 darling = "0.24"
-erased-serde = "0.4"
-futures = "0.3"
-futures-util = "0.3"
-hashbrown = "0.15"
 inventory = "0.3"
-itertools = "0.14"
-kanal = { version = "0.1", features = ["async"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.49", features = ["full"] }
@@ -57,14 +40,12 @@ license = "MIT"
 anyhow = { workspace = true }
 inventory = { workspace = true }
 namu-core = { path = "crates/libs/core", version = "0.1.0" }
-namu-engine = { path = "crates/libs/engine", version = "0.1.0" }
 namu-flow = { path = "crates/libs/flow", version = "0.1.0" }
 namu-macros = { path = "crates/libs/macros", version = "0.1.0" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-erased-serde = { workspace = true }
-itertools = { workspace = true }
+namu-engine = { path = "crates/libs/engine", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

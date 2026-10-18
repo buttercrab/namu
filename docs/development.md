@@ -27,5 +27,4 @@ the `wasm32-wasip2` target. Use `REDIS_PORT` and `ORCH_PORT` to avoid port confl
 
 ## Helpful paths
 - `examples/distributed/` - tasks and workflows used by `scripts/e2e.sh`
-- `examples/basic/` - minimal workflow + tasks
-- `examples/advanced/` - extended pipelines and workflow export
+- `examples/basic/` - a workflow and its tasks run in-process on a `LocalCluster`

@@ -122,11 +122,9 @@ How to read these:
 3. **Giving up on a poison item needs its context node**; if that node is lost, the item cannot
    be failed cleanly.
 4. **Values travel inline in Redis nodes**; there is no object-store path for large values yet.
-5. **The `SimpleEngine` (in-process) rejects fan-out and collect.**
-6. **No GC**: run data stays in Redis, and workers cache run state forever.
-7. **Lookups walk the parent chain** (O(depth)), not the O(log depth) persistent structure of
-   `DynamicContextManager`.
-8. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated
+5. **No GC**: run data stays in Redis, and workers cache run state forever.
+6. **Lookups walk the parent chain** (O(depth)); liveness-based placement will keep chains short.
+7. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated
    stubs are the next step.
 
 ## Next steps (suggested order)

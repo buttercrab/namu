@@ -5,6 +5,3 @@ data/
 dev/data/
 examples/distributed/dist/
 examples/distributed/tasks/*/target/
-examples/advanced/dist/
-examples/advanced/tasks/*/target/
-examples/basic/tasks/*/target/

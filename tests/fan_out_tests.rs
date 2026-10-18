@@ -5,19 +5,19 @@ use namu::prelude::*;
 pub struct Stats;
 
 // Signatures only: these tasks are implemented elsewhere (e.g. as WASM components).
-#[task(single)]
+#[task]
 pub fn split_docs(n: i32) -> Result<Vec<String>>;
 
-#[task(single)]
+#[task]
 pub fn analyze(doc: String, min_len: i32) -> Result<Stats>;
 
-#[task(single)]
+#[task]
 pub fn summarize(stats: Vec<Stats>) -> Result<i32>;
 
-#[task(single)]
+#[task]
 pub fn shout(s: String) -> Result<String>;
 
-#[task(single)]
+#[task]
 pub fn is_long(s: String) -> Result<bool>;
 
 #[test]

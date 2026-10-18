@@ -1,12 +1,23 @@
-// `#[async_trait]` expansions trip this lint on recent clippy; the code itself has no
-// `#[must_use]`.
-#![allow(clippy::double_must_use)]
+//! The NAMU engine.
+//!
+//! Workers interpret workflow IR themselves. A branch runs on one worker for as long as that
+//! worker serves the tasks it calls, and moves to another worker only when it must. Values live
+//! in an immutable tree whose nodes are held by the workers that created them; fan-out scopes
+//! are owned by the workers that opened them and end by weight throwing. See `docs/design.md`.
 
-pub mod adapters;
-pub mod context;
-pub mod engine;
+mod cluster;
+pub mod ids;
 pub mod kernel;
-pub mod runtime;
-pub mod simple_engine;
-pub mod store;
-pub mod traits;
+pub mod message;
+pub mod routes;
+pub mod run;
+pub mod scope;
+pub mod tasks;
+pub mod transport;
+pub mod tree;
+mod worker;
+
+pub use cluster::LocalCluster;
+pub use run::{RunOutcome, RunSpec};
+pub use tasks::{FnTasks, Tasks};
+pub use worker::Worker;

@@ -6,10 +6,5 @@ license = "MIT"
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = { workspace = true }
-erased-serde = { workspace = true }
-futures = { workspace = true }
-hashbrown = { workspace = true }
 inventory = { workspace = true }
-kanal = { workspace = true }
 serde = { workspace = true }

@@ -1,9 +1,7 @@
 use namu_macros::{task, workflow};
 
-#[task(single)]
-fn do_nothing(a: i32) -> anyhow::Result<i32> {
-    Ok(a)
-}
+#[task]
+fn do_nothing(a: i32) -> anyhow::Result<i32>;
 
 #[workflow]
 fn if_statement_workflow() {

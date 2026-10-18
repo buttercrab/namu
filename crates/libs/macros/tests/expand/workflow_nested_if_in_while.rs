@@ -1,24 +1,16 @@
 use namu_macros::{task, workflow};
 
-#[task(single)]
-fn less_than(a: i32, b: i32) -> anyhow::Result<bool> {
-    Ok(a < b)
-}
+#[task]
+fn less_than(a: i32, b: i32) -> anyhow::Result<bool>;
 
-#[task(single)]
-fn is_even(a: i32) -> anyhow::Result<bool> {
-    Ok(a % 2 == 0)
-}
+#[task]
+fn is_even(a: i32) -> anyhow::Result<bool>;
 
-#[task(single)]
-fn add_one(a: i32) -> anyhow::Result<i32> {
-    Ok(a + 1)
-}
+#[task]
+fn add_one(a: i32) -> anyhow::Result<i32>;
 
-#[task(single)]
-fn add_two(a: i32) -> anyhow::Result<i32> {
-    Ok(a + 2)
-}
+#[task]
+fn add_two(a: i32) -> anyhow::Result<i32>;
 
 #[workflow]
 fn nested_if_in_while_workflow() -> i32 {

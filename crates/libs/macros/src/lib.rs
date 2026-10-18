@@ -1,32 +1,16 @@
 use proc_macro::TokenStream;
 
-mod bridge;
-mod register;
 mod task;
-mod type_macro;
 mod workflow;
 
+/// Declares a task by its signature; see the `task` module.
 #[proc_macro_attribute]
 pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
     task::task(attr, item)
 }
 
+/// Compiles a workflow function to IR; see the `workflow` module.
 #[proc_macro_attribute]
 pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
     workflow::workflow(attr, item)
-}
-
-#[proc_macro]
-pub fn register_task(item: TokenStream) -> TokenStream {
-    register::register_task_impl(item)
-}
-
-#[proc_macro]
-pub fn task_bridge(item: TokenStream) -> TokenStream {
-    bridge::task_bridge_impl(item)
-}
-
-#[proc_macro_attribute]
-pub fn r#type(attr: TokenStream, item: TokenStream) -> TokenStream {
-    type_macro::r#type(attr, item)
 }

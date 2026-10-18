@@ -3,13 +3,6 @@
 version = 4
 
 [[package]]
-name = "add"
-version = "0.1.0"
-dependencies = [
- "namu",
-]
-
-[[package]]
 name = "addr2line"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -756,17 +749,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
-name = "erased-serde"
-version = "0.4.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2add8a07dd6a8d93ff627029c51de145e12686fbc36ecb298ac22e74cf02dec"
-dependencies = [
- "serde",
- "serde_core",
- "typeid",
-]
-
-[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -809,12 +791,6 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
-
-[[package]]
-name = "foldhash"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "foldhash"
@@ -1001,17 +977,6 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "hashbrown"
-version = "0.15.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
-dependencies = [
- "allocator-api2",
- "equivalent",
- "foldhash 0.1.5",
-]
-
-[[package]]
-name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
@@ -1022,7 +987,7 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "foldhash 0.2.0",
+ "foldhash",
  "serde",
  "serde_core",
 ]
@@ -1304,13 +1269,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 
 [[package]]
-name = "is_less"
-version = "0.1.0"
-dependencies = [
- "namu",
-]
-
-[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1379,16 +1337,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "kanal"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e3953adf0cd667798b396c2fa13552d6d9b3269d7dd1154c4c416442d1ff574"
-dependencies = [
- "futures-core",
- "lock_api",
 ]
 
 [[package]]
@@ -1583,9 +1531,7 @@ name = "namu"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "erased-serde",
  "inventory",
- "itertools 0.14.0",
  "namu-core",
  "namu-engine",
  "namu-flow",
@@ -1597,23 +1543,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "namu-advanced-workflows"
+name = "namu-basic"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "namu",
- "namu-core",
  "namu-engine",
- "namu-flow",
- "namu-proto",
- "namu-task-add",
- "namu-task-embed-batch",
- "namu-task-id-range",
- "namu-task-is-even",
- "namu-task-less-than",
- "namu-task-maybe-fail",
- "namu-task-normalize",
- "namu-task-score",
- "serde_json",
  "tokio",
 ]
 
@@ -1644,12 +1579,7 @@ name = "namu-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "erased-serde",
- "futures",
- "hashbrown 0.15.5",
  "inventory",
- "kanal",
  "serde",
 ]
 
@@ -1669,17 +1599,11 @@ name = "namu-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "erased-serde",
- "hashbrown 0.15.5",
- "inventory",
- "itertools 0.14.0",
- "kanal",
  "namu-core",
- "namu-proto",
- "scc",
+ "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -1687,14 +1611,10 @@ dependencies = [
 name = "namu-flow"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "erased-serde",
  "namu-core",
  "namu-macros",
- "once_cell",
  "serde",
  "serde_json",
- "trybuild",
 ]
 
 [[package]]
@@ -1712,8 +1632,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "darling",
- "erased-serde",
- "inventory",
  "macrotest",
  "proc-macro2",
  "quote",
@@ -1749,63 +1667,6 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
-]
-
-[[package]]
-name = "namu-task-add"
-version = "0.1.0"
-dependencies = [
- "namu",
-]
-
-[[package]]
-name = "namu-task-embed-batch"
-version = "0.1.0"
-dependencies = [
- "namu",
-]
-
-[[package]]
-name = "namu-task-id-range"
-version = "0.1.0"
-dependencies = [
- "namu",
-]
-
-[[package]]
-name = "namu-task-is-even"
-version = "0.1.0"
-dependencies = [
- "namu",
-]
-
-[[package]]
-name = "namu-task-less-than"
-version = "0.1.0"
-dependencies = [
- "namu",
-]
-
-[[package]]
-name = "namu-task-maybe-fail"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "namu",
-]
-
-[[package]]
-name = "namu-task-normalize"
-version = "0.1.0"
-dependencies = [
- "namu",
-]
-
-[[package]]
-name = "namu-task-score"
-version = "0.1.0"
-dependencies = [
- "namu",
 ]
 
 [[package]]
@@ -2349,12 +2210,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "saa"
-version = "5.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd85992a680de788217d9c70b74aa7685b108cf1aba02f728fb27f1b27199ad1"
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2364,29 +2219,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "scc"
-version = "3.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d5f8ca67c4f6208caf824037a6a9df0211b4e0937fccc4f543441f294d04511"
-dependencies = [
- "saa",
- "sdd",
-]
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "sdd"
-version = "4.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31877eee03686b905845993b5d9809a220c9dd5a10e9d6021d7ca67384c9070"
-dependencies = [
- "saa",
-]
 
 [[package]]
 name = "semver"
@@ -2529,19 +2365,6 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
-
-[[package]]
-name = "simple"
-version = "0.1.0"
-dependencies = [
- "add",
- "is_less",
- "namu",
- "namu-core",
- "namu-engine",
- "serde_json",
- "tokio",
-]
 
 [[package]]
 name = "slab"
@@ -3011,12 +2834,6 @@ dependencies = [
  "termcolor",
  "toml 1.1.8+spec-1.1.0",
 ]
-
-[[package]]
-name = "typeid"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "typenum"

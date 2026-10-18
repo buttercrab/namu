@@ -1,20 +1,8 @@
-// `#[async_trait]` expansions trip this lint on recent clippy; the code itself has no
-// `#[must_use]`.
-#![allow(clippy::double_must_use)]
+//! The workflow IR shared by the compiler (macros, flow) and the engine.
 
-mod context;
 pub mod ir;
 pub mod registry;
-mod task;
-mod value;
-
-pub use context::{DynamicTaskContext, StaticTaskContext, TaskContext, TaskEnd};
-pub use task::{
-    AsyncBatchedTask, AsyncSingleTask, AsyncStreamTask, AsyncTask, BatchedTask, SingleTask,
-    StreamTask, Task,
-};
-pub use value::Value;
+pub mod scopes;
 
 pub type ValueId = usize;
 pub type OpId = usize;
-pub type ContextId = usize;

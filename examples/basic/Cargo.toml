@@ -1,0 +1,12 @@
+[package]
+name = "namu-basic"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+namu = { path = "../..", version = "0.1.0" }
+namu-engine = { path = "../../crates/libs/engine", version = "0.1.0" }
+tokio = { workspace = true }

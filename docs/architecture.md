@@ -7,15 +7,18 @@ runtime each task declares. See `design.md` for the target design and `poc.md` f
 - **namu-macros**: `#[task]` and `#[workflow]`. Workflows become an SSA graph; task parameter types
   decide fan-out and fan-in. A bodiless `#[task]` declares a task implemented elsewhere.
 - **namu-flow**: the graph builder used by the macros.
-- **namu-core**: IR types and the in-process task traits.
-- **namu-engine**: the IR interpreter (kernel) shared by every engine, plus the in-process
-  `SimpleEngine`.
+- **namu-core**: IR types, and the scope analysis that pairs each fan-out with its collect.
+- **namu-engine**: the engine. Workers drive branches through the IR (the kernel), hold value-tree
+  nodes, own the fan-out scopes they open, and send each other handoffs over a `Transport`.
+  `LocalCluster` runs workers in one process over channels: the reference configuration, and how
+  workflows run locally and in tests.
 - **namu-guest**: SDK for writing tasks once and building them as WASM components (`namu:task`
   WIT world) or native libraries (C ABI).
 - **namu-master** (orchestrator, control plane): task and workflow registry, starting runs, run
   status. It is not on the per-step path.
 - **namu-worker** (data plane): drives contexts through the IR, runs WASM and native tasks, and
-  hands work to other workers.
+  hands work to other workers. It still runs the proof-of-concept data plane (Redis queues); it
+  moves onto `namu-engine` with a network transport next.
 - **Redis**: registry, value-tree nodes, fan-in scope counters, and work queues.
 
 ## Runtime flow
@@ -41,5 +44,6 @@ crates/
   apps/   cli/  master/  worker/
   libs/   core/ engine/  flow/  guest/  macros/  proto/
 examples/
-  basic/  advanced/  (in-process)    distributed/ (workers)
+  basic/        (in-process, LocalCluster)
+  distributed/  (WASM and native tasks on workers)
 ```

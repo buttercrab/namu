@@ -28,6 +28,5 @@ Welcome to the NAMU docs. Start with Getting Started for a runnable local stack,
 - `contributing.md` - PR expectations and coding standards.
 
 ## Examples
-- `examples/basic` - minimal tasks and workflows.
-- `examples/advanced` - in-process pipelines with branching, batching, and streaming.
+- `examples/basic` - a workflow and its tasks, run in-process on a `LocalCluster`.
 - `examples/distributed` - WASM and native tasks with fan-out/fan-in across workers.

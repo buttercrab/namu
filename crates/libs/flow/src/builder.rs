@@ -7,7 +7,6 @@ use std::any::{TypeId, type_name};
 use std::cell::{Ref, RefCell, RefMut};
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use namu_core::ValueId;
 use serde::Serialize;
@@ -75,9 +74,9 @@ impl<T> Builder<T> {
 
     pub fn literal<L: Serialize + Debug + Send + Sync + 'static>(&self, value: L) -> ValueId {
         // Literals are stored as JSON so every runtime decodes them the same way.
-        let repr = serde_json::to_string(&value).unwrap_or_else(|_| format!("{:?}", value));
-        let kind = NodeKind::literal(Arc::new(value), repr);
-        self.add_node(kind, 1)[0]
+        let json = serde_json::to_string(&value)
+            .unwrap_or_else(|err| panic!("literal {value:?} is not representable as JSON: {err}"));
+        self.add_node(NodeKind::literal(json), 1)[0]
     }
 
     /// Emits a fan-out over the list `input` and returns the per-element value.
