@@ -172,7 +172,7 @@ impl Inner {
     /// Runs a task call here and stores its outputs in a new node under `ctx`. `Ok(Err(_))` is
     /// the task's own failure.
     async fn run_call(
-        &self,
+        self: &Arc<Self>,
         view: &View<'_>,
         task: &TaskRef,
         call: &Call,
@@ -182,10 +182,14 @@ impl Inner {
         for &input in &call.inputs {
             args.push(view.get(ctx, input).await?);
         }
-        let output = match self.tasks.is_stream(task) {
+        let input = pack_input(args);
+        let output = if self.tasks.is_batch(task) {
+            self.batch_call(task, input).await?
+        } else if self.tasks.is_stream(task) {
             // Not feeding a fan-out: the stream is read to its end into a list.
-            true => self.read_stream(task, pack_input(args)).await?,
-            false => self.call(task, pack_input(args)).await?,
+            self.read_stream(task, input).await?
+        } else {
+            self.call(task, input).await?
         };
         view.run.calls.fetch_add(1, Ordering::Relaxed);
         let output = match output {

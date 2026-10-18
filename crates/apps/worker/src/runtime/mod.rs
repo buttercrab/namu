@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
-use namu_engine::tasks::TaskStream;
+use namu_engine::tasks::{BatchSession, TaskStream};
 use namu_proto::{TaskKind, TaskManifest, TaskRuntime};
 use sha2::Digest;
 
@@ -16,6 +16,8 @@ pub enum Runner {
     WasmStream(wasm::WasmStreamTask),
     Native(native::NativeTask),
     NativeStream(Arc<native::NativeStreamTask>),
+    WasmBatch(wasm::WasmBatchTask),
+    NativeBatch(Arc<native::NativeBatchTask>),
 }
 
 impl Runner {
@@ -23,9 +25,15 @@ impl Runner {
         match self {
             Runner::Wasm(task) => task.call(input),
             Runner::Native(task) => task.call(input),
-            Runner::WasmStream(_) | Runner::NativeStream(_) => {
-                anyhow::bail!("a stream task is opened, not called")
-            }
+            _ => anyhow::bail!("a stream or batch task is opened, not called"),
+        }
+    }
+
+    pub fn open_batch(&self) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
+        match self {
+            Runner::WasmBatch(task) => task.open(),
+            Runner::NativeBatch(task) => task.open(),
+            _ => anyhow::bail!("not a batch task"),
         }
     }
 
@@ -33,7 +41,7 @@ impl Runner {
         match self {
             Runner::WasmStream(task) => task.open(input),
             Runner::NativeStream(task) => task.open(input),
-            Runner::Wasm(_) | Runner::Native(_) => anyhow::bail!("not a stream task"),
+            _ => anyhow::bail!("not a stream task"),
         }
     }
 }
@@ -61,16 +69,26 @@ impl Runtimes {
         let path = self.fetch_artifact(manifest).await?;
         let engine = self.engine.clone();
         let runtime = manifest.runtime;
-        let stream = manifest.task_kind == TaskKind::Stream;
+        let kind = manifest.task_kind.clone();
         tokio::task::spawn_blocking(move || -> anyhow::Result<Runner> {
-            Ok(match (runtime, stream) {
-                (TaskRuntime::Wasm, false) => Runner::Wasm(wasm::WasmTask::load(&engine, &path)?),
-                (TaskRuntime::Wasm, true) => {
+            Ok(match (runtime, kind) {
+                (TaskRuntime::Wasm, TaskKind::Single) => {
+                    Runner::Wasm(wasm::WasmTask::load(&engine, &path)?)
+                }
+                (TaskRuntime::Wasm, TaskKind::Stream) => {
                     Runner::WasmStream(wasm::WasmStreamTask::load(&engine, &path)?)
                 }
-                (TaskRuntime::Native, false) => Runner::Native(native::NativeTask::load(&path)?),
-                (TaskRuntime::Native, true) => {
+                (TaskRuntime::Wasm, TaskKind::Batch) => {
+                    Runner::WasmBatch(wasm::WasmBatchTask::load(&engine, &path)?)
+                }
+                (TaskRuntime::Native, TaskKind::Single) => {
+                    Runner::Native(native::NativeTask::load(&path)?)
+                }
+                (TaskRuntime::Native, TaskKind::Stream) => {
                     Runner::NativeStream(Arc::new(native::NativeStreamTask::load(&path)?))
+                }
+                (TaskRuntime::Native, TaskKind::Batch) => {
+                    Runner::NativeBatch(Arc::new(native::NativeBatchTask::load(&path)?))
                 }
             })
         })

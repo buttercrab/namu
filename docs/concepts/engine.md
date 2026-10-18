@@ -33,6 +33,13 @@ worker that owns it: every item it yields becomes a branch at once. The source y
 fewer than `window` of the scope's branches are open, so credits never leave the worker. Its
 position is logged, so a successor resumes it in the same scope (design §6.5).
 
+## Batches
+A branch that calls a batch task queues its input on the worker and waits for its own result.
+For each batch task the worker keeps a session per slot, driven in steps: a step admits queued
+items, from any branch of any run, up to the session's capacity, and returns those it finished,
+each of which resumes its branch at once. Dynamic batching finishes every item it admits;
+continuous batching keeps items across steps (design §6.6).
+
 ## Local cluster
 `LocalCluster` runs any number of workers in one process, with channels as the transport. It is the
 reference configuration: a workflow must produce the same results on one worker, on several, and

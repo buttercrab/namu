@@ -9,6 +9,7 @@
 //!   from the log (`recovery`). See design §7.
 //! - When a run is over, its owner has every worker forget it, and reports the outcome.
 
+mod batches;
 mod delivery;
 mod drive;
 mod recovery;
@@ -68,6 +69,8 @@ struct Inner {
     next_seq: AtomicU64,
     /// Bounds concurrent task calls; driving the IR between them is cheap and unbounded.
     task_slots: Semaphore,
+    /// Batch tasks' queues and sessions, per task version.
+    batchers: Mutex<HashMap<TaskRef, Arc<batches::Batcher>>>,
 }
 
 /// A run as one worker sees it.
@@ -118,6 +121,7 @@ impl Worker {
             outbox: Mutex::default(),
             next_seq: AtomicU64::new(0),
             task_slots: Semaphore::new(task_slots),
+            batchers: Mutex::default(),
         });
         let worker = inner.clone();
         tokio::spawn(async move {

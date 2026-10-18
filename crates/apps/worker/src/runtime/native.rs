@@ -1,15 +1,18 @@
-//! Runs tasks compiled as native shared libraries exporting the NAMU C ABI (version 3). Every
+//! Runs tasks compiled as native shared libraries exporting the NAMU C ABI (version 4). Every
 //! buffer the library hands over is owned by it and given back through `namu_task_free`.
 //!
 //! - A task exports `namu_task_call`, and runs exactly once per call.
 //! - A stream task exports `namu_stream_open`, `namu_stream_next` and `namu_stream_close`.
+//! - A batch task exports `namu_batch_open`, `namu_batch_step` and `namu_batch_close`; a step's
+//!   items and results cross as JSON.
 
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::Arc;
 
 use libloading::Library;
-use namu_engine::tasks::{StreamItem, TaskStream};
+use namu_engine::tasks::{BatchSession, Finished, StreamItem, TaskStream};
+use serde_json::Value;
 
 type AbiFn = unsafe extern "C" fn() -> u32;
 type FreeFn = unsafe extern "C" fn(*mut u8, usize);
@@ -18,8 +21,10 @@ type OpenFn =
     unsafe extern "C" fn(*const u8, usize, *mut *mut c_void, *mut *mut u8, *mut usize) -> i32;
 type NextFn = unsafe extern "C" fn(*mut c_void, *mut *mut u8, *mut usize) -> i32;
 type CloseFn = unsafe extern "C" fn(*mut c_void);
+type BatchOpenFn = unsafe extern "C" fn(*mut *mut c_void, *mut *mut u8, *mut usize) -> i32;
+type StepFn = unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut *mut u8, *mut usize) -> i32;
 
-const ABI_VERSION: u32 = 3;
+const ABI_VERSION: u32 = 4;
 
 pub struct NativeTask {
     call: CallFn,
@@ -157,6 +162,90 @@ impl TaskStream for NativeItems {
 impl Drop for NativeItems {
     fn drop(&mut self) {
         // SAFETY: the handle is open and closed exactly once.
+        unsafe { (self.task.close)(self.handle) };
+    }
+}
+
+pub struct NativeBatchTask {
+    open: BatchOpenFn,
+    step: StepFn,
+    close: CloseFn,
+    free: FreeFn,
+    _lib: Library,
+}
+
+impl NativeBatchTask {
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let (lib, free) = load(path)?;
+        // SAFETY: the symbols have the ABI's signatures.
+        unsafe {
+            Ok(Self {
+                open: *lib.get::<BatchOpenFn>(b"namu_batch_open")?,
+                step: *lib.get::<StepFn>(b"namu_batch_step")?,
+                close: *lib.get::<CloseFn>(b"namu_batch_close")?,
+                free,
+                _lib: lib,
+            })
+        }
+    }
+
+    pub fn open(self: &Arc<Self>) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
+        let mut handle = std::ptr::null_mut();
+        let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
+        // SAFETY: the ABI contract: a handle on success, an owned error buffer otherwise.
+        let code = unsafe { (self.open)(&mut handle, &mut out_ptr, &mut out_len) };
+        if code != 0 {
+            return Ok(Err(take(self.free, out_ptr, out_len)));
+        }
+        let task = self.clone();
+        Ok(Ok(Box::new(NativeSession { task, handle })))
+    }
+}
+
+struct NativeSession {
+    task: Arc<NativeBatchTask>,
+    handle: *mut c_void,
+}
+
+// SAFETY: the handle is only used through `&mut self`, from one thread at a time.
+unsafe impl Send for NativeSession {}
+
+impl BatchSession for NativeSession {
+    fn step(&mut self, admit: Vec<(u64, Value)>) -> anyhow::Result<Finished> {
+        let admit: Vec<(u64, String)> = admit
+            .into_iter()
+            .map(|(id, input)| (id, input.to_string()))
+            .collect();
+        let input = serde_json::to_string(&admit)?;
+        let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
+        // SAFETY: the session is open; the library writes an owned buffer.
+        let code = unsafe {
+            (self.task.step)(
+                self.handle,
+                input.as_ptr(),
+                input.len(),
+                &mut out_ptr,
+                &mut out_len,
+            )
+        };
+        let output = take(self.task.free, out_ptr, out_len);
+        anyhow::ensure!(code == 0, "{output}");
+        let finished: Vec<(u64, Result<String, String>)> = serde_json::from_str(&output)?;
+        Ok(finished
+            .into_iter()
+            .map(|(id, output)| {
+                let output = output.and_then(|output| {
+                    serde_json::from_str(&output).map_err(|err| format!("bad output: {err}"))
+                });
+                (id, output)
+            })
+            .collect())
+    }
+}
+
+impl Drop for NativeSession {
+    fn drop(&mut self) {
+        // SAFETY: the session is open and closed exactly once.
         unsafe { (self.task.close)(self.handle) };
     }
 }

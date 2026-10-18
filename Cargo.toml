@@ -16,6 +16,7 @@ members = [
   "crates/libs/macros",
   "crates/libs/proto",
 
+  "examples/advanced",
   "examples/basic",
   "examples/distributed/workflows",
 ]

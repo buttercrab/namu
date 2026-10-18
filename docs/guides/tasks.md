@@ -60,6 +60,40 @@ stream used whole (passed as a list) is read to its end first.
 WASM stream tasks implement the `stream-task` world; native ones export `namu_stream_open`,
 `namu_stream_next` and `namu_stream_close` (C ABI version 3). `namu_guest::stream!` generates both.
 
+## Batch tasks
+A batch task is written for many items at once but called per item; the runtime groups items
+from every branch, and every run, into steps of a long-lived **session** on a worker (holding a
+loaded model, say). Each branch gets its own result as soon as it is ready (design §6.6).
+
+```rust
+// Dynamic batching: each step runs the function over the items it is given.
+namu_guest::batch! {
+    fn embed(texts: Vec<String>) -> Vec<anyhow::Result<Embedding>> {
+        model().embed(&texts)
+    }
+}
+
+// Continuous batching: items stay in the session across steps, and each leaves when it is done.
+#[derive(Default)]
+struct Decoder { /* active sequences, KV cache, ... */ }
+
+impl namu_guest::Continuous for Decoder {
+    type In = Prompt;
+    type Out = Text;
+    fn step(&mut self, admit: Vec<(u64, Prompt)>) -> Vec<(u64, Result<Text, String>)> {
+        // admit new prompts, run one decoding step, return the finished ones
+    }
+}
+namu_guest::continuous!(Decoder);
+```
+
+The workflow declares either as `#[task(batch)] pub fn embed(texts: Vec<String>) ->
+Vec<Result<Embedding>>;` and calls it per item: `embed(text)` (or with a list, which fans out).
+The manifest says `"task_kind": "batch"`, with optional `batch_size` (items in a session at once,
+default 32), `max_wait_ms` (wait for a full batch; by default a session steps as soon as it is
+idle) and `batch_slots` (sessions per worker). WASM batch tasks implement the `batch-task` world;
+native ones export `namu_batch_open`, `namu_batch_step` and `namu_batch_close` (C ABI version 4).
+
 ## In-process tasks (`FnTasks`)
 In the same process as the engine, a task is a Rust function registered by name. Its input is the
 packed arguments: the argument itself for one, a tuple for several, `()` for none.
@@ -68,14 +102,16 @@ packed arguments: the argument itself for one, a tuple for several, `()` for non
 let tasks = FnTasks::new()
     .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
     .with_stream("count_to", |n: i32| Ok::<_, String>((0..n).map(Ok::<_, String>)))
-    .window("count_to", 16);
+    .window("count_to", 16)
+    .with_batch("embed", |texts: Vec<String>| Ok::<_, String>(embed_all(texts)))
+    .with_continuous("decode", Decoder::default);
 ```
 
 See `examples/basic`.
 
 ## Task kinds
 - `single`: one input, one output
-- `batch`: written for a list of inputs, called per item; the engine groups items (design §6.6,
-  not implemented yet)
+- `batch`: written for a list of inputs, called per item; a session on each worker takes items
+  from every branch and run, step by step
 - `stream`: one input, outputs yielded over time; a list in the workflow, fanned out as it
   arrives

@@ -1544,6 +1544,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "namu-advanced"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "namu",
+ "namu-engine",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "namu-basic"
 version = "0.1.0"
 dependencies = [

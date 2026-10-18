@@ -4,7 +4,7 @@
 - Root workspace holds shared config and top-level crate (`Cargo.toml`, `src/`).
 - Application crates live in `crates/apps/` (`cli`, `master`, `worker`).
 - Library crates live in `crates/libs/` (`core`, `engine`, `flow`, `guest`, `macros`, `proto`).
-- Examples are under `examples/` (`examples/basic` in-process, `examples/distributed` on workers).
+- Examples are under `examples/` (`examples/basic` and `examples/advanced` in-process, `examples/distributed` on workers).
 - Tests are in `tests/`, including compile-fail cases in `tests/compile-fail`. The distributed end-to-end check is `scripts/e2e.sh`.
 - CI workflows live in `.github/workflows/`.
 

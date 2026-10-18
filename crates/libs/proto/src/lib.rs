@@ -72,6 +72,16 @@ pub struct TaskManifest {
     /// For a stream task: how many of its items may be in flight at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<usize>,
+    /// For a batch task: items in a session at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<usize>,
+    /// For a batch task: how long an idle session waits for a full batch; it runs at once if
+    /// unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wait_ms: Option<u64>,
+    /// For a batch task: sessions per worker (e.g. one per GPU).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_slots: Option<usize>,
     #[serde(default)]
     pub requires_gpu: bool,
     #[serde(default = "default_resource_class")]
@@ -116,7 +126,7 @@ fn default_resource_class() -> String {
 }
 
 fn default_abi_version() -> String {
-    "3".to_string()
+    "4".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,7 +275,7 @@ mod tests {
         manifest.runtime = TaskRuntime::Wasm;
         assert_eq!(manifest.runtime_key(), "wasm");
         // Defaults keep manifests short.
-        assert_eq!(manifest.abi_version, "3");
+        assert_eq!(manifest.abi_version, "4");
         assert_eq!(manifest.trust, TaskTrust::Trusted);
     }
 }
