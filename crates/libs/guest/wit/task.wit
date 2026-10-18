@@ -5,3 +5,19 @@ package namu:task@0.1.0;
 world task {
   export call: func(input: string) -> result<string, string>;
 }
+
+/// A stream task yields its outputs one at a time, as JSON documents.
+interface source {
+  /// An open stream.
+  resource items {
+    /// The next item; `none` once the stream is over. An error ends the stream.
+    next: func() -> option<result<string, string>>;
+  }
+
+  /// Opens the stream over a JSON input.
+  open: func(input: string) -> result<items, string>;
+}
+
+world stream-task {
+  export source;
+}

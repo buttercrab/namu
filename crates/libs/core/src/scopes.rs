@@ -5,10 +5,12 @@
 //! instead of being discovered at runtime from whichever branches happen to reach a collect. That
 //! is what lets a scope with no items, or whose items were all dropped, still collect `[]`.
 
+use std::collections::HashMap;
+
 use anyhow::{bail, ensure};
 
-use crate::OpId;
 use crate::ir::{Next, Workflow};
+use crate::{OpId, ValueId};
 
 /// For every operation, the operation that collects the scope it opens. `None` for operations
 /// that do not fan out, and for fan-outs whose branches never reach a collect.
@@ -60,6 +62,48 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
         }
     }
     Ok(collect_of)
+}
+
+/// For every operation that calls a task, the fan-out right after it if that fan-out is the only
+/// use of the call's output. A stream task called there can feed the fan-out item by item,
+/// without its output ever existing as a whole list.
+pub fn fused_fan_outs(workflow: &Workflow) -> Vec<Option<OpId>> {
+    let ops = &workflow.operations;
+    let mut uses: HashMap<ValueId, usize> = HashMap::new();
+    for op in ops {
+        let mut used = |value: ValueId| *uses.entry(value).or_default() += 1;
+        op.phis
+            .iter()
+            .flat_map(|phi| &phi.from)
+            .for_each(|(_, value)| used(*value));
+        if let Some(call) = &op.call {
+            call.inputs.iter().for_each(|&value| used(value));
+        }
+        if let Some(fan_out) = &op.fan_out {
+            used(fan_out.input);
+        }
+        if let Some(collect) = &op.collect {
+            used(collect.input);
+        }
+        match op.next {
+            Next::Branch { var, .. } | Next::Return { var: Some(var) } => used(var),
+            _ => {}
+        }
+    }
+    ops.iter()
+        .map(|op| {
+            let [output] = op.call.as_ref()?.outputs[..] else {
+                return None;
+            };
+            let Next::Jump { next } = op.next else {
+                return None;
+            };
+            let target = ops.get(next)?;
+            let fans_out = target.fan_out.as_ref().is_some_and(|f| f.input == output);
+            let entered_directly = target.literals.is_empty() && target.phis.is_empty();
+            (fans_out && entered_directly && uses.get(&output) == Some(&1)).then_some(next)
+        })
+        .collect()
 }
 
 fn successors(next: &Next) -> Vec<OpId> {
@@ -146,6 +190,40 @@ mod tests {
     fn a_fan_out_without_collect_is_allowed() {
         let wf = workflow(vec![fan_out(Next::jump(1)), op(Next::return_unit())]);
         assert_eq!(collect_ops(&wf).unwrap(), vec![None, None]);
+    }
+
+    fn call(output: ValueId, next: Next) -> Operation {
+        Operation::new(
+            Vec::new(),
+            Vec::new(),
+            Some(crate::ir::Call {
+                task_id: "t".to_string(),
+                inputs: Vec::new(),
+                outputs: vec![output],
+            }),
+            next,
+        )
+    }
+
+    #[test]
+    fn a_call_feeding_only_the_next_fan_out_is_fused() {
+        // op 0 calls into value 0, op 1 fans out over it.
+        let wf = workflow(vec![
+            call(0, Next::jump(1)),
+            fan_out(Next::jump(2)),
+            collect(Next::return_unit()),
+        ]);
+        assert_eq!(fused_fan_outs(&wf), vec![Some(1), None, None]);
+    }
+
+    #[test]
+    fn a_call_whose_output_is_used_again_is_not_fused() {
+        let wf = workflow(vec![
+            call(0, Next::jump(1)),
+            fan_out(Next::jump(2)),
+            collect(Next::return_value(0)),
+        ]);
+        assert_eq!(fused_fan_outs(&wf), vec![None, None, None]);
     }
 
     #[test]

@@ -15,6 +15,7 @@ liveness-based placement, streams, batching, Python and GPU are not implemented 
 | Values move correctly through the value tree | Per-item branches read the shared `cfg` produced in the parent context, wherever they run. Each worker fetches a shared node once (`remote_node_fetches_by_worker`); a handoff carries the nodes the receiver needs. |
 | Per-task runtimes mix | `summarize` is a native library; it is only ever routed to a worker on the platform it was built for. Every other task is WASM. |
 | Fan-out / fan-in semantics | Nested fan-out with inner and outer collects; failed branches are dropped from the collect; an empty or fully dropped scope collects `[]`. Scopes end by weight throwing; 64 concurrent runs on four workers end exactly once with the right result. |
+| Streams | `stream_stats` streams the same 48 documents `doc_stats` gets as a list, through a WASM stream task, and gives the same checksum; each document is analyzed as it arrives. In-process tests check pipelining, the window (backpressure), failures, and resuming a stream after its worker dies. |
 | Elastic routing | A branch whose next task no member serves waits until one joins, instead of failing. |
 | Crash recovery | `kill -9` of a worker mid-run (`scripts/e2e.sh`): its successor takes over from the log, and the run produces the same result as an uninterrupted run. In-process tests kill a worker, the run's owner, or a successor too, at every moment of a run, and check the outcome. Checkpoint tasks are not repeated. |
 
@@ -78,6 +79,7 @@ Workflows in `examples/distributed/workflows`:
 | `doc_stats_partial` | as `doc_stats`, but short docs fail and are dropped |
 | `bench_local` | `while` loop of trivial WASM calls on one worker |
 | `bench_handoff` | alternates WASM and native calls; with them on different workers, every step is a handoff |
+| `stream_stats` | as `doc_stats`, but the documents arrive one by one from a stream task (`stream_docs`) |
 | `doc_stats_slow` | `doc_stats` with ~6 s of work; `e2e.sh` kills a worker during it |
 | `doc_stats_poison` | short docs crash (trap) their task, failing their branches |
 

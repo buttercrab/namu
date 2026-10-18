@@ -69,6 +69,9 @@ pub struct TaskManifest {
     /// Use for tasks with external side effects.
     #[serde(default)]
     pub checkpoint: bool,
+    /// For a stream task: how many of its items may be in flight at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<usize>,
     #[serde(default)]
     pub requires_gpu: bool,
     #[serde(default = "default_resource_class")]
@@ -113,7 +116,7 @@ fn default_resource_class() -> String {
 }
 
 fn default_abi_version() -> String {
-    "2".to_string()
+    "3".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,7 +265,7 @@ mod tests {
         manifest.runtime = TaskRuntime::Wasm;
         assert_eq!(manifest.runtime_key(), "wasm");
         // Defaults keep manifests short.
-        assert_eq!(manifest.abi_version, "2");
+        assert_eq!(manifest.abi_version, "3");
         assert_eq!(manifest.trust, TaskTrust::Trusted);
     }
 }

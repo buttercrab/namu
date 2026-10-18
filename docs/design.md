@@ -285,18 +285,25 @@ expensive steps (GPU, batch) have a home where work gathers.
 
 ### 6.5 Streams
 
-A **stream task** yields items over time; it does not return a list. Each item becomes a child
-context of the fan-out scope **as soon as it is yielded**. Streams are pipelined: item 1 can be at
-stage 3 while item 50 is at stage 1.
+A **stream task** yields items over time; it does not return a list. In a workflow its output is
+a list (`#[task(stream)] fn crawl(seed: Url) -> ...` has type `Vec<Page>`), so it fans out and
+collects like any list. When the stream's only use is the fan-out right after it, which the
+engine finds in the IR, the two are fused: each item becomes a child context of the fan-out scope
+**as soon as it is yielded**. Streams are then pipelined: item 1 can be at stage 3 while item 50
+is at stage 1. A stream used any other way is read to its end into a list.
 
-- **Backpressure.** A source starts a new branch only with a credit (§10.3), and the credit
-  comes back when a branch ends. When the downstream is saturated, branches end more slowly, and
-  the source is not resumed. A slow GPU slows the crawler instead of filling memory.
-- **Resumable sources.** A source that runs for weeks must survive a crash without replaying
-  from the start. A stream task may yield a **cursor** with its items (an offset, a page token,
-  a timestamp). The cursor is persisted with the scope, and after a crash the source restarts
-  from the last persisted cursor. Item ids are deterministic (scope + sequence number), so items
-  that are yielded again are recognized as duplicates.
+- **The source owns the scope.** The worker that runs the stream task opens the scope and keeps
+  the source going. Each item takes one unit of the scope's weight; the source returns the rest
+  when the stream ends.
+- **Backpressure, with credits.** The source yields an item only while fewer than `window` of the
+  scope's branches are open, and a branch that ends frees its credit. Since the source and the
+  scope live on the same worker, credits never cross the network: a slow GPU downstream slows the
+  crawler, instead of filling memory, and no wait can form a cycle.
+- **Resumable sources.** A source that runs for weeks must survive a crash without starting over.
+  Its position (items yielded, and the last cursor if the task yields cursors: an offset, a page
+  token) is logged with the scope. A successor reopens the stream at the cursor and skips to the
+  position, inside the same scope. Items are numbered, so an item yielded again has the same
+  branch id and counts once.
 - **Bounded vs unbounded.** A bounded stream ends and its scope can be collected. An unbounded
   stream never ends, so it can only be consumed per item, or through a window (§4.5).
 
@@ -526,7 +533,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
 | Distributed path | ✅ Peer-to-peer TCP mesh; the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
 | Routing | Round robin among the workers that serve a task; a branch waits for a server to join | Load-aware, locality-aware placement; credits for sources (§10.3) |
-| Streams | None | Pipelined per item, backpressure, resumable cursors (§6.5) |
+| Streams | ✅ Fused with their fan-out, per-item credits at the source, resumable by position (§6.5). Guest streams yield no cursors yet; a resumed stream is reopened and skipped forward | Cursors from guest streams; windows for unbounded streams |
 | Batch | Not supported | Runtime batching across branches and runs, `batch_size` / `max_wait` (§6.6) |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |

@@ -38,6 +38,8 @@ pub struct RunSpec {
     pub info: Arc<RunInfo>,
     /// For each op that fans out, the op that collects its scope.
     pub collect_ops: Vec<Option<OpId>>,
+    /// For each op that calls a task, the fan-out that is the only use of its output.
+    pub fused: Vec<Option<OpId>>,
     /// For each op that calls a task, the task at the run's version.
     tasks: Vec<Option<TaskRef>>,
 }
@@ -45,6 +47,7 @@ pub struct RunSpec {
 impl RunSpec {
     pub fn from_info(info: Arc<RunInfo>) -> anyhow::Result<Self> {
         let collect_ops = namu_core::scopes::collect_ops(&info.workflow)?;
+        let fused = namu_core::scopes::fused_fan_outs(&info.workflow);
         let tasks = info
             .workflow
             .operations
@@ -63,6 +66,7 @@ impl RunSpec {
         Ok(Self {
             info,
             collect_ops,
+            fused,
             tasks,
         })
     }

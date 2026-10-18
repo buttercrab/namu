@@ -1,8 +1,9 @@
 //! The tasks a worker can run.
 //!
-//! A task takes one JSON input and returns one JSON output. Arguments and results are packed by
-//! a fixed convention, shared with every task runtime: no arguments is `null`, one is the value
-//! itself, several are an array; a task with several outputs returns an array.
+//! A task takes one JSON input and returns one JSON output; a stream task yields its outputs one
+//! at a time. Arguments and results are packed by a fixed convention, shared with every task
+//! runtime: no arguments is `null`, one is the value itself, several are an array; a task with
+//! several outputs returns an array.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
@@ -39,9 +40,45 @@ pub trait Tasks: Send + Sync + 'static {
         false
     }
 
+    /// Whether `task` is a stream task, run with [`Tasks::open`] instead of [`Tasks::call`].
+    fn is_stream(&self, _task: &TaskRef) -> bool {
+        false
+    }
+
+    /// Opens a stream task, at `cursor` if one of its items gave one. Errors as for `call`.
+    fn open(
+        &self,
+        task: &TaskRef,
+        _input: Value,
+        _cursor: Option<String>,
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+        anyhow::bail!("task {} is not a stream task", task.id)
+    }
+
+    /// How many of a stream's items may be in flight at once (design §6.5).
+    fn window(&self, _task: &TaskRef) -> usize {
+        DEFAULT_WINDOW
+    }
+
     /// Runs `task` once. `Ok(Err(message))` is the task's own failure, which fails the branch;
     /// `Err` is a failure of the machinery around it.
     fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>>;
+}
+
+/// Items of a stream in flight at once, unless the task says otherwise.
+pub const DEFAULT_WINDOW: usize = 1024;
+
+/// An open stream task.
+pub trait TaskStream: Send {
+    /// The next item, `None` once the stream is over. `Ok(Err(message))` is the task's own
+    /// failure, which ends the stream; `Err` is a failure of the machinery around it.
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>>;
+}
+
+pub struct StreamItem {
+    pub value: Value,
+    /// Where the stream can be reopened to continue after this item, if it can.
+    pub cursor: Option<String>,
 }
 
 /// Packs call arguments into one task input.
@@ -64,12 +101,16 @@ pub fn unpack_output(output: Value, arity: usize) -> anyhow::Result<Vec<Value>> 
 }
 
 type TaskFn = Box<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
+type Items = Box<dyn Iterator<Item = Result<Value, String>> + Send>;
+type StreamFn = Box<dyn Fn(Value) -> Result<Items, String> + Send + Sync>;
 
 /// Tasks implemented as Rust functions in this process: the fastest runtime, with no
 /// serialization boundary beyond JSON values. They are not versioned.
 #[derive(Default)]
 pub struct FnTasks {
     tasks: HashMap<String, TaskFn>,
+    streams: HashMap<String, StreamFn>,
+    windows: HashMap<String, usize>,
     checkpoints: HashSet<String>,
 }
 
@@ -99,6 +140,37 @@ impl FnTasks {
         self
     }
 
+    /// Registers a stream task: `f` returns the items, which are produced as they are pulled. The
+    /// items give no cursors, so a resumed stream is opened again and skipped forward.
+    pub fn with_stream<I, O, E, S>(
+        mut self,
+        task: &str,
+        f: impl Fn(I) -> Result<S, E> + Send + Sync + 'static,
+    ) -> Self
+    where
+        I: DeserializeOwned,
+        O: Serialize,
+        E: Display,
+        S: Iterator<Item = Result<O, E>> + Send + 'static,
+    {
+        let open = move |input: Value| -> Result<Items, String> {
+            let input = serde_json::from_value(input).map_err(|err| format!("bad input: {err}"))?;
+            let items = f(input).map_err(|err| err.to_string())?;
+            Ok(Box::new(items.map(|item| {
+                let item = item.map_err(|err| err.to_string())?;
+                serde_json::to_value(item).map_err(|err| format!("bad output: {err}"))
+            })))
+        };
+        self.streams.insert(task.to_string(), Box::new(open));
+        self
+    }
+
+    /// Lets at most `window` of `task`'s items be in flight at once.
+    pub fn window(mut self, task: &str, window: usize) -> Self {
+        self.windows.insert(task.to_string(), window);
+        self
+    }
+
     /// Marks `task` as a checkpoint: it has side effects that recovery must not repeat.
     pub fn checkpoint(mut self, task: &str) -> Self {
         self.checkpoints.insert(task.to_string());
@@ -109,7 +181,31 @@ impl FnTasks {
 #[async_trait]
 impl Tasks for FnTasks {
     fn serves(&self, task: &TaskRef) -> bool {
-        self.tasks.contains_key(&task.id)
+        self.tasks.contains_key(&task.id) || self.streams.contains_key(&task.id)
+    }
+
+    fn is_stream(&self, task: &TaskRef) -> bool {
+        self.streams.contains_key(&task.id)
+    }
+
+    fn open(
+        &self,
+        task: &TaskRef,
+        input: Value,
+        _cursor: Option<String>,
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+        let open = self
+            .streams
+            .get(&task.id)
+            .ok_or_else(|| anyhow::anyhow!("stream task {} is not served here", task.id))?;
+        Ok(open(input).map(|items| Box::new(FnStream(items)) as Box<dyn TaskStream>))
+    }
+
+    fn window(&self, task: &TaskRef) -> usize {
+        self.windows
+            .get(&task.id)
+            .copied()
+            .unwrap_or(DEFAULT_WINDOW)
     }
 
     fn checkpoint(&self, task: &TaskRef) -> bool {
@@ -122,6 +218,19 @@ impl Tasks for FnTasks {
             .get(&task.id)
             .ok_or_else(|| anyhow::anyhow!("task {} is not served here", task.id))?;
         Ok(f(input))
+    }
+}
+
+struct FnStream(Items);
+
+impl TaskStream for FnStream {
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
+        Ok(self.0.next().map(|item| {
+            item.map(|value| StreamItem {
+                value,
+                cursor: None,
+            })
+        }))
     }
 }
 

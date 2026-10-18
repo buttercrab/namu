@@ -15,6 +15,7 @@ use std::sync::Arc;
 use namu_core::OpId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
 use crate::ids::{NodeId, ScopeId};
 use crate::message::BranchId;
@@ -44,6 +45,8 @@ pub struct Scope {
     items: HashMap<BranchId, Value>,
     ended: HashSet<BranchId>,
     pub then: Then,
+    /// For a scope fed by a stream: one per item the source may still put in flight.
+    pub credits: Option<Arc<Semaphore>>,
 }
 
 /// What happens when a scope is over.
@@ -77,6 +80,28 @@ pub struct Continuation {
     pub collect: Option<OpId>,
 }
 
+/// The stream task feeding a scope (design §6.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Source {
+    /// The op that calls the stream task, in the continuation's context.
+    pub call: OpId,
+    /// The fan-out it feeds.
+    pub fan_out: OpId,
+    pub position: Position,
+}
+
+/// How far a stream has got.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Position {
+    /// Items yielded so far; the next item is numbered this.
+    pub yielded: u64,
+    /// The last cursor the stream gave, and how many items had been yielded then.
+    pub cursor: Option<(String, u64)>,
+}
+
+/// The index of a stream source's own end in its scope: the weight it did not hand to items.
+pub const SOURCE_INDEX: u64 = u64::MAX;
+
 /// How a branch's end changed its scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
@@ -93,7 +118,23 @@ impl Scope {
             items: HashMap::new(),
             ended: HashSet::new(),
             then,
+            credits: None,
         }
+    }
+
+    pub fn with_credits(self, credits: Arc<Semaphore>) -> Self {
+        Self {
+            credits: Some(credits),
+            ..self
+        }
+    }
+
+    /// Branches that ended, apart from a stream source's own end.
+    pub fn ended_items(&self) -> u64 {
+        self.ended
+            .iter()
+            .filter(|branch| branch.index != SOURCE_INDEX)
+            .count() as u64
     }
 
     /// Takes back a branch's weight and collected item.

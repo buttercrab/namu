@@ -31,6 +31,8 @@ PY
 
 check doc_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 check nested_stats '{"status": "succeeded", "failures": 0, "result": 30750}'
+# The same documents as doc_stats, streamed in one at a time: the same result.
+check stream_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 check doc_stats_partial '{"status": "partial_failed", "failures": 14, "docs": 34}'
 # Tasks that crash (trap) fail their branch; the run carries on without it.
 check doc_stats_poison '{"status": "partial_failed", "failures": 14, "docs": 34}'

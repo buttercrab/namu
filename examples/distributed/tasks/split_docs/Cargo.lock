@@ -95,6 +95,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "namu-example-docgen"
+version = "0.1.0"
+
+[[package]]
 name = "namu-guest"
 version = "0.1.0"
 dependencies = [
@@ -108,6 +112,7 @@ name = "namu-task-split-docs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "namu-example-docgen",
  "namu-guest",
 ]
 

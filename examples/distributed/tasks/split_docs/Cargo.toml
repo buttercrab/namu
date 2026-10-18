@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1"
+namu-example-docgen = { path = "../docgen", version = "0.1.0" }
 namu-guest = { path = "../../../../crates/libs/guest", version = "0.1.0" }
 
 [workspace]

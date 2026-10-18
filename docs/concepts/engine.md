@@ -27,6 +27,12 @@ another worker only when the next task is served elsewhere (a handoff). It also:
 Tasks are provided by a `Tasks` implementation: `FnTasks` for Rust functions in the same process,
 and the WASM and native runtimes on workers.
 
+## Streams
+A stream task whose output feeds a fan-out runs as the source of the fan-out's scope, on the
+worker that owns it: every item it yields becomes a branch at once. The source yields only while
+fewer than `window` of the scope's branches are open, so credits never leave the worker. Its
+position is logged, so a successor resumes it in the same scope (design §6.5).
+
 ## Local cluster
 `LocalCluster` runs any number of workers in one process, with channels as the transport. It is the
 reference configuration: a workflow must produce the same results on one worker, on several, and

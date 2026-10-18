@@ -16,7 +16,7 @@ use tokio::sync::oneshot;
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId, owner};
 use crate::message::{Branch, BranchId, Report};
 use crate::run::RunInfo;
-use crate::scope::{Continuation, Weight};
+use crate::scope::{Continuation, Position, Source, Weight};
 use crate::tree::Node;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,11 +41,19 @@ pub enum Record {
         id: BranchId,
         hop: u64,
     },
-    /// A scope opened by its owner; `None` for the run's root scope.
+    /// A scope opened by its owner: `continuation` is `None` for the run's root scope, `source`
+    /// is the stream feeding it, if one does.
     Scope {
         run: RunId,
         scope: ScopeId,
         continuation: Option<Continuation>,
+        source: Option<Source>,
+    },
+    /// How far the stream feeding `scope` has got.
+    Position {
+        run: RunId,
+        scope: ScopeId,
+        position: Position,
     },
     /// The scope is over and its continuation recorded.
     ScopeGone {
@@ -100,6 +108,8 @@ pub struct RunEstate {
 pub struct ScopeEstate {
     pub scope: ScopeId,
     pub continuation: Option<Continuation>,
+    /// The stream feeding the scope, at its last logged position.
+    pub source: Option<Source>,
     pub ends: Vec<EndRecord>,
 }
 
@@ -169,13 +179,28 @@ impl MemoryLog {
                     run,
                     scope,
                     continuation,
+                    source,
                 } => {
                     let estate = ScopeEstate {
                         scope,
                         continuation,
+                        source,
                         ends: Vec::new(),
                     };
                     runs.entry(run).or_default().scopes.insert(scope, estate);
+                }
+                Record::Position {
+                    run,
+                    scope,
+                    position,
+                } => {
+                    let source = runs
+                        .get_mut(&run)
+                        .and_then(|run| run.scopes.get_mut(&scope))
+                        .and_then(|scope| scope.source.as_mut());
+                    if let Some(source) = source {
+                        source.position = position;
+                    }
                 }
                 Record::ScopeGone { run, scope } => {
                     if let Some(run) = runs.get_mut(&run) {

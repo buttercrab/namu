@@ -25,7 +25,7 @@ use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
     GenericArgument, Ident, Pat, PathArguments, ReturnType, Token, Type, TypePath,
-    parse_macro_input,
+    parse_macro_input, parse_quote,
 };
 
 /// Returns a compile error spanning `tokens` from the enclosing function.
@@ -43,7 +43,8 @@ enum TaskKind {
     Single,
     /// Written for a list of inputs, called per item; the engine groups the items.
     Batch,
-    /// Yields its results over time.
+    /// Yields its results over time. In a workflow its output is a list, `Vec<T>`, whose items
+    /// can be fanned out as they arrive.
     Stream,
 }
 
@@ -116,9 +117,9 @@ fn constructor(
         bail!(sig.output, "a task must return a `Result`");
     };
 
-    // What one call yields, per item for batch and stream tasks.
-    let output = match kind {
-        TaskKind::Single => result_inner(ret)?,
+    // What one call yields: per item for batch tasks, the whole list for stream tasks.
+    let output: Type = match kind {
+        TaskKind::Single => result_inner(ret)?.clone(),
         TaskKind::Batch => {
             let [(_, input)] = params.as_mut_slice() else {
                 bail!(
@@ -132,8 +133,12 @@ fn constructor(
                 "Vec",
                 "a batch task returns `Vec<Result<T>>`",
             )?)?
+            .clone()
         }
-        TaskKind::Stream => result_inner(iterator_item(result_inner(ret)?)?)?,
+        TaskKind::Stream => {
+            let item = result_inner(iterator_item(result_inner(ret)?)?)?;
+            parse_quote!(::std::vec::Vec<#item>)
+        }
     };
 
     let arg_names = params.iter().map(|(name, _)| name);
@@ -142,7 +147,7 @@ fn constructor(
         .map(|(name, ty)| quote! { #name: impl ::namu::__macro_exports::IntoArg<#ty> });
 
     // A non-empty tuple is several outputs; anything else (including `()`) is one.
-    let (ret_ty, call_fn) = match output {
+    let (ret_ty, call_fn) = match &output {
         Type::Tuple(tuple) if !tuple.elems.is_empty() => {
             let elems = tuple.elems.iter();
             (

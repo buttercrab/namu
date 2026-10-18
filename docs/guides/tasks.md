@@ -29,13 +29,46 @@ The workflow crate declares the task's signature without a body, so it never lin
 pub fn analyze(doc: String, min_len: i32) -> Result<Stats>;
 ```
 
+## Stream tasks
+A stream task yields its outputs one at a time, like a crawler or a reader over a large file:
+
+```rust
+namu_guest::stream! {
+    fn pages(site: String) -> anyhow::Result<impl Iterator<Item = anyhow::Result<Page>>> {
+        Ok(crawl(site))
+    }
+}
+```
+
+Its manifest says `"task_kind": "stream"` (and optionally `"window"`, below). The workflow declares
+it with `#[task(stream)]`, and its output is a list:
+
+```rust
+#[task(stream)]
+pub fn pages(site: String) -> Result<impl Iterator<Item = Result<Page>>>;
+
+let pages = pages(site);       // Vec<Page>
+let parsed = parse(pages);     // parse(Page): one branch per page, as each arrives
+```
+
+When the stream's only use is a fan-out, each item becomes a branch as soon as it is yielded,
+while the rest are still coming. At most `window` items (default 1024) are in flight at once: the
+stream is not asked for more until branches end, so a slow consumer slows the producer. If the
+worker running the stream dies, its successor resumes the stream where it was (design §6.5). A
+stream used whole (passed as a list) is read to its end first.
+
+WASM stream tasks implement the `stream-task` world; native ones export `namu_stream_open`,
+`namu_stream_next` and `namu_stream_close` (C ABI version 3). `namu_guest::stream!` generates both.
+
 ## In-process tasks (`FnTasks`)
 In the same process as the engine, a task is a Rust function registered by name. Its input is the
 packed arguments: the argument itself for one, a tuple for several, `()` for none.
 
 ```rust
 let tasks = FnTasks::new()
-    .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b));
+    .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
+    .with_stream("count_to", |n: i32| Ok::<_, String>((0..n).map(Ok::<_, String>)))
+    .window("count_to", 16);
 ```
 
 See `examples/basic`.
@@ -44,4 +77,5 @@ See `examples/basic`.
 - `single`: one input, one output
 - `batch`: written for a list of inputs, called per item; the engine groups items (design §6.6,
   not implemented yet)
-- `stream`: one input, many outputs; each output continues in its own branch
+- `stream`: one input, outputs yielded over time; a list in the workflow, fanned out as it
+  arrives
