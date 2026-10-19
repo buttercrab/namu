@@ -8,6 +8,7 @@ use super::Inner;
 use crate::ids::WorkerId;
 use crate::log::{Durable, Record};
 use crate::message::{Delivery, Message};
+use crate::routes::Load;
 
 /// A message kept until its receiver acknowledges it.
 pub(super) struct Outgoing {
@@ -60,7 +61,9 @@ impl Inner {
     /// Acknowledges `delivery` to its sender.
     pub(super) fn ack(self: &Arc<Self>, delivery: Delivery) {
         let ack = Message::Ack {
+            from: self.id,
             seqs: vec![delivery.seq],
+            load: self.load(),
         };
         self.deliver(delivery.from, ack);
     }
@@ -75,7 +78,8 @@ impl Inner {
         });
     }
 
-    pub(super) fn on_ack(self: &Arc<Self>, seqs: Vec<u64>) {
+    pub(super) fn on_ack(self: &Arc<Self>, from: WorkerId, seqs: Vec<u64>, load: Load) {
+        self.routes.report(from, load);
         for seq in seqs {
             let kept = self.outbox.lock().unwrap().remove(&seq);
             if let Some(release) = kept.and_then(|kept| kept.release) {

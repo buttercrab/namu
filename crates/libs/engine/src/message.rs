@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
+use crate::routes::Load;
 use crate::run::{RunInfo, RunOutcome, WorkerStats};
 use crate::tree::Node;
 
@@ -104,9 +105,12 @@ pub enum Message {
         report: Report,
         delivery: Delivery,
     },
-    /// The receiver has made what these deliveries produced durable; the sender may let go.
+    /// The receiver has made what these deliveries produced durable; the sender may let go. It
+    /// carries the receiver's load (design §10.3).
     Ack {
+        from: WorkerId,
         seqs: Vec<u64>,
+        load: Load,
     },
 
     /// Asks the node's owner for a node.

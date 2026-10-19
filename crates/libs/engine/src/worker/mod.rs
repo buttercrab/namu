@@ -18,7 +18,7 @@ mod streams;
 mod view;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use namu_core::ir::Workflow;
@@ -30,7 +30,7 @@ use crate::ids::{Minter, NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
 use crate::log::{Log, Record};
 use crate::message::{Branch, BranchId, Message, Resume};
-use crate::routes::Routes;
+use crate::routes::{Load, Routes};
 use crate::run::{RunInfo, RunOutcome, RunSpec, WorkerStats};
 use crate::scope::{Finish, Scope, Then};
 use crate::tasks::{TaskRef, Tasks};
@@ -66,6 +66,9 @@ struct Inner {
     next_seq: AtomicU64,
     /// Bounds concurrent task calls; driving the IR between them is cheap and unbounded.
     task_slots: Semaphore,
+    slots: u32,
+    /// Branches being driven here: the load this worker reports.
+    driving: AtomicU32,
     /// Batch tasks' queues and sessions, per task version.
     batchers: Mutex<HashMap<TaskRef, Arc<batches::Batcher>>>,
 }
@@ -115,6 +118,8 @@ impl Worker {
             outbox: Mutex::default(),
             next_seq: AtomicU64::new(0),
             task_slots: Semaphore::new(task_slots),
+            slots: u32::try_from(task_slots).unwrap_or(u32::MAX),
+            driving: AtomicU32::new(0),
             batchers: Mutex::default(),
         });
         let worker = inner.clone();
@@ -142,6 +147,26 @@ impl Worker {
 }
 
 impl Inner {
+    /// How busy this worker is.
+    fn load(&self) -> Load {
+        Load {
+            pending: self.driving.load(Ordering::Relaxed),
+            slots: self.slots,
+        }
+    }
+
+    /// Counts a branch as driven here until the guard is dropped.
+    fn busy(self: &Arc<Self>) -> Busy {
+        self.driving.fetch_add(1, Ordering::Relaxed);
+        Busy(self.clone())
+    }
+
+    /// Where new work goes: the least loaded worker that can take it, this one included.
+    fn destination(&self, pick: impl FnOnce(&Routes) -> Option<WorkerId>) -> WorkerId {
+        self.routes.report(self.id, self.load());
+        pick(&self.routes).unwrap_or(self.id)
+    }
+
     fn run_state(&self, id: RunId) -> Option<Arc<Run>> {
         self.runs.lock().unwrap().get(&id).cloned()
     }
@@ -173,7 +198,7 @@ impl Inner {
             message @ Message::Handoff { .. } => self.on_handoff(message),
             message @ Message::End { .. } => self.on_end(message),
             message @ Message::Report { .. } => self.on_report(message),
-            Message::Ack { seqs } => self.on_ack(seqs),
+            Message::Ack { from, seqs, load } => self.on_ack(from, seqs, load),
             Message::FetchNode { run, id, reply_to } => {
                 let node = self.run_state(run).and_then(|state| state.nodes.get(id));
                 self.deliver(reply_to, Message::Node { run, id, node });
@@ -388,5 +413,14 @@ impl Run {
 
     fn id(&self) -> RunId {
         self.spec.id()
+    }
+}
+
+/// A branch being driven on a worker.
+struct Busy(Arc<Inner>);
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.driving.fetch_sub(1, Ordering::Relaxed);
     }
 }
