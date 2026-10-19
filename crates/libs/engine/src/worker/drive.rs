@@ -343,7 +343,7 @@ impl Inner {
             ctx: at.ctx.clone(),
         };
         // The opening branch's record goes once the scope and every child are durable elsewhere.
-        let release = Release::new(items.len() + 1, self.gone(run, branch));
+        let release = self.release_after(items.len() + 1, self.gone(run, branch));
         let durable = self.log.append(vec![
             Record::Nodes {
                 run: run.id(),
@@ -470,7 +470,7 @@ impl Inner {
 
     /// Moves the branch at `at` to worker `to`, with the nodes it created here.
     fn move_branch(self: &Arc<Self>, run: &Arc<Run>, at: &Driving, to: WorkerId) {
-        let release = Release::new(1, self.gone(run, &at.branch));
+        let release = self.release_after(1, self.gone(run, &at.branch));
         let branch = Branch {
             hop: at.branch.hop + 1,
             ..at.branch.clone()
@@ -501,14 +501,14 @@ impl Inner {
 
     /// The branch ends in its innermost scope.
     pub(super) fn end_branch(self: &Arc<Self>, run: &Run, branch: &Branch, item: Option<Value>) {
-        let release = Release::new(1, self.gone(run, branch));
+        let release = self.release_after(1, self.gone(run, branch));
         self.send_end(run, branch.id, item, Some(release));
     }
 
     /// The branch reports to the run's owner, which ends it in its scope once the report is
     /// recorded.
     pub(super) fn report(self: &Arc<Self>, run: &Run, branch: &Branch, report: Report) {
-        let release = Release::new(1, self.gone(run, branch));
+        let release = self.release_after(1, self.gone(run, branch));
         self.send_report(run, branch.id, report, Some(release));
     }
 

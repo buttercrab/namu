@@ -14,7 +14,6 @@ use namu_core::OpId;
 use namu_core::value::Value;
 use tokio::sync::Semaphore;
 
-use super::delivery::Release;
 use super::drive::{Driving, run_task};
 use super::view::View;
 use super::{Inner, Run};
@@ -51,7 +50,7 @@ impl Inner {
             fan_out,
             position: Position::default(),
         };
-        let release = Release::new(1, self.gone(run, branch));
+        let release = self.release_after(1, self.gone(run, branch));
         let trail = self.trail(at);
         let durable = self.log.append(vec![
             Record::Nodes {
@@ -255,7 +254,7 @@ impl Inner {
                 position: position.clone(),
             },
         ]);
-        let release = Release::new(1, self.gone(run, &branch));
+        let release = self.release_after(1, self.gone(run, &branch));
         let to = self.destination();
         let nodes = [node].into_iter().chain(feeding.trail.iter().cloned());
         let branch = Branch { hop: 1, ..branch };

@@ -18,7 +18,7 @@ mod streams;
 mod view;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
@@ -72,8 +72,10 @@ struct Inner {
     driving: AtomicU32,
     /// Set when the worker drains (design §10.4): it takes no new work and hands on what it holds.
     draining: watch::Sender<bool>,
-    /// Notified when a branch or source stops here, or a message is acknowledged: what draining
-    /// waits for.
+    /// Releases not yet fired: records of this worker that are still to go from the log.
+    releasing: AtomicUsize,
+    /// Notified when a branch or source stops here, a message is acknowledged, a release fires,
+    /// or a run ending here is complete: what draining waits for.
     idle: Notify,
     /// Batch tasks' queues and sessions, per task version.
     batchers: Mutex<HashMap<TaskRef, Arc<batches::Batcher>>>,
@@ -127,6 +129,7 @@ impl Worker {
             slots: u32::try_from(task_slots).unwrap_or(u32::MAX),
             driving: AtomicU32::new(0),
             draining: watch::Sender::new(false),
+            releasing: AtomicUsize::new(0),
             idle: Notify::new(),
             batchers: Mutex::default(),
         });
@@ -162,7 +165,9 @@ impl Worker {
             tokio::pin!(idle);
             idle.as_mut().enable();
             let quiet = inner.driving.load(Ordering::Relaxed) == 0
-                && inner.outbox.lock().unwrap().is_empty();
+                && inner.releasing.load(Ordering::Relaxed) == 0
+                && inner.outbox.lock().unwrap().is_empty()
+                && inner.ending.lock().unwrap().is_empty();
             if quiet {
                 break;
             }
