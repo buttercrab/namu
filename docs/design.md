@@ -626,7 +626,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Placement | ✅ A node attaches under the deepest node still holding a live value (liveness from the IR; a node's own values shadow older copies, which is what lets loops stay shallow). Chains stay as deep as the values in use | Several nodes per step, ordered longest-lived first |
 | Dedup | ✅ Constants are hoisted into the root context. Every other op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor (§13 q7) |
 | Fan-out / fan-in | ✅ Type-driven via `IntoArg`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine) | Plus reduce and window |
-| `return` in a branch | Not supported | Drops that item (filter) |
+| `return` in a branch | ✅ Ends the branch; before a collect it drops the item (filter) | |
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |

@@ -109,6 +109,10 @@ impl VisitMut for WorkflowVisitor {
                 *i = self.handle_while(while_expr);
                 self.last_expr_has_value = false;
             }
+            Expr::Return(return_expr) => {
+                *i = self.handle_return(return_expr);
+                self.last_expr_has_value = false;
+            }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
                 // Workflow values are owned, so string literals are `String`, matching task
@@ -214,6 +218,26 @@ impl VisitMut for WorkflowVisitor {
 }
 
 impl WorkflowVisitor {
+    /// `return` ends the branch: inside a fan-out it drops the item (design §4.2). What follows
+    /// in the same block can never run, so it goes into a block nothing jumps to.
+    fn handle_return(&mut self, return_expr: &mut syn::ExprReturn) -> Expr {
+        let builder = self.builder_ident.clone();
+        let seal = match &mut return_expr.expr {
+            Some(value) => {
+                self.visit_expr_mut(value);
+                quote! { ::namu::__macro_exports::return_value(&#builder, #value); }
+            }
+            None => quote! { ::namu::__macro_exports::return_unit(&#builder); },
+        };
+        parse_quote! {
+            {
+                #seal
+                let __unreachable = #builder.new_block();
+                #builder.switch_to_block(__unreachable);
+            }
+        }
+    }
+
     fn handle_if(&mut self, if_expr: &mut ExprIf) -> Expr {
         let builder = self.builder_ident.clone();
         let id = self.new_control_flow_id();
