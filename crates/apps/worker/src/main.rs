@@ -144,12 +144,18 @@ fn apply(
     tasks: &tasks::RuntimeTasks,
     membership: Membership,
 ) {
-    for member in &membership.members {
-        match member.addr.parse() {
-            Ok(addr) => mesh.set_peer(member.id, addr),
-            Err(err) => error!(member.id, member.addr, "bad member address: {err}"),
-        }
-    }
+    let peers: Vec<_> = membership
+        .members
+        .iter()
+        .filter_map(|member| match member.addr.parse() {
+            Ok(addr) => Some((member.id, addr)),
+            Err(err) => {
+                error!(member.id, member.addr, "bad member address: {err}");
+                None
+            }
+        })
+        .collect();
+    mesh.set_peers(&peers);
     routes.set_successors(membership.successors.into_iter().collect());
     tasks.set_members(membership.members);
 }

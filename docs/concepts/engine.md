@@ -52,7 +52,9 @@ let outcome = cluster.run(workflow_ir).await?;
 ```
 
 ## Across machines
-The same workers talk over TCP (`TcpTransport`). `namu-worker` runs one engine worker per process,
+The same workers talk over TCP (`TcpTransport`), where messages to each peer form a session that
+survives broken connections: unacknowledged messages are replayed on reconnect, and delivered
+once. `namu-worker` runs one engine worker per process,
 with the WASM and native task runtimes, and joins the mesh through the orchestrator, which gives it
 its id and the member list. The orchestrator is itself a member (id 0): it sends a run to the
 worker that will own it and hears back when it is over. `LocalCluster::tcp` runs the same setup on

@@ -478,6 +478,12 @@ queue up. The transport is a trait: TCP or QUIC between machines, and channels b
 one process (which is also how a workflow runs locally and in tests: one engine, no special
 local mode).
 
+The transport delivers each message exactly once and in order between two live workers. Over TCP,
+messages to a peer form a session: each carries a sequence number and is kept until the peer
+acknowledges it, so a broken connection is reconnected and replayed, and the receiver delivers
+each number once. Losing a peer is not the transport's concern: that is recovery (§7), which
+re-sends to its successor what the dead worker had not made durable.
+
 The in-process configuration is the **reference**: every workflow must produce the same result on
 it as on any number of machines, and a conformance suite checks this for every example.
 
@@ -556,7 +562,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Values | JSON at every boundary | Codec abstraction plus types, zero-copy locally |
 | Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
-| Distributed path | ✅ Peer-to-peer TCP mesh; the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
+| Distributed path | ✅ Peer-to-peer TCP mesh with a reliable session per pair of workers (sequence numbers, replay on reconnect); the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
 | Routing | Round robin among the workers that serve a task; a branch waits for a server to join | Load-aware, locality-aware placement; credits for sources (§10.3) |
 | Streams | ✅ Fused with their fan-out, per-item credits at the source, resumable by position (§6.5). Guest streams yield no cursors yet; a resumed stream is reopened and skipped forward | Cursors from guest streams; windows for unbounded streams |
 | Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
