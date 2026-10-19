@@ -6,7 +6,7 @@
 //! arguments is `null`, one is the value itself, several are an array; a task with several outputs
 //! returns an array.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ pub struct TaskRef {
     pub version: String,
 }
 
-/// Runs tasks on one worker.
+/// The tasks one worker serves.
 #[async_trait]
 pub trait Tasks: Send + Sync + 'static {
     /// Called before any branch of `run` runs on this worker, e.g. to load the tasks it uses.
@@ -35,52 +35,70 @@ pub trait Tasks: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Whether this worker can run `task`.
-    fn serves(&self, task: &TaskRef) -> bool;
+    /// How this worker runs `task`, or `None` if it does not serve it.
+    fn task(&self, task: &TaskRef) -> Option<Task>;
+}
 
-    /// Whether `task` has external side effects that must not be repeated by recovery (design
+/// How a worker runs a task.
+#[derive(Clone)]
+pub struct Task {
+    pub kind: Kind,
+    /// Whether the task has external side effects that must not be repeated by recovery (design
     /// §7.5). The branch is recorded past such a task before it continues.
-    fn checkpoint(&self, _task: &TaskRef) -> bool {
-        false
-    }
+    pub checkpoint: bool,
+}
 
-    /// Whether `task` is a stream task, run with [`Tasks::open`] instead of [`Tasks::call`].
-    fn is_stream(&self, _task: &TaskRef) -> bool {
-        false
-    }
+#[derive(Clone)]
+pub enum Kind {
+    /// Runs once per call.
+    Call(Arc<dyn CallTask>),
+    /// Yields items over time (design §6.5).
+    Stream(Stream),
+    /// Runs in sessions that take items in and give results back in steps (design §6.6).
+    Batch(Batch),
+}
 
-    /// Opens a stream task, at `cursor` if one of its items gave one. Errors as for `call`.
+#[derive(Clone)]
+pub struct Stream {
+    pub task: Arc<dyn StreamTask>,
+    /// How many of its items may be in flight at once.
+    pub window: usize,
+}
+
+#[derive(Clone)]
+pub struct Batch {
+    pub task: Arc<dyn BatchTask>,
+    pub policy: BatchPolicy,
+}
+
+impl Task {
+    pub fn new(kind: Kind) -> Self {
+        Self {
+            kind,
+            checkpoint: false,
+        }
+    }
+}
+
+/// Errors, for every kind of task: `Ok(Err(message))` is the task's own failure, which fails its
+/// branch; `Err` is a failure of the machinery around it.
+pub trait CallTask: Send + Sync {
+    fn call(&self, input: Value) -> anyhow::Result<Result<Value, String>>;
+}
+
+pub trait StreamTask: Send + Sync {
+    /// Opens the stream, at `cursor` if one of its items gave one. The open stream keeps its
+    /// task alive.
     fn open(
-        &self,
-        task: &TaskRef,
-        _input: Value,
-        _cursor: Option<String>,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        anyhow::bail!("task {} is not a stream task", task.id)
-    }
+        self: Arc<Self>,
+        input: Value,
+        cursor: Option<String>,
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>>;
+}
 
-    /// How many of a stream's items may be in flight at once (design §6.5).
-    fn window(&self, _task: &TaskRef) -> usize {
-        DEFAULT_WINDOW
-    }
-
-    /// Whether `task` is a batch task, run in a session with [`Tasks::open_batch`].
-    fn is_batch(&self, _task: &TaskRef) -> bool {
-        false
-    }
-
-    /// Opens a session of a batch task. Errors as for `call`.
-    fn open_batch(&self, task: &TaskRef) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
-        anyhow::bail!("task {} is not a batch task", task.id)
-    }
-
-    fn batch_policy(&self, _task: &TaskRef) -> BatchPolicy {
-        BatchPolicy::default()
-    }
-
-    /// Runs `task` once. `Ok(Err(message))` is the task's own failure, which fails the branch;
-    /// `Err` is a failure of the machinery around it.
-    fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>>;
+pub trait BatchTask: Send + Sync {
+    /// Opens a session. The session keeps its task alive.
+    fn open(self: Arc<Self>) -> anyhow::Result<Result<Box<dyn BatchSession>, String>>;
 }
 
 /// Items of a stream in flight at once, unless the task says otherwise.
@@ -161,21 +179,11 @@ pub fn unpack_output(output: Value, arity: usize) -> anyhow::Result<Vec<Value>> 
     }
 }
 
-type TaskFn = Box<dyn Fn(Value) -> Result<Value, String> + Send + Sync>;
-type Items = Box<dyn Iterator<Item = Result<Value, String>> + Send>;
-type StreamFn = Box<dyn Fn(Value) -> Result<Items, String> + Send + Sync>;
-type SessionFn = Box<dyn Fn() -> Box<dyn BatchSession> + Send + Sync>;
-
 /// Tasks implemented as Rust functions in this process: the fastest runtime, with no
 /// serialization boundary beyond JSON values. They are not versioned.
 #[derive(Default)]
 pub struct FnTasks {
-    tasks: HashMap<String, TaskFn>,
-    streams: HashMap<String, StreamFn>,
-    windows: HashMap<String, usize>,
-    batches: HashMap<String, SessionFn>,
-    policies: HashMap<String, BatchPolicy>,
-    checkpoints: HashSet<String>,
+    tasks: HashMap<String, Task>,
 }
 
 impl FnTasks {
@@ -183,10 +191,21 @@ impl FnTasks {
         Self::default()
     }
 
+    fn register(mut self, task: &str, kind: Kind) -> Self {
+        self.tasks.insert(task.to_string(), Task::new(kind));
+        self
+    }
+
+    fn registered(&mut self, task: &str) -> &mut Task {
+        self.tasks
+            .get_mut(task)
+            .unwrap_or_else(|| panic!("task {task} is not registered"))
+    }
+
     /// Registers `task`. `I` is the packed input: `()` for no arguments, the argument itself for
     /// one, a tuple for several.
     pub fn with<I, O, E>(
-        mut self,
+        self,
         task: &str,
         f: impl Fn(I) -> Result<O, E> + Send + Sync + 'static,
     ) -> Self
@@ -200,14 +219,13 @@ impl FnTasks {
             let output = f(input).map_err(|err| err.to_string())?;
             serde_json::to_value(output).map_err(|err| format!("bad output: {err}"))
         };
-        self.tasks.insert(task.to_string(), Box::new(call));
-        self
+        self.register(task, Kind::Call(Arc::new(FnCall(call))))
     }
 
     /// Registers a stream task: `f` returns the items, which are produced as they are pulled. The
     /// items give no cursors, so a resumed stream is opened again and skipped forward.
     pub fn with_stream<I, O, E, S>(
-        mut self,
+        self,
         task: &str,
         f: impl Fn(I) -> Result<S, E> + Send + Sync + 'static,
     ) -> Self
@@ -225,13 +243,16 @@ impl FnTasks {
                 serde_json::to_value(item).map_err(|err| format!("bad output: {err}"))
             })))
         };
-        self.streams.insert(task.to_string(), Box::new(open));
-        self
+        let kind = Kind::Stream(Stream {
+            task: Arc::new(FnStreamTask(open)),
+            window: DEFAULT_WINDOW,
+        });
+        self.register(task, kind)
     }
 
     /// Registers a batch task run by dynamic batching: each step calls `f` on the items given.
     pub fn with_batch<I, O, E>(
-        mut self,
+        self,
         task: &str,
         f: impl Fn(Vec<I>) -> Result<Vec<Result<O, E>>, E> + Send + Sync + 'static,
     ) -> Self
@@ -248,98 +269,91 @@ impl FnTasks {
                 types: PhantomData,
             })
         };
-        self.batches.insert(task.to_string(), Box::new(open));
-        self
+        self.with_sessions(task, open)
     }
 
     /// Registers a batch task run by continuous batching: each session is made by `make`.
     pub fn with_continuous<C: Continuous>(
-        mut self,
+        self,
         task: &str,
         make: impl Fn() -> C + Send + Sync + 'static,
     ) -> Self {
-        let open = move || -> Box<dyn BatchSession> { Box::new(ContinuousSession(make())) };
-        self.batches.insert(task.to_string(), Box::new(open));
-        self
+        self.with_sessions(task, move || -> Box<dyn BatchSession> {
+            Box::new(ContinuousSession(make()))
+        })
     }
 
-    /// Sets how `task`'s batch sessions run.
+    fn with_sessions(
+        self,
+        task: &str,
+        open: impl Fn() -> Box<dyn BatchSession> + Send + Sync + 'static,
+    ) -> Self {
+        let kind = Kind::Batch(Batch {
+            task: Arc::new(FnBatchTask(open)),
+            policy: BatchPolicy::default(),
+        });
+        self.register(task, kind)
+    }
+
+    /// Sets how the batch task `task`'s sessions run.
     pub fn batch(mut self, task: &str, policy: BatchPolicy) -> Self {
-        self.policies.insert(task.to_string(), policy);
+        match &mut self.registered(task).kind {
+            Kind::Batch(batch) => batch.policy = policy,
+            _ => panic!("task {task} is not a batch task"),
+        }
         self
     }
 
-    /// Lets at most `window` of `task`'s items be in flight at once.
+    /// Lets at most `window` of the stream task `task`'s items be in flight at once.
     pub fn window(mut self, task: &str, window: usize) -> Self {
-        self.windows.insert(task.to_string(), window);
+        match &mut self.registered(task).kind {
+            Kind::Stream(stream) => stream.window = window,
+            _ => panic!("task {task} is not a stream task"),
+        }
         self
     }
 
     /// Marks `task` as a checkpoint: it has side effects that recovery must not repeat.
     pub fn checkpoint(mut self, task: &str) -> Self {
-        self.checkpoints.insert(task.to_string());
+        self.registered(task).checkpoint = true;
         self
     }
 }
 
 #[async_trait]
 impl Tasks for FnTasks {
-    fn serves(&self, task: &TaskRef) -> bool {
-        self.tasks.contains_key(&task.id)
-            || self.streams.contains_key(&task.id)
-            || self.batches.contains_key(&task.id)
+    fn task(&self, task: &TaskRef) -> Option<Task> {
+        self.tasks.get(&task.id).cloned()
     }
+}
 
-    fn is_batch(&self, task: &TaskRef) -> bool {
-        self.batches.contains_key(&task.id)
+type Items = Box<dyn Iterator<Item = Result<Value, String>> + Send>;
+
+struct FnCall<F>(F);
+
+impl<F: Fn(Value) -> Result<Value, String> + Send + Sync> CallTask for FnCall<F> {
+    fn call(&self, input: Value) -> anyhow::Result<Result<Value, String>> {
+        Ok((self.0)(input))
     }
+}
 
-    fn open_batch(&self, task: &TaskRef) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
-        let open = self
-            .batches
-            .get(&task.id)
-            .ok_or_else(|| anyhow::anyhow!("batch task {} is not served here", task.id))?;
-        Ok(Ok(open()))
-    }
+struct FnStreamTask<F>(F);
 
-    fn batch_policy(&self, task: &TaskRef) -> BatchPolicy {
-        self.policies.get(&task.id).copied().unwrap_or_default()
-    }
-
-    fn is_stream(&self, task: &TaskRef) -> bool {
-        self.streams.contains_key(&task.id)
-    }
-
+impl<F: Fn(Value) -> Result<Items, String> + Send + Sync> StreamTask for FnStreamTask<F> {
     fn open(
-        &self,
-        task: &TaskRef,
+        self: Arc<Self>,
         input: Value,
         _cursor: Option<String>,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        let open = self
-            .streams
-            .get(&task.id)
-            .ok_or_else(|| anyhow::anyhow!("stream task {} is not served here", task.id))?;
-        Ok(open(input).map(|items| Box::new(FnStream(items)) as Box<dyn TaskStream>))
+        Ok((self.0)(input).map(|items| Box::new(FnStream(items)) as Box<dyn TaskStream>))
     }
+}
 
-    fn window(&self, task: &TaskRef) -> usize {
-        self.windows
-            .get(&task.id)
-            .copied()
-            .unwrap_or(DEFAULT_WINDOW)
-    }
+struct FnBatchTask<F>(F);
 
-    fn checkpoint(&self, task: &TaskRef) -> bool {
-        self.checkpoints.contains(&task.id)
-    }
-
-    fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {
-        let f = self
-            .tasks
-            .get(&task.id)
-            .ok_or_else(|| anyhow::anyhow!("task {} is not served here", task.id))?;
-        Ok(f(input))
+impl<F: Fn() -> Box<dyn BatchSession> + Send + Sync> BatchTask for FnBatchTask<F> {
+    fn open(self: Arc<Self>) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
+        Ok(Ok((self.0)()))
     }
 }
 
@@ -466,16 +480,13 @@ mod tests {
         let tasks = FnTasks::new()
             .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
             .with("fail", |_: ()| Err::<i32, _>("no"));
-        assert!(tasks.serves(&task("add")));
-        assert!(!tasks.serves(&task("mul")));
-        assert_eq!(
-            tasks.call(&task("add"), json!([2, 3])).unwrap(),
-            Ok(json!(5))
-        );
-        assert_eq!(
-            tasks.call(&task("fail"), Value::Null).unwrap(),
-            Err("no".into())
-        );
-        assert!(tasks.call(&task("add"), json!("x")).unwrap().is_err());
+        let call = |id: &str, input: Value| match tasks.task(&task(id)).map(|task| task.kind) {
+            Some(Kind::Call(task)) => task.call(input).unwrap(),
+            _ => panic!("{id} is not a call task"),
+        };
+        assert!(tasks.task(&task("mul")).is_none());
+        assert_eq!(call("add", json!([2, 3])), Ok(json!(5)));
+        assert_eq!(call("fail", Value::Null), Err("no".into()));
+        assert!(call("add", json!("x")).is_err());
     }
 }

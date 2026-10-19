@@ -141,7 +141,7 @@ impl Worker {
     }
 
     pub fn serves(&self, task: &TaskRef) -> bool {
-        self.inner.tasks.serves(task)
+        self.inner.tasks.task(task).is_some()
     }
 }
 

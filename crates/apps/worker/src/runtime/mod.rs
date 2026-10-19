@@ -5,44 +5,21 @@ pub mod wasm;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
-use namu_engine::tasks::{BatchSession, TaskStream};
+use namu_engine::tasks::{Batch, BatchPolicy, DEFAULT_WINDOW, Kind, Stream};
 use namu_proto::{TaskKind, TaskManifest, TaskRuntime};
+use serde_json::Value;
 use sha2::Digest;
 
-pub enum Runner {
-    Wasm(wasm::WasmTask),
-    WasmStream(wasm::WasmStreamTask),
-    Native(native::NativeTask),
-    NativeStream(Arc<native::NativeStreamTask>),
-    WasmBatch(wasm::WasmBatchTask),
-    NativeBatch(Arc<native::NativeBatchTask>),
-}
-
-impl Runner {
-    pub fn call(&self, input: &str) -> anyhow::Result<Result<String, String>> {
-        match self {
-            Runner::Wasm(task) => task.call(input),
-            Runner::Native(task) => task.call(input),
-            _ => anyhow::bail!("a stream or batch task is opened, not called"),
-        }
-    }
-
-    pub fn open_batch(&self) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
-        match self {
-            Runner::WasmBatch(task) => task.open(),
-            Runner::NativeBatch(task) => task.open(),
-            _ => anyhow::bail!("not a batch task"),
-        }
-    }
-
-    pub fn open(&self, input: &str) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        match self {
-            Runner::WasmStream(task) => task.open(input),
-            Runner::NativeStream(task) => task.open(input),
-            _ => anyhow::bail!("not a stream task"),
-        }
+/// A call's output as the runtimes give it, JSON or the task's own error, decoded.
+fn output(output: Result<String, String>) -> anyhow::Result<Result<Value, String>> {
+    match output {
+        Ok(output) => Ok(Ok(
+            serde_json::from_str(&output).context("the task returned invalid JSON")?
+        )),
+        Err(message) => Ok(Err(message)),
     }
 }
 
@@ -65,31 +42,36 @@ impl Runtimes {
         }
     }
 
-    pub async fn load(&self, manifest: &TaskManifest) -> anyhow::Result<Runner> {
+    /// Loads the task a manifest describes, as its runtime and kind say.
+    pub async fn load(&self, manifest: &TaskManifest) -> anyhow::Result<Kind> {
         let path = self.fetch_artifact(manifest).await?;
         let engine = self.engine.clone();
         let runtime = manifest.runtime;
         let kind = manifest.task_kind.clone();
-        tokio::task::spawn_blocking(move || -> anyhow::Result<Runner> {
-            Ok(match (runtime, kind) {
-                (TaskRuntime::Wasm, TaskKind::Single) => {
-                    Runner::Wasm(wasm::WasmTask::load(&engine, &path)?)
+        let window = manifest.window.unwrap_or(DEFAULT_WINDOW);
+        let policy = batch_policy(manifest);
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Kind> {
+            Ok(match (kind, runtime) {
+                (TaskKind::Single, TaskRuntime::Wasm) => {
+                    Kind::Call(Arc::new(wasm::WasmTask::load(&engine, &path)?))
                 }
-                (TaskRuntime::Wasm, TaskKind::Stream) => {
-                    Runner::WasmStream(wasm::WasmStreamTask::load(&engine, &path)?)
+                (TaskKind::Single, TaskRuntime::Native) => {
+                    Kind::Call(Arc::new(native::NativeTask::load(&path)?))
                 }
-                (TaskRuntime::Wasm, TaskKind::Batch) => {
-                    Runner::WasmBatch(wasm::WasmBatchTask::load(&engine, &path)?)
-                }
-                (TaskRuntime::Native, TaskKind::Single) => {
-                    Runner::Native(native::NativeTask::load(&path)?)
-                }
-                (TaskRuntime::Native, TaskKind::Stream) => {
-                    Runner::NativeStream(Arc::new(native::NativeStreamTask::load(&path)?))
-                }
-                (TaskRuntime::Native, TaskKind::Batch) => {
-                    Runner::NativeBatch(Arc::new(native::NativeBatchTask::load(&path)?))
-                }
+                (TaskKind::Stream, runtime) => Kind::Stream(Stream {
+                    task: match runtime {
+                        TaskRuntime::Wasm => Arc::new(wasm::WasmStreamTask::load(&engine, &path)?),
+                        TaskRuntime::Native => Arc::new(native::NativeStreamTask::load(&path)?),
+                    },
+                    window,
+                }),
+                (TaskKind::Batch, runtime) => Kind::Batch(Batch {
+                    task: match runtime {
+                        TaskRuntime::Wasm => Arc::new(wasm::WasmBatchTask::load(&engine, &path)?),
+                        TaskRuntime::Native => Arc::new(native::NativeBatchTask::load(&path)?),
+                    },
+                    policy,
+                }),
             })
         })
         .await?
@@ -121,6 +103,15 @@ impl Runtimes {
         let dir_clone = dir.clone();
         tokio::task::spawn_blocking(move || extract(&archive, &dir_clone, runtime, &checksum))
             .await?
+    }
+}
+
+fn batch_policy(manifest: &TaskManifest) -> BatchPolicy {
+    let defaults = BatchPolicy::default();
+    BatchPolicy {
+        size: manifest.batch_size.unwrap_or(defaults.size),
+        max_wait: manifest.max_wait_ms.map(Duration::from_millis),
+        slots: manifest.batch_slots.unwrap_or(defaults.slots),
     }
 }
 

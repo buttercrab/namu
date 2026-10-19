@@ -2,9 +2,11 @@
 //! by all calls; instances are pooled. A trap or panic only fails that call and that instance.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use namu_engine::tasks::{BatchSession, Finished, StreamItem, TaskStream};
+use namu_engine::tasks::{
+    BatchSession, BatchTask, CallTask, Finished, StreamItem, StreamTask, TaskStream,
+};
 use serde_json::Value;
 use wasmtime::component::{Component, InstancePre, Linker, ResourceAny, ResourceTable, TypedFunc};
 use wasmtime::{Engine, Store};
@@ -66,10 +68,10 @@ impl WasmTask {
             .map_err(|err| anyhow::anyhow!("component does not export `call`: {err:?}"))?;
         Ok(Instance { store, func })
     }
+}
 
-    /// Calls the task. The outer error is an infrastructure failure (trap, bad artifact); the
-    /// inner one is the task's own error.
-    pub fn call(&self, input: &str) -> anyhow::Result<Result<String, String>> {
+impl CallTask for WasmTask {
+    fn call(&self, input: Value) -> anyhow::Result<Result<Value, String>> {
         let pooled = self.idle.lock().unwrap().pop();
         let mut instance = match pooled {
             Some(instance) => instance,
@@ -80,7 +82,7 @@ impl WasmTask {
             .func
             .call(&mut instance.store, (input.to_string(),))?;
         self.idle.lock().unwrap().push(instance);
-        Ok(result)
+        super::output(result)
     }
 }
 
@@ -110,17 +112,22 @@ impl WasmStreamTask {
             pre,
         })
     }
+}
 
-    /// Opens the stream. The outer error is an infrastructure failure; the inner one is the
-    /// task's own error.
-    pub fn open(&self, input: &str) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+impl StreamTask for WasmStreamTask {
+    fn open(
+        self: Arc<Self>,
+        input: Value,
+        _cursor: Option<String>,
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
         let host = Host {
             wasi: WasiCtx::builder().inherit_stderr().build(),
             table: ResourceTable::new(),
         };
         let mut store = Store::new(&self.engine, host);
         let instance = self.pre.instantiate(&mut store)?;
-        let items = match instance.namu_task_source().call_open(&mut store, input)? {
+        let input = input.to_string();
+        let items = match instance.namu_task_source().call_open(&mut store, &input)? {
             Ok(items) => items,
             Err(message) => return Ok(Err(message)),
         };
@@ -191,8 +198,10 @@ impl WasmBatchTask {
             pre,
         })
     }
+}
 
-    pub fn open(&self) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
+impl BatchTask for WasmBatchTask {
+    fn open(self: Arc<Self>) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
         let host = Host {
             wasi: WasiCtx::builder().inherit_stderr().build(),
             table: ResourceTable::new(),

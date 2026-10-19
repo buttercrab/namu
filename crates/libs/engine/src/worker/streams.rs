@@ -23,7 +23,7 @@ use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
 use crate::scope::{Continuation, Position, Scope, Source, Then};
-use crate::tasks::{TaskRef, TaskStream, pack_input};
+use crate::tasks::{Kind, Stream, StreamTask, Task, TaskStream, pack_input};
 use crate::tree::Node;
 
 impl Inner {
@@ -35,6 +35,7 @@ impl Inner {
         at: &Driving,
         call: OpId,
         fan_out: OpId,
+        stream: Stream,
     ) {
         let branch = &at.branch;
         let scope = self.ids.next();
@@ -70,7 +71,7 @@ impl Inner {
             continuation,
             ctx: at.ctx.clone(),
         };
-        self.feed_scope(run, scope, Scope::new(then, None), source, trail);
+        self.feed_scope(run, scope, Scope::new(then, None), source, stream, trail);
     }
 
     /// Gives `scope` (which may have ended branches already, after recovery) the credits it has
@@ -82,19 +83,15 @@ impl Inner {
         id: ScopeId,
         scope: Scope,
         source: Source,
+        stream: Stream,
         trail: Vec<Arc<Node>>,
     ) {
         let Then::Continue { continuation, .. } = &scope.then else {
             unreachable!("a stream feeds a fan-out scope")
         };
-        let task = run
-            .spec
-            .task(source.call)
-            .expect("a stream source is a call")
-            .clone();
         let in_flight = source.position.yielded - scope.ended();
-        let window = self.tasks.window(&task);
-        let credits = Arc::new(Semaphore::new(window.saturating_sub(in_flight as usize)));
+        let credits = stream.window.saturating_sub(in_flight as usize);
+        let credits = Arc::new(Semaphore::new(credits));
         let inner: Arc<[ScopeId]> = continuation.scopes.iter().copied().chain([id]).collect();
         run.open_scope(id, scope.with_credits(credits.clone()));
 
@@ -106,6 +103,7 @@ impl Inner {
                 trail,
                 inner,
                 source: &source,
+                stream: stream.task,
                 credits: &credits,
             };
             let failure = worker.feed(&run, &feeding, &mut position).await.err();
@@ -179,7 +177,6 @@ impl Inner {
         feeding: &Feeding<'_>,
         position: &Position,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        let task = run.spec.task(feeding.source.call).context("not a call")?;
         let call = kernel::operation(run.spec.workflow(), feeding.source.call)?
             .call
             .as_ref()
@@ -193,7 +190,8 @@ impl Inner {
             Some((cursor, at)) => (Some(cursor.clone()), *at),
             None => (None, 0),
         };
-        let mut stream = match run_task(|| self.tasks.open(task, pack_input(args), cursor))? {
+        let task = feeding.stream.clone();
+        let mut stream = match run_task(|| task.open(pack_input(args), cursor))? {
             Ok(stream) => stream,
             Err(message) => return Ok(Err(message)),
         };
@@ -264,12 +262,13 @@ impl Inner {
     /// Runs a stream task whose output is not just fanned out, reading it to its end into a list.
     pub(super) async fn read_stream(
         &self,
-        task: &TaskRef,
+        stream: &Stream,
         input: Value,
     ) -> anyhow::Result<Result<Value, String>> {
         let _slot = self.task_slots.acquire().await?;
+        let task = stream.task.clone();
         run_task(|| {
-            let mut stream = match self.tasks.open(task, input, None)? {
+            let mut stream = match task.open(input, None)? {
                 Ok(stream) => stream,
                 Err(message) => return Ok(Err(message)),
             };
@@ -305,14 +304,18 @@ impl Inner {
             .spec
             .task(source.call)
             .expect("a stream source is a call");
-        if self.tasks.serves(task) {
+        if let Some(Task {
+            kind: Kind::Stream(stream),
+            ..
+        }) = self.tasks.task(task)
+        {
             let yielded = source.position.yielded;
             tracing::info!(task = task.id, yielded, "resuming a stream");
             let Then::Continue { ctx, .. } = &scope.then else {
                 unreachable!("a stream feeds a fan-out scope")
             };
             let trail = vec![ctx.clone()];
-            return self.feed_scope(run, id, scope, source, trail);
+            return self.feed_scope(run, id, scope, source, stream, trail);
         }
         tracing::info!(task = task.id, "restarting a stream where it is served");
         let Then::Continue { continuation, ctx } = scope.then else {
@@ -349,6 +352,7 @@ struct Feeding<'a> {
     /// The scopes items are in, innermost (this one) last.
     inner: Arc<[ScopeId]>,
     source: &'a Source,
+    stream: Arc<dyn StreamTask>,
     credits: &'a Semaphore,
 }
 
