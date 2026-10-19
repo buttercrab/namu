@@ -68,6 +68,13 @@ pub enum Terminator {
     Return {
         value: Option<ValueId>,
     },
+    /// Ends a block whose last instruction is a call: to `ok` if the task succeeds, else to `err`
+    /// with its error message bound to `error`.
+    Catch {
+        ok: BlockId,
+        err: BlockId,
+        error: ValueId,
+    },
 }
 
 impl Terminator {

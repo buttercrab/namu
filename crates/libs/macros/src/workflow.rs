@@ -7,7 +7,7 @@ use quote::{format_ident, quote};
 use syn::punctuated::Punctuated;
 use syn::visit_mut::{self, VisitMut};
 use syn::{
-    Block, Expr, ExprIf, Ident, ItemFn, Pat, ReturnType, Stmt, Token, parse_macro_input,
+    Block, Expr, ExprIf, ExprMatch, Ident, ItemFn, Pat, ReturnType, Stmt, Token, parse_macro_input,
     parse_quote,
 };
 
@@ -83,6 +83,14 @@ impl VisitMut for WorkflowVisitor {
     fn visit_expr_mut(&mut self, i: &mut Expr) {
         match i {
             Expr::Call(call_expr) => {
+                if matches!(&*call_expr.func, Expr::Path(func) if func.path.is_ident("attempt")) {
+                    let call_expr = call_expr.clone();
+                    self.fail(
+                        &call_expr,
+                        "an attempt is matched on: `match attempt(task(..)) { Ok(..) => .., Err(..) => .. }`",
+                    );
+                    return;
+                }
                 for arg in call_expr.args.iter_mut() {
                     self.visit_expr_mut(arg);
                 }
@@ -104,6 +112,9 @@ impl VisitMut for WorkflowVisitor {
             }
             Expr::If(if_expr) => {
                 *i = self.handle_if(if_expr);
+            }
+            Expr::Match(match_expr) => {
+                *i = self.handle_match(match_expr);
             }
             Expr::While(while_expr) => {
                 *i = self.handle_while(while_expr);
@@ -241,23 +252,101 @@ impl WorkflowVisitor {
     fn handle_if(&mut self, if_expr: &mut ExprIf) -> Expr {
         let builder = self.builder_ident.clone();
         let id = self.new_control_flow_id();
-
-        let vars = self.list_vars();
+        let (then_block, else_block, merge_block) = two_way_blocks(id);
 
         self.visit_expr_mut(&mut if_expr.cond);
         let cond = &if_expr.cond;
+        let false_target = if if_expr.else_branch.is_some() {
+            else_block
+        } else {
+            merge_block
+        };
+        let evaluate = quote! { let __if_condition = #cond; };
+        let seal = quote! {
+            ::namu::__macro_exports::branch(&#builder, __if_condition, #then_block, #false_target);
+        };
+        let else_expr = if_expr.else_branch.as_mut().map(|(_, expr)| &mut **expr);
+        self.two_way(id, [evaluate, seal], &mut if_expr.then_branch, else_expr)
+    }
+
+    /// `match attempt(task(..)) { Ok(v) => .., Err(e) => .. }`: the call gets an error edge
+    /// (design §4.4). `v` is bound to its outputs where it succeeded, `e` to its error message
+    /// where it failed.
+    fn handle_match(&mut self, match_expr: &mut ExprMatch) -> Expr {
+        const USAGE: &str =
+            "only `match attempt(task(..)) { Ok(..) => .., Err(..) => .. }` is supported";
+        let Some(call) = attempted(&match_expr.expr) else {
+            self.fail(&match_expr.expr, USAGE);
+            return Expr::Match(match_expr.clone());
+        };
+        let mut call = call.clone();
+        let (mut ok, mut err) = (None, None);
+        for arm in &match_expr.arms {
+            let Some((variant, pat)) = result_arm(&arm.pat) else {
+                self.fail(&arm.pat, USAGE);
+                return Expr::Match(match_expr.clone());
+            };
+            let slot = if variant == "Ok" { &mut ok } else { &mut err };
+            if slot.replace((pat.clone(), arm.body.clone())).is_some() {
+                self.fail(&arm.pat, "each of `Ok` and `Err` takes one arm");
+                return Expr::Match(match_expr.clone());
+            }
+        }
+        let (Some((ok_pat, ok_body)), Some((err_pat, err_body))) = (ok, err) else {
+            self.fail(&match_expr, "an attempt needs an `Ok` arm and an `Err` arm");
+            return Expr::Match(match_expr.clone());
+        };
+
+        let builder = self.builder_ident.clone();
+        let id = self.new_control_flow_id();
+        let (then_block, else_block, _) = two_way_blocks(id);
+        let value = format_ident!("__attempt_value_{}", id);
+        let error = format_ident!("__attempt_error_{}", id);
+
+        self.visit_expr_mut(&mut call);
+        let evaluate = quote! { let #value = #call; };
+        let seal = quote! {
+            let #error = ::namu::__macro_exports::catch(&#builder, #then_block, #else_block);
+        };
+        let bind = |pat: &Pat, from: &Ident, body: &Expr| -> Block {
+            match pat {
+                Pat::Wild(_) => parse_quote!({ #body }),
+                _ => parse_quote!({ let #pat = #from; #body }),
+            }
+        };
+        let mut ok_block = bind(&ok_pat, &value, &ok_body);
+        let mut err_expr = Expr::Block(syn::ExprBlock {
+            attrs: Vec::new(),
+            label: None,
+            block: bind(&err_pat, &error, &err_body),
+        });
+        self.two_way(id, [evaluate, seal], &mut ok_block, Some(&mut err_expr))
+    }
+
+    /// Lowers a two-way split: `evaluate` (already visited) computes what decides it, which may
+    /// itself add blocks, and `seal` ends the block that leaves towards the blocks of
+    /// [`two_way_blocks`]; then `then` runs, or `else_expr` (or nothing), and both meet in the
+    /// merge block, where every variable and the value of the whole gets a phi.
+    fn two_way(
+        &mut self,
+        id: usize,
+        [evaluate, seal]: [proc_macro2::TokenStream; 2],
+        then: &mut Block,
+        else_expr: Option<&mut Expr>,
+    ) -> Expr {
+        let builder = self.builder_ident.clone();
+        let vars = self.list_vars();
+        let (then_block_id, else_block_id, merge_block_id) = two_way_blocks(id);
 
         let pre_if_captures = vars.iter().map(|name| {
             let pre_if_name = format_ident!("__pre_if_{}_{}", name, id);
             quote! { let #pre_if_name = #name; }
         });
 
-        let then_block_id = format_ident!("__if_then_block_{}", id);
-        let merge_block_id = format_ident!("__if_merge_block_{}", id);
         let parent_predecessor_id = format_ident!("__if_parent_predecessor_{}", id);
 
-        self.visit_block_mut(&mut if_expr.then_branch);
-        let then_branch_body = &if_expr.then_branch;
+        self.visit_block_mut(then);
+        let then_branch_body = &*then;
         let then_has_value = self.last_expr_has_value;
 
         let then_post_captures = vars.iter().map(|name| {
@@ -265,62 +354,62 @@ impl WorkflowVisitor {
             quote! { let #post_then_name = #name; }
         });
 
-        let (else_block_setup, else_block_impl, false_target, phi) =
-            if let Some((_, else_expr)) = &mut if_expr.else_branch {
-                let else_block_id = format_ident!("__if_else_block_{}", id);
+        let has_else = else_expr.is_some();
+        let (else_block_setup, else_block_impl, phi) = if let Some(else_expr) = else_expr {
+            let else_resets = vars.iter().map(|name| {
+                let pre_if_name = format_ident!("__pre_if_{}_{}", name, id);
+                quote! { #name = #pre_if_name; }
+            });
 
-                let else_resets = vars.iter().map(|name| {
-                    let pre_if_name = format_ident!("__pre_if_{}_{}", name, id);
-                    quote! { #name = #pre_if_name; }
-                });
+            self.visit_expr_mut(else_expr);
+            let else_has_value = self.last_expr_has_value;
 
-                self.visit_expr_mut(else_expr);
-                let else_has_value = self.last_expr_has_value;
+            let else_post_captures = vars.iter().map(|name| {
+                let post_else_name = format_ident!("__post_else_{}_{}", name, id);
+                quote! { let #post_else_name = #name; }
+            });
 
-                let else_post_captures = vars.iter().map(|name| {
-                    let post_else_name = format_ident!("__post_else_{}_{}", name, id);
-                    quote! { let #post_else_name = #name; }
-                });
-
-                let setup = quote! { let #else_block_id = #builder.new_block(); };
-                let else_predecessor_id = format_ident!("__else_predecessor_id_{}", id);
-                let implementation = quote! {
-                    #builder.switch_to_block(#else_block_id);
-                    let __else_val = {
-                        #(#else_resets)*
-                        #else_expr
-                    };
-                    #(#else_post_captures)*
-                    let #else_predecessor_id = #builder.current_block_id();
-                    ::namu::__macro_exports::jump(&#builder, #merge_block_id);
+            let setup = quote! { let #else_block_id = #builder.new_block(); };
+            let else_predecessor_id = format_ident!("__else_predecessor_id_{}", id);
+            let implementation = quote! {
+                #builder.switch_to_block(#else_block_id);
+                let __else_val = {
+                    #(#else_resets)*
+                    #else_expr
                 };
-
-                let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
-                let phi = if then_has_value && else_has_value {
-                    Some(quote! {
-                         ::namu::__macro_exports::phi(
-                            &#builder,
-                            vec![
-                                (#then_predecessor_id, __then_val),
-                                (#else_predecessor_id, __else_val)
-                            ]
-                        )
-                    })
-                } else {
-                    None
-                };
-
-                (Some(setup), Some(implementation), else_block_id, phi)
-            } else {
-                (None, None, merge_block_id.clone(), None)
+                #(#else_post_captures)*
+                let #else_predecessor_id = #builder.current_block_id();
+                ::namu::__macro_exports::jump(&#builder, #merge_block_id);
             };
+
+            let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
+            let phi = if then_has_value && else_has_value {
+                Some(quote! {
+                     ::namu::__macro_exports::phi(
+                        &#builder,
+                        vec![
+                            (#then_predecessor_id, __then_val),
+                            (#else_predecessor_id, __else_val)
+                        ]
+                    )
+                })
+            } else {
+                None
+            };
+            self.last_expr_has_value = phi.is_some();
+
+            (Some(setup), Some(implementation), phi)
+        } else {
+            self.last_expr_has_value = false;
+            (None, None, None)
+        };
 
         let merge_phis = vars.iter().map(|name| {
             let pre_if_name = format_ident!("__pre_if_{}_{}", name, id);
             let post_then_name = format_ident!("__post_then_{}_{}", name, id);
             let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
 
-            let phi_inputs = if if_expr.else_branch.is_some() {
+            let phi_inputs = if has_else {
                 let post_else_name = format_ident!("__post_else_{}_{}", name, id);
                 let else_predecessor_id = format_ident!("__else_predecessor_id_{}", id);
                 quote! { vec![(#then_predecessor_id, #post_then_name), (#else_predecessor_id, #post_else_name)] }
@@ -333,7 +422,6 @@ impl WorkflowVisitor {
             }
         });
 
-        // --- 8. Assemble the final expression ---
         let then_predecessor_id = format_ident!("__then_predecessor_id_{}", id);
         parse_quote! {
             {
@@ -343,9 +431,9 @@ impl WorkflowVisitor {
                 let #then_block_id = #builder.new_block();
                 #else_block_setup
 
-                let __if_condition = #cond;
+                #evaluate
                 let #parent_predecessor_id = #builder.current_block_id();
-                ::namu::__macro_exports::branch(&#builder, __if_condition, #then_block_id, #false_target);
+                #seal
 
                 #builder.switch_to_block(#then_block_id);
                 let __then_val = #then_branch_body;
@@ -456,6 +544,44 @@ impl WorkflowVisitor {
                 #(#exit_phis)*
             }
         }
+    }
+}
+
+/// The blocks of a two-way split: then, else, and where they meet.
+fn two_way_blocks(id: usize) -> (Ident, Ident, Ident) {
+    (
+        format_ident!("__if_then_block_{}", id),
+        format_ident!("__if_else_block_{}", id),
+        format_ident!("__if_merge_block_{}", id),
+    )
+}
+
+/// The call in `attempt(call)`.
+fn attempted(expr: &Expr) -> Option<&Expr> {
+    let Expr::Call(outer) = expr else {
+        return None;
+    };
+    let Expr::Path(func) = &*outer.func else {
+        return None;
+    };
+    if !func.path.is_ident("attempt") || outer.args.len() != 1 {
+        return None;
+    }
+    let call = &outer.args[0];
+    matches!(call, Expr::Call(_)).then_some(call)
+}
+
+/// `Ok(pat)` or `Err(pat)`: the variant and the pattern inside.
+fn result_arm(pat: &Pat) -> Option<(&'static str, &Pat)> {
+    let Pat::TupleStruct(pat) = pat else {
+        return None;
+    };
+    let variant = ["Ok", "Err"]
+        .into_iter()
+        .find(|variant| pat.path.is_ident(variant))?;
+    match pat.elems.len() {
+        1 => Some((variant, &pat.elems[0])),
+        _ => None,
     }
 }
 

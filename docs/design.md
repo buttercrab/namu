@@ -77,9 +77,17 @@ Anything else is a compile error with a message that says "move this into a task
 
 ### 4.4 Errors
 
-A task call yields a result the workflow can inspect (e.g. `if failed(x) { ... }` or `match`).
-Retries, fallbacks and dead-letter handling are written in the DSL. An error nobody handles ends
-that branch only; sibling branches continue.
+A task call that fails ends its branch only; sibling branches continue. A workflow that wants to
+handle the failure attempts the call: `match attempt(task(x)) { Ok(v) => .., Err(e) => .. }`,
+where `e` is the task's error message. Retries, fallbacks and dead-letter handling are written in
+the DSL with it.
+
+In the IR an attempted call has an **error edge** (LLVM's `invoke`): on failure its outputs are
+not defined, the error is bound instead, and control goes to the handler. So an error is an
+ordinary value on an ordinary edge: liveness, scopes and recovery see one more successor, not a
+new kind of value, and a call that is not attempted costs nothing extra. An attempted call does
+not run in a parallel group or feed a fused stream, since where control goes depends on how it
+ends.
 
 Infrastructure failures (worker crash, network loss) are invisible to the DSL. The engine handles
 them (§7).
@@ -630,7 +638,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |
-| Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
+| Errors in DSL | ✅ `match attempt(task(..)) { Ok(..) => .., Err(e) => .. }`: the call gets an error edge in the IR (§4.4); a failure nobody attempts drops the branch and is recorded in run failures | Typed errors: a task's own error type, not only its message |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
 | Distributed path | ✅ Peer-to-peer TCP mesh with a reliable session per pair of workers (sequence numbers, replay on reconnect); the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
 | Routing | ✅ To the least loaded worker that can take it, per task slot: each worker reports the branches it drives on the acknowledgements it sends, and a sender counts what it sent since. A worker that has not reported counts as idle; a branch waits for a server to join | Locality (holders of a context's nodes); packing batch items into one worker's batch; work stealing (§10.3) |

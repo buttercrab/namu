@@ -13,6 +13,10 @@ A workflow is a list of **operations**. Each operation does, in order:
    `Collect` (gather one value from every branch of the innermost fan-out).
 4. **Next**: `Jump`, `Branch` on a bool, or `Return`.
 
+A `Call` may have an error edge, `catch: { "error": e, "next": op }`, as LLVM's `invoke` does: if
+the task fails, its outputs are not defined; its error message is bound to `e` and control goes to
+`op` instead of `next`. Without one, a failure fails the branch. `match attempt(..)` emits it.
+
 Values are SSA ids: each is produced once.
 
 ## Example

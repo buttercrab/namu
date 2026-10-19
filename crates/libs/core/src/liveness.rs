@@ -41,7 +41,7 @@ pub fn liveness(workflow: &Workflow) -> Liveness {
         for id in (0..ops.len()).rev() {
             let op = &ops[id];
             let mut out = Set::new();
-            for next in op.next.successors() {
+            for next in op.successors() {
                 let succ = &ops[next];
                 let entered = entry_defs(succ);
                 out.extend(live_in[next].iter().filter(|v| !entered.contains(v)));
@@ -127,23 +127,26 @@ fn entry_defs(op: &Operation) -> Set {
         .collect()
 }
 
+/// What the action defines: its outputs, and a call's error on its error edge.
 fn action_defs(op: &Operation) -> Set {
     op.action
         .iter()
         .flat_map(|action| action.outputs().iter().copied())
+        .chain(op.catch().map(|catch| catch.error))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Action, Call, Literal, Phi};
+    use crate::ir::{Action, Call, Catch, Literal, Phi};
 
     fn call(task: &str, inputs: Vec<ValueId>, output: ValueId) -> Option<Action> {
         Some(Action::Call(Call {
             task_id: task.to_string(),
             inputs,
             outputs: vec![output],
+            catch: None,
         }))
     }
 
@@ -198,5 +201,32 @@ mod tests {
         assert_eq!(live.after_action(3), [2]);
         // After `cond`, its result is read by the branch.
         assert_eq!(live.after_action(1), [0, 2, 3]);
+    }
+
+    #[test]
+    fn an_error_edge_keeps_what_the_handler_reads() {
+        // `match attempt(t(a)) { Ok(v) => v, Err(e) => u(a, e) }`, with `a` = 0.
+        let mut attempted = call("t", vec![0], 1);
+        if let Some(Action::Call(call)) = &mut attempted {
+            call.catch = Some(Catch { error: 2, next: 2 });
+        }
+        let workflow = Workflow::new(
+            "attempt".into(),
+            vec![
+                Operation::new(Vec::new(), Vec::new(), attempted, Next::jump(1)),
+                Operation::new(Vec::new(), Vec::new(), None, Next::return_value(1)),
+                Operation::new(
+                    Vec::new(),
+                    Vec::new(),
+                    call("u", vec![0, 2], 3),
+                    Next::return_value(3),
+                ),
+            ],
+        );
+        let live = liveness(&workflow);
+        // The handler reads `a`, so it outlives the call; the error is defined by the call.
+        assert_eq!(live.after_enter(0), [0]);
+        assert_eq!(live.after_action(0), [0, 1, 2]);
+        assert_eq!(live.after_enter(2), [0, 2]);
     }
 }

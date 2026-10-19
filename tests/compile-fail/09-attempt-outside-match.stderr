@@ -1,0 +1,5 @@
+error: an attempt is matched on: `match attempt(task(..)) { Ok(..) => .., Err(..) => .. }`
+ --> tests/compile-fail/09-attempt-outside-match.rs:9:13
+  |
+9 |     let r = attempt(check(x));
+  |             ^^^^^^^^^^^^^^^^^

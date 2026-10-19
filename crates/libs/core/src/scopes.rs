@@ -47,7 +47,7 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
                 _ => collect_of[fan_out] = Some(op_id),
             }
         }
-        for next in op.next.successors() {
+        for next in op.successors() {
             ensure!(next < ops.len(), "op {op_id} jumps to missing op {next}");
             match &entry[next] {
                 None => {
@@ -66,7 +66,8 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
 
 /// For every operation that calls a task, the fan-out right after it if that fan-out is the only
 /// use of the call's output. A stream task called there can feed the fan-out item by item,
-/// without its output ever existing as a whole list.
+/// without its output ever existing as a whole list. A call with an error edge is not fused: its
+/// failure must be caught before anything continues.
 pub fn fused_fan_outs(workflow: &Workflow) -> Vec<Option<OpId>> {
     let ops = &workflow.operations;
     let mut uses: HashMap<ValueId, usize> = HashMap::new();
@@ -86,7 +87,8 @@ pub fn fused_fan_outs(workflow: &Workflow) -> Vec<Option<OpId>> {
     }
     ops.iter()
         .map(|op| {
-            let [output] = op.call()?.outputs[..] else {
+            let call = op.call().filter(|call| call.catch.is_none())?;
+            let [output] = call.outputs[..] else {
                 return None;
             };
             let Next::Jump { next } = op.next else {
@@ -178,6 +180,7 @@ mod tests {
                 task_id: "t".to_string(),
                 inputs: Vec::new(),
                 outputs: vec![output],
+                catch: None,
             })),
             next,
         )

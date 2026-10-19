@@ -135,18 +135,30 @@ impl Inner {
                         at.branch.resume = Resume::Kernel(Start::After { op: last });
                         continue;
                     }
-                    let next = match self
+                    match self
                         .run_call(&view, task_ref, &task, op, call, &at.ctx)
                         .await?
                     {
-                        Ok(next) => next,
-                        Err(failure) => {
+                        Ok(next) => {
+                            at.set_ctx(next);
+                            at.branch.resume = Resume::Kernel(Start::After { op });
+                        }
+                        // An attempted call: its error is a value, and control takes the error
+                        // edge.
+                        Err(message) if let Some(catch) = &call.catch => {
+                            let error = (catch.error, Value::new(message));
+                            at.set_ctx(view.put(&at.ctx, vec![error], Point::Action(op)).await?);
+                            at.branch.resume = Resume::Kernel(Start::At {
+                                op: catch.next,
+                                pred: Some(op),
+                            });
+                        }
+                        Err(message) => {
+                            let failure = format!("{}: {message}", task_ref.id);
                             self.report(run, &at.branch, Report::Failure(failure));
                             return Ok(());
                         }
-                    };
-                    at.set_ctx(next);
-                    at.branch.resume = Resume::Kernel(Start::After { op });
+                    }
                     if task.checkpoint {
                         self.checkpoint(run, at).await?;
                     }
@@ -178,7 +190,7 @@ impl Inner {
     }
 
     /// Runs a task call here and stores its outputs in a new node under `ctx`. `Ok(Err(_))` is
-    /// the task's own failure.
+    /// the task's own failure, with its message.
     async fn run_call(
         self: &Arc<Self>,
         view: &View<'_>,
@@ -193,7 +205,7 @@ impl Inner {
         view.run.calls.fetch_add(1, Ordering::Relaxed);
         match output {
             Ok(output) => Ok(Ok(store(view, op, call, task_ref, ctx, output).await?)),
-            Err(message) => Ok(Err(format!("{}: {message}", task_ref.id))),
+            Err(message) => Ok(Err(message)),
         }
     }
 
