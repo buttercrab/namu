@@ -7,9 +7,11 @@ license = "MIT"
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 namu-core = { path = "../core", version = "0.1.0" }
 serde = { workspace = true, features = ["rc"] }
 rmp-serde = { workspace = true }
+serde_bytes = "0.11"
 serde_json = { workspace = true }
 serde-transcode = "1.1"
 tokio = { workspace = true }

@@ -114,8 +114,7 @@ How to read these:
 2. **The log keeps a run's branch ends, reports and trail nodes until the run ends.** Workers'
    memory stays flat (nodes are freed), but the log of a run lasting weeks grows; it needs
    compaction.
-3. **Large values travel inline** in messages; there is no object-store path for them yet, and a
-   live value is encoded again each time its node is sent.
+3. **Large values travel inline** in messages; there is no object-store path for them yet.
 4. **Routing is round robin** among the workers that serve a task; load and locality are not
    considered yet (stream credits are local to the source; there is no load feedback).
 5. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated

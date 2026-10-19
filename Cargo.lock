@@ -1620,10 +1620,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "namu-core",
  "rmp-serde",
  "serde",
  "serde-transcode",
+ "serde_bytes",
  "serde_json",
  "tokio",
  "tracing",
