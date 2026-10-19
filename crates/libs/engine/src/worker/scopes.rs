@@ -14,7 +14,7 @@ use crate::kernel::Start;
 use crate::log::{EndRecord, Record, ReportRecord};
 use crate::message::{Branch, BranchId, Message, Report, Resume};
 use crate::run::{RunOutcome, WorkerStats};
-use crate::scope::{Continuation, Ended, Finish, Scope, Then, Weight};
+use crate::scope::{Continuation, Ended, Finish, Scope, Then};
 use crate::tree::Node;
 
 /// How long the owner of a finished run waits for every worker to confirm it forgot the run.
@@ -31,15 +31,14 @@ impl Inner {
     pub(super) fn on_end(self: &Arc<Self>, message: Message) {
         let Message::End {
             run,
-            scope: scope_id,
             branch,
-            weight,
             item,
             delivery,
         } = &message
         else {
             unreachable!()
         };
+        let scope_id = &branch.scope;
         let Some(state) = self.run_state(*run) else {
             return self.orphan(message);
         };
@@ -47,11 +46,11 @@ impl Inner {
             let mut scopes = state.scopes.lock().unwrap();
             let Some(scope) = scopes.get_mut(scope_id) else {
                 drop(scopes);
-                return self.unknown_scope(&state, *scope_id, message);
+                return self.unknown_scope(*scope_id, message);
             };
-            let ended = scope.end(*branch, *weight, item.clone());
+            let ended = scope.end(branch.index, item.clone());
             if ended != Ended::Again {
-                Self::free_credit(scope, *branch);
+                Self::free_credit(scope);
             }
             match ended {
                 Ended::Again => {
@@ -63,8 +62,7 @@ impl Inner {
             }
         };
         let end = EndRecord {
-            branch: *branch,
-            weight: *weight,
+            index: branch.index,
             item: item.clone(),
         };
         let durable = self.log.append(vec![Record::End {
@@ -80,23 +78,51 @@ impl Inner {
 
     /// A branch ended in a scope this worker does not hold. The scope is over (and the end a
     /// duplicate), or it belongs to a dead worker this worker is taking over.
-    fn unknown_scope(self: &Arc<Self>, run: &Run, scope: ScopeId, message: Message) {
-        if run.finished.lock().unwrap().contains(&scope) {
-            return self.drop_late(message);
+    fn unknown_scope(self: &Arc<Self>, scope: ScopeId, message: Message) {
+        match self.is_over(scope) {
+            true => self.drop_late(message),
+            false => self.orphan(message),
         }
-        self.orphan(message);
+    }
+
+    /// Whether `scope`, which is not open here, is over. A scope is opened before any of its
+    /// branches exist, so one this worker minted, or took over from a dead worker, and does not
+    /// hold any more is over.
+    pub(super) fn is_over(&self, scope: ScopeId) -> bool {
+        let owner = owner(scope);
+        (owner == self.id && scope < self.ids.peek())
+            || self.adopted.lock().unwrap().contains(&owner)
     }
 
     pub(super) fn scope_over(self: &Arc<Self>, run: &Arc<Run>, id: ScopeId, scope: Scope) {
         match scope.into_parts() {
-            (_, Then::Finish(finish)) => {
-                run.close_scope(id);
-                self.finish(run, *finish);
-            }
+            (_, Then::Finish(finish)) => self.finish(run, *finish),
             (items, Then::Continue { continuation, ctx }) => {
-                run.close_scope(id);
                 self.resume(run, id, continuation, ctx, items);
             }
+        }
+    }
+
+    /// The stream feeding scope `id` has ended: the scope has `count` branches.
+    pub(super) fn close(self: &Arc<Self>, run: &Arc<Run>, id: ScopeId, count: u64) {
+        let over = {
+            let mut scopes = run.scopes.lock().unwrap();
+            let Some(scope) = scopes.get_mut(&id) else {
+                // Abandoned, after its source restarted elsewhere.
+                return;
+            };
+            match scope.close(count) {
+                Ended::Over => scopes.remove(&id),
+                _ => None,
+            }
+        };
+        self.log.record(vec![Record::Closed {
+            run: run.id(),
+            scope: id,
+            count,
+        }]);
+        if let Some(scope) = over {
+            self.scope_over(run, id, scope);
         }
     }
 
@@ -112,16 +138,12 @@ impl Inner {
         let Continuation {
             branch,
             hop,
-            weight,
             scopes,
             collect,
             ..
         } = continuation;
         let Some(op) = collect else {
             // Nothing collects this scope: the branch that opened it is done.
-            let outer = *scopes
-                .last()
-                .expect("a continuation is inside the root scope");
             let release = Release::new(
                 1,
                 Record::ScopeGone {
@@ -129,7 +151,7 @@ impl Inner {
                     scope: id,
                 },
             );
-            return self.return_weight(run, outer, branch, weight, Some(release));
+            return self.send_end(run, branch, None, Some(release));
         };
         let output = run.spec.workflow().operations[op]
             .collect
@@ -143,7 +165,6 @@ impl Inner {
             hop: hop + 1,
             ctx: node.id(),
             resume: Resume::Kernel(Start::After { op }),
-            weight,
             scopes,
         };
         // The continuing branch replaces the scope in the log.
@@ -165,24 +186,21 @@ impl Inner {
         self.spawn_drive(run.clone(), branch, node);
     }
 
-    /// Returns a branch's weight to `scope`.
-    pub(super) fn return_weight(
+    /// Ends `branch` in its scope, with its item if it reached the collect.
+    pub(super) fn send_end(
         self: &Arc<Self>,
         run: &Run,
-        scope: ScopeId,
         branch: BranchId,
-        weight: Weight,
+        item: Option<Value>,
         release: Option<Arc<Release>>,
     ) {
         let run = run.id();
         self.send_kept(
-            owner(scope),
+            owner(branch.scope),
             |delivery| Message::End {
                 run,
-                scope,
                 branch,
-                weight,
-                item: None,
+                item,
                 delivery,
             },
             release,
@@ -192,9 +210,7 @@ impl Inner {
     pub(super) fn on_report(self: &Arc<Self>, message: Message) {
         let Message::Report {
             run,
-            scope,
             branch,
-            weight,
             report,
             delivery,
         } = &message
@@ -219,22 +235,19 @@ impl Inner {
         }
         let record = ReportRecord {
             branch: *branch,
-            scope: *scope,
-            weight: *weight,
             report: report.clone(),
         };
         let durable = self.log.append(vec![Record::Report {
             run: *run,
             report: record,
         }]);
-        let (worker, delivery, scope, branch, weight) =
-            (self.clone(), *delivery, *scope, *branch, *weight);
+        let (worker, delivery, branch) = (self.clone(), *delivery, *branch);
         tokio::spawn(async move {
             if durable.await.is_ok() {
                 worker.ack(delivery);
-                // Recorded: the branch's weight can now let its scope, and the run, end. Until
-                // its end is acknowledged, the report in the log stands for it.
-                worker.return_weight(&state, scope, branch, weight, None);
+                // Recorded: the branch can now end in its scope, and let the run end. Until its
+                // end is acknowledged, the report in the log stands for it.
+                worker.send_end(&state, branch, None, None);
             }
         });
     }

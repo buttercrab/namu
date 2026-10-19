@@ -1,15 +1,15 @@
-//! Fan-out scopes and how they end: weight throwing.
+//! Fan-out scopes and how they end: by counting.
 //!
-//! A scope starts with [`FULL`] weight, split among its branches when they are created. Weight is
-//! conserved: a branch passes its weight along with its work, and returns it to the scope's owner
-//! when it ends, together with its collected item if it reached the collect. The scope is over
-//! once the owner holds the full weight again. Creating branches never needs a message to the
-//! owner, so no message ordering between workers can make a scope end early.
+//! Every branch of a scope is created by the scope's owner: one per item when it fans out, or one
+//! per item its stream source yields. So the owner knows how many branches the scope has: at once
+//! for a fan-out, and when its source ends for a stream. Branches are numbered from 0, and the
+//! scope is over once every index up to its count has ended. Branch ends travel straight to the
+//! owner, so no message ordering between other workers can make a scope end early.
 //!
-//! Recovery can run a branch twice (design §7). The owner counts each branch once: a second end of
+//! Recovery can run a branch twice (design §7). The owner counts each index once: a second end of
 //! the same branch is dropped.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use namu_core::OpId;
@@ -22,29 +22,13 @@ use crate::message::BranchId;
 use crate::run::RunOutcome;
 use crate::tree::Node;
 
-pub type Weight = u64;
-
-/// The weight of a whole scope. Shares are integers, so accounting is exact; a scope can have up
-/// to this many branches.
-pub const FULL: Weight = 1 << 62;
-
-/// Splits `weight` into `n` positive shares that sum to it exactly.
-pub fn split(weight: Weight, n: usize) -> impl Iterator<Item = Weight> {
-    let n = n as Weight;
-    assert!(
-        0 < n && n <= weight,
-        "cannot split weight {weight} {n} ways"
-    );
-    let (share, rest) = (weight / n, weight % n);
-    (0..n).map(move |i| share + Weight::from(i < rest))
-}
-
 /// A scope, held by its owner.
 pub struct Scope {
-    returned: Weight,
-    /// Collected items, by the branch that brought them.
-    items: HashMap<BranchId, Value>,
-    ended: HashSet<BranchId>,
+    /// How many branches the scope has, once that is known.
+    count: Option<u64>,
+    ended: Indices,
+    /// Collected items, by the index of the branch that brought them.
+    items: BTreeMap<u64, Value>,
     pub then: Then,
     /// For a scope fed by a stream: one per item the source may still put in flight.
     pub credits: Option<Arc<Semaphore>>,
@@ -77,8 +61,6 @@ pub struct Continuation {
     pub hop: u64,
     /// The context it fanned out from.
     pub ctx: NodeId,
-    /// Its weight in the enclosing scope.
-    pub weight: Weight,
     /// The scopes enclosing it, innermost last.
     pub scopes: Arc<[ScopeId]>,
     /// The op that collects this scope, if its branches reach one.
@@ -104,9 +86,6 @@ pub struct Position {
     pub cursor: Option<(String, u64)>,
 }
 
-/// The index of a stream source's own end in its scope: the weight it did not hand to items.
-pub const SOURCE_INDEX: u64 = u64::MAX;
-
 /// How a branch's end changed its scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ended {
@@ -117,11 +96,12 @@ pub enum Ended {
 }
 
 impl Scope {
-    pub fn new(then: Then) -> Self {
+    /// A scope with `count` branches, if that is known yet.
+    pub fn new(then: Then, count: Option<u64>) -> Self {
         Self {
-            returned: 0,
-            items: HashMap::new(),
-            ended: HashSet::new(),
+            count,
+            ended: Indices::default(),
+            items: BTreeMap::new(),
             then,
             credits: None,
         }
@@ -134,49 +114,75 @@ impl Scope {
         }
     }
 
-    /// Branches that ended, apart from a stream source's own end.
-    pub fn ended_items(&self) -> u64 {
-        self.ended
-            .iter()
-            .filter(|branch| branch.index != SOURCE_INDEX)
-            .count() as u64
+    /// How many branches have ended.
+    pub fn ended(&self) -> u64 {
+        self.ended.len()
     }
 
-    /// Takes back a branch's weight and collected item.
-    pub fn end(&mut self, branch: BranchId, weight: Weight, item: Option<Value>) -> Ended {
-        if !self.ended.insert(branch) {
+    /// Branch `index` ended, with its collected item if it reached the collect.
+    pub fn end(&mut self, index: u64, item: Option<Value>) -> Ended {
+        if !self.ended.insert(index) {
             return Ended::Again;
         }
-        self.returned += weight;
-        assert!(self.returned <= FULL, "scope returned more than its weight");
         if let Some(item) = item {
-            self.items.insert(branch, item);
+            self.items.insert(index, item);
         }
-        match self.returned == FULL {
-            true => Ended::Over,
-            false => Ended::Open,
-        }
+        self.state()
     }
 
-    pub fn has_ended(&self, branch: BranchId) -> bool {
-        self.ended.contains(&branch)
+    /// The scope has `count` branches: what its stream source learns when it ends.
+    pub fn close(&mut self, count: u64) -> Ended {
+        self.count = Some(count);
+        self.state()
+    }
+
+    pub fn is_over(&self) -> bool {
+        self.state() == Ended::Over
+    }
+
+    fn state(&self) -> Ended {
+        match self.count {
+            Some(count) if self.ended.len() == count => Ended::Over,
+            _ => Ended::Open,
+        }
     }
 
     /// The collected items, in branch order, and what happens next.
     pub fn into_parts(self) -> (Vec<Value>, Then) {
-        let mut items: Vec<_> = self.items.into_iter().collect();
-        items.sort_unstable_by_key(|(branch, _)| *branch);
-        (items.into_iter().map(|(_, item)| item).collect(), self.then)
+        (self.items.into_values().collect(), self.then)
+    }
+}
+
+/// A set of indices that fill in from 0: every index below `low` is in, and `above` holds the
+/// ones that ended ahead of an earlier one. Its size is how far ends arrive out of order, not how
+/// many there were.
+#[derive(Debug, Default)]
+struct Indices {
+    low: u64,
+    above: BTreeSet<u64>,
+}
+
+impl Indices {
+    /// Adds `index`; false if it was in already.
+    fn insert(&mut self, index: u64) -> bool {
+        if index < self.low || !self.above.insert(index) {
+            return false;
+        }
+        while self.above.first() == Some(&self.low) {
+            self.above.pop_first();
+            self.low += 1;
+        }
+        true
+    }
+
+    fn len(&self) -> u64 {
+        self.low + self.above.len() as u64
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn branch(index: u64) -> BranchId {
-        BranchId { scope: 1, index }
-    }
 
     fn finish() -> Then {
         Then::Finish(Box::new(Finish {
@@ -186,23 +192,12 @@ mod tests {
     }
 
     #[test]
-    fn shares_sum_to_the_whole() {
-        for n in [1, 2, 3, 7, 1000] {
-            let shares: Vec<_> = split(FULL, n).collect();
-            assert_eq!(shares.len(), n);
-            assert_eq!(shares.iter().sum::<Weight>(), FULL);
-            assert!(shares.iter().all(|&s| s > 0));
-        }
-    }
-
-    #[test]
-    fn a_scope_ends_when_all_weight_is_back() {
-        let mut scope = Scope::new(finish());
-        let mut shares = split(FULL, 3);
+    fn a_scope_is_over_when_every_branch_has_ended() {
+        let mut scope = Scope::new(finish(), Some(3));
         let ends = [
-            scope.end(branch(2), shares.next().unwrap(), Some(Value::from(3))),
-            scope.end(branch(1), shares.next().unwrap(), None),
-            scope.end(branch(0), shares.next().unwrap(), Some(Value::from(1))),
+            scope.end(2, Some(Value::from(3))),
+            scope.end(1, None),
+            scope.end(0, Some(Value::from(1))),
         ];
         assert_eq!(ends, [Ended::Open, Ended::Open, Ended::Over]);
         let (items, _) = scope.into_parts();
@@ -211,14 +206,29 @@ mod tests {
 
     #[test]
     fn a_branch_counts_once() {
-        let mut scope = Scope::new(finish());
-        let mut shares = split(FULL, 2);
-        let share = shares.next().unwrap();
-        assert_eq!(scope.end(branch(0), share, None), Ended::Open);
-        assert_eq!(scope.end(branch(0), share, None), Ended::Again);
-        assert_eq!(
-            scope.end(branch(1), shares.next().unwrap(), None),
-            Ended::Over
-        );
+        let mut scope = Scope::new(finish(), Some(2));
+        assert_eq!(scope.end(0, None), Ended::Open);
+        assert_eq!(scope.end(0, None), Ended::Again);
+        assert_eq!(scope.end(1, None), Ended::Over);
+    }
+
+    #[test]
+    fn a_streamed_scope_is_over_once_closed_and_drained() {
+        let mut scope = Scope::new(finish(), None);
+        assert_eq!(scope.end(0, None), Ended::Open);
+        assert_eq!(scope.close(2), Ended::Open);
+        assert_eq!(scope.end(1, None), Ended::Over);
+        let mut empty = Scope::new(finish(), None);
+        assert_eq!(empty.close(0), Ended::Over);
+    }
+
+    #[test]
+    fn indices_hold_only_what_arrived_out_of_order() {
+        let mut ended = Indices::default();
+        for index in [1, 3, 0, 2, 2, 5] {
+            ended.insert(index);
+        }
+        assert_eq!((ended.low, ended.len()), (4, 5));
+        assert_eq!(ended.above, BTreeSet::from([5]));
     }
 }

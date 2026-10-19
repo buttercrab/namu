@@ -32,7 +32,7 @@ use crate::log::{Log, Record};
 use crate::message::{Branch, BranchId, Message, Resume};
 use crate::routes::Routes;
 use crate::run::{RunInfo, RunOutcome, RunSpec, WorkerStats};
-use crate::scope::{FULL, Finish, Scope, Then};
+use crate::scope::{Finish, Scope, Then};
 use crate::tasks::{TaskRef, Tasks};
 use crate::transport::Transport;
 use crate::tree::{Node, Nodes};
@@ -77,10 +77,8 @@ struct Inner {
 struct Run {
     spec: Arc<RunSpec>,
     nodes: Arc<Nodes>,
-    /// The scopes this worker owns: opened here, or taken over from a dead worker.
+    /// The scopes this worker owns that are open: opened here, or taken over from a dead worker.
     scopes: Mutex<HashMap<ScopeId, Scope>>,
-    /// Scopes owned here that are over; ends that arrive for them are duplicates.
-    finished: Mutex<HashSet<ScopeId>>,
     calls: AtomicU64,
     fetches: AtomicU64,
 }
@@ -236,10 +234,9 @@ impl Inner {
             outcome: RunOutcome::default(),
             reported: HashSet::new(),
         };
-        run.scopes
-            .lock()
-            .unwrap()
-            .insert(info.root_scope, Scope::new(Then::Finish(Box::new(finish))));
+        // The root scope has one branch: the run's root branch.
+        let root_scope = Scope::new(Then::Finish(Box::new(finish)), Some(1));
+        run.open_scope(info.root_scope, root_scope);
         let branch = Branch {
             id: BranchId {
                 scope: info.root_scope,
@@ -248,7 +245,6 @@ impl Inner {
             hop: 0,
             ctx: info.root,
             resume: Resume::Kernel(Start::At { op: 0, pred: None }),
-            weight: FULL,
             scopes: Arc::from([info.root_scope]),
         };
         // The run is durable before any branch can leave this worker. A run whose owner dies
@@ -264,6 +260,7 @@ impl Inner {
                 scope: info.root_scope,
                 continuation: None,
                 source: None,
+                count: Some(1),
             },
             Record::Branch {
                 run: id,
@@ -309,7 +306,6 @@ impl Inner {
                         spec,
                         nodes: Arc::default(),
                         scopes: Mutex::default(),
-                        finished: Mutex::default(),
                         calls: AtomicU64::new(0),
                         fetches: AtomicU64::new(0),
                     })
@@ -384,11 +380,6 @@ impl Run {
     /// Owns `scope` here.
     fn open_scope(&self, id: ScopeId, scope: Scope) {
         self.scopes.lock().unwrap().insert(id, scope);
-    }
-
-    /// Marks a scope over: ends that arrive for it from now on are duplicates.
-    fn close_scope(&self, id: ScopeId) {
-        self.finished.lock().unwrap().insert(id);
     }
 
     fn stats(&self) -> WorkerStats {

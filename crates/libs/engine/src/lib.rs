@@ -3,7 +3,8 @@
 //! Workers interpret workflow IR themselves. A branch runs on one worker for as long as that
 //! worker serves the tasks it calls, and moves to another worker only when it must. Values live
 //! in an immutable tree whose nodes are held by the workers that created them; fan-out scopes
-//! are owned by the workers that opened them and end by weight throwing. See `docs/design.md`.
+//! are owned by the workers that opened them and end once all their branches have. See
+//! `docs/design.md`.
 
 mod cluster;
 pub mod ids;

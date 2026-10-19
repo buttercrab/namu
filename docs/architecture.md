@@ -31,13 +31,14 @@ runtime each task declares. See `design.md` for the target design and `poc.md` f
    are tasks the worker serves. A task served elsewhere moves the branch there (a handoff); a
    fan-out spreads one branch per item across the workers.
 5. A worker receiving work for a run it does not know asks the owner for the run's description.
-6. Branches end at collects or returns, returning their scope's weight to its owner. When the
-   root scope has all its weight back, the run is over: the owner has every worker forget it,
-   and reports the outcome to the orchestrator.
+6. Branches end at collects or returns, telling their scope's owner. A scope is over once all of
+   its branches have ended; when the root scope is, the run is over: the owner has every worker
+   forget it, and reports the outcome to the orchestrator.
 
 ## Data model
-- **Value tree**: immutable nodes, each held by the worker that created it (its id says which),
-  fetched by others on demand and cached. A handoff carries the nodes the receiver needs.
+- **Value tree**: immutable nodes, each owning its parent, so a context keeps its chain alive and
+  nothing else. A node's id names the worker that created it, which serves it to others while it
+  is alive; after that it is read from the log. A handoff carries the nodes the receiver needs.
 - **Messages**: handoffs, branch ends, reports and node fetches, sent directly between workers.
 - **Artifacts**: `tar.zst` bundles (manifest + `.wasm` or native library) stored by the
   orchestrator and cached by workers, verified by checksum.

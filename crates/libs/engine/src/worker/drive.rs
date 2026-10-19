@@ -12,11 +12,11 @@ use tokio::runtime::{Handle, RuntimeFlavor};
 use super::delivery::Release;
 use super::view::View;
 use super::{Inner, Run};
-use crate::ids::{NodeId, ScopeId, WorkerId, owner};
+use crate::ids::{NodeId, WorkerId, owner};
 use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Message, Report, Resume};
-use crate::scope::{Continuation, FULL, Scope, Then, Weight, split};
+use crate::scope::{Continuation, Scope, Then};
 use crate::tasks::{TaskRef, pack_input, unpack_output};
 use crate::tree::Node;
 
@@ -143,24 +143,8 @@ impl Inner {
                     let Value::Array(items) = list else {
                         bail!("fan-out over {list}, which is not a list");
                     };
-                    if !items.is_empty() {
-                        self.fan_out(run, at, op, fan_out.output, items);
-                        return Ok(());
-                    }
-                    // Nothing to fan out over: the scope would be over at once.
-                    let Some(collect) = run.spec.collect_ops[op] else {
-                        self.end_branch(run, &at.branch, None);
-                        return Ok(());
-                    };
-                    let output = kernel::operation(workflow, collect)?
-                        .collect
-                        .as_ref()
-                        .context("op has no collect")?
-                        .output;
-                    let list = vec![(output, Value::Array(Vec::new()))];
-                    let collected = view.put(&at.ctx, list, Point::Action(collect)).await?;
-                    at.set_ctx(collected);
-                    at.branch.resume = Resume::Kernel(Start::After { op: collect });
+                    self.fan_out(run, at, op, fan_out.output, items);
+                    return Ok(());
                 }
                 Plan::Collect { op, ctx } => {
                     let collect = kernel::operation(workflow, op)?
@@ -250,7 +234,7 @@ impl Inner {
     }
 
     /// Opens a scope with one branch per item. This worker owns the scope; the branch that fanned
-    /// out waits in it until every item's branch has ended.
+    /// out waits in it until every item's branch has ended (at once, if there are none).
     fn fan_out(
         self: &Arc<Self>,
         run: &Arc<Run>,
@@ -265,16 +249,15 @@ impl Inner {
             branch: branch.id,
             hop: branch.hop,
             ctx: branch.ctx,
-            weight: branch.weight,
             scopes: branch.scopes.clone(),
             collect: run.spec.collect_ops[op],
         };
         let trail = self.trail(at);
-        let opened = Scope::new(Then::Continue {
+        let count = items.len() as u64;
+        let then = Then::Continue {
             continuation: continuation.clone(),
             ctx: at.ctx.clone(),
-        });
-        run.open_scope(scope, opened);
+        };
         // The opening branch's record goes once the scope and every child are durable elsewhere.
         let release = Release::new(items.len() + 1, self.gone(run, branch));
         let durable = self.log.append(vec![
@@ -287,14 +270,18 @@ impl Inner {
                 scope,
                 continuation: Some(continuation),
                 source: None,
+                count: Some(count),
             },
         ]);
         self.release_when(durable, release.clone());
+        if items.is_empty() {
+            return self.scope_over(run, scope, Scope::new(then, Some(0)));
+        }
+        run.open_scope(scope, Scope::new(then, Some(count)));
 
         let inner: Arc<[_]> = branch.scopes.iter().copied().chain([scope]).collect();
         let live = run.spec.liveness.after_action(op);
-        let shares = split(FULL, items.len());
-        for ((index, item), share) in (0..).zip(items).zip(shares) {
+        for (index, item) in (0..).zip(items) {
             let child = self.grow(run, &at.ctx, live, vec![(output, item)]);
             let ctx = child.id();
             let nodes = [child].into_iter().chain(trail.iter().cloned()).collect();
@@ -303,7 +290,6 @@ impl Inner {
                 hop: 0,
                 ctx,
                 resume: Resume::Kernel(Start::After { op }),
-                weight: share,
                 scopes: inner.clone(),
             };
             let to = self.routes.any().unwrap_or(self.id);
@@ -397,42 +383,21 @@ impl Inner {
     /// The branch ends in its innermost scope.
     pub(super) fn end_branch(self: &Arc<Self>, run: &Run, branch: &Branch, item: Option<Value>) {
         let release = Release::new(1, self.gone(run, branch));
-        let (run_id, scope, id, weight) = (run.id(), branch.scope(), branch.id, branch.weight);
-        self.send_kept(
-            owner(scope),
-            |delivery| Message::End {
-                run: run_id,
-                scope,
-                branch: id,
-                weight,
-                item,
-                delivery,
-            },
-            Some(release),
-        );
+        self.send_end(run, branch.id, item, Some(release));
     }
 
-    /// The branch reports to the run's owner, which returns its weight once the report is
+    /// The branch reports to the run's owner, which ends it in its scope once the report is
     /// recorded.
     pub(super) fn report(self: &Arc<Self>, run: &Run, branch: &Branch, report: Report) {
         let release = Release::new(1, self.gone(run, branch));
-        self.send_report(
-            run,
-            branch.scope(),
-            branch.id,
-            branch.weight,
-            report,
-            Some(release),
-        );
+        self.send_report(run, branch.id, report, Some(release));
     }
 
-    /// Sends a report, with the weight of `branch` in `scope`, to the run's owner.
+    /// Sends `branch`'s report to the run's owner.
     pub(super) fn send_report(
         self: &Arc<Self>,
         run: &Run,
-        scope: ScopeId,
         branch: BranchId,
-        weight: Weight,
         report: Report,
         release: Option<Arc<Release>>,
     ) {
@@ -444,9 +409,7 @@ impl Inner {
             run.spec.owner(),
             |delivery| Message::Report {
                 run: run_id,
-                scope,
                 branch,
-                weight,
                 report,
                 delivery,
             },

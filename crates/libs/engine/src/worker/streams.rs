@@ -1,10 +1,11 @@
 //! Stream sources (design §6.5).
 //!
 //! A stream task whose output only feeds the fan-out after it runs as the source of that fan-out's
-//! scope: each item it yields becomes a branch at once. The source runs on the worker that owns
-//! the scope, so its credits are local: it yields only while fewer than `window` of the scope's
-//! branches are open, and every branch that ends frees one. Its position is logged as it goes, so
-//! a successor can resume it inside the same scope.
+//! scope: each item it yields becomes a branch at once, and when it ends the scope knows its
+//! count. The source runs on the worker that owns the scope, so its credits are local: it yields
+//! only while fewer than `window` of the scope's branches are open, and every branch that ends
+//! frees one. Its position is logged as it goes, so a successor can resume it inside the same
+//! scope.
 
 use std::sync::Arc;
 
@@ -21,7 +22,7 @@ use crate::ids::ScopeId;
 use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
-use crate::scope::{Continuation, FULL, Position, SOURCE_INDEX, Scope, Source, Then};
+use crate::scope::{Continuation, Position, Scope, Source, Then};
 use crate::tasks::{TaskRef, TaskStream, pack_input};
 use crate::tree::Node;
 
@@ -41,7 +42,6 @@ impl Inner {
             branch: branch.id,
             hop: branch.hop,
             ctx: branch.ctx,
-            weight: branch.weight,
             scopes: branch.scopes.clone(),
             collect: run.spec.collect_ops[fan_out],
         };
@@ -62,6 +62,7 @@ impl Inner {
                 scope,
                 continuation: Some(continuation.clone()),
                 source: Some(source.clone()),
+                count: None,
             },
         ]);
         self.release_when(durable, release);
@@ -69,7 +70,7 @@ impl Inner {
             continuation,
             ctx: at.ctx.clone(),
         };
-        self.feed_scope(run, scope, Scope::new(then), source, trail);
+        self.feed_scope(run, scope, Scope::new(then, None), source, trail);
     }
 
     /// Gives `scope` (which may have ended branches already, after recovery) the credits it has
@@ -91,7 +92,7 @@ impl Inner {
             .task(source.call)
             .expect("a stream source is a call")
             .clone();
-        let in_flight = source.position.yielded - scope.ended_items();
+        let in_flight = source.position.yielded - scope.ended();
         let window = self.tasks.window(&task);
         let credits = Arc::new(Semaphore::new(window.saturating_sub(in_flight as usize)));
         let inner: Arc<[ScopeId]> = continuation.scopes.iter().copied().chain([id]).collect();
@@ -108,19 +109,20 @@ impl Inner {
                 credits: &credits,
             };
             let failure = worker.feed(&run, &feeding, &mut position).await.err();
-            // The source ends: the weight it did not hand to items goes back to the scope.
-            let id = BranchId {
-                scope: id,
-                index: SOURCE_INDEX,
-            };
-            let weight = FULL - position.yielded;
-            match failure {
-                None => worker.return_weight(&run, id.scope, id, weight, None),
+            // The source ends, and with it the scope's count. A failure takes the next index, as
+            // a branch that failed.
+            let count = match failure {
+                None => position.yielded,
                 Some(failure) => {
-                    let report = Report::Failure(failure);
-                    worker.send_report(&run, id.scope, id, weight, report, None);
+                    let branch = BranchId {
+                        scope: id,
+                        index: position.yielded,
+                    };
+                    worker.send_report(&run, branch, Report::Failure(failure), None);
+                    position.yielded + 1
                 }
-            }
+            };
+            worker.close(&run, id, count);
         });
     }
 
@@ -228,7 +230,6 @@ impl Inner {
             resume: Resume::Kernel(Start::After {
                 op: feeding.source.fan_out,
             }),
-            weight: 1,
             scopes: feeding.inner.clone(),
         };
         let to = self.routes.any().unwrap_or(self.id);
@@ -260,10 +261,8 @@ impl Inner {
     }
 
     /// A branch of a stream's scope ended: the source may yield one more item.
-    pub(super) fn free_credit(scope: &Scope, branch: BranchId) {
-        if branch.index != SOURCE_INDEX
-            && let Some(credits) = &scope.credits
-        {
+    pub(super) fn free_credit(scope: &Scope) {
+        if let Some(credits) = &scope.credits {
             credits.add_permits(1);
         }
     }
@@ -295,13 +294,11 @@ impl Inner {
         let Then::Continue { continuation, ctx } = scope.then else {
             unreachable!("a stream feeds a fan-out scope")
         };
-        run.close_scope(id);
         let branch = Branch {
             id: continuation.branch,
             hop: continuation.hop + 1,
             ctx: continuation.ctx,
             resume: Resume::Call { op: source.call },
-            weight: continuation.weight,
             scopes: continuation.scopes,
         };
         self.log.record(vec![

@@ -11,11 +11,10 @@ use serde_json::Value;
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
 use crate::run::{RunInfo, RunOutcome, WorkerStats};
-use crate::scope::Weight;
 use crate::tree::Node;
 
-/// A branch's identity, stable across handoffs and recovery: the scope it was created in and its
-/// item index there. The run's root branch is item 0 of the root scope.
+/// A branch's identity, stable across handoffs and recovery: the scope it was created in (its
+/// innermost scope) and its index there. The run's root branch is branch 0 of the root scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct BranchId {
     pub scope: ScopeId,
@@ -30,9 +29,7 @@ pub struct Branch {
     pub hop: u64,
     pub ctx: NodeId,
     pub resume: Resume,
-    /// This branch's share of its innermost scope.
-    pub weight: Weight,
-    /// The scopes it is in, innermost last. The first is the run's root scope.
+    /// The scopes it is in, innermost (`id.scope`) last. The first is the run's root scope.
     pub scopes: Arc<[ScopeId]>,
 }
 
@@ -92,23 +89,18 @@ pub enum Message {
         nodes: Vec<Arc<Node>>,
         delivery: Delivery,
     },
-    /// `branch` ended in `scope` and returns its weight, with its item if it reached the collect.
+    /// `branch` ended, with its item if it reached the collect. Goes to the owner of its scope.
     End {
         run: RunId,
-        scope: ScopeId,
         branch: BranchId,
-        weight: Weight,
         item: Option<Value>,
         delivery: Delivery,
     },
-    /// A branch's report to the run's owner. It carries the branch's weight in `scope`, which the
-    /// owner returns once the report is recorded, so the run cannot finish before its reports
-    /// arrive.
+    /// A branch's report to the run's owner. The owner ends the branch in its scope once the
+    /// report is recorded, so the run cannot finish before its reports arrive.
     Report {
         run: RunId,
-        scope: ScopeId,
         branch: BranchId,
-        weight: Weight,
         report: Report,
         delivery: Delivery,
     },

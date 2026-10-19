@@ -16,7 +16,7 @@ use tokio::sync::oneshot;
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId, owner};
 use crate::message::{Branch, BranchId, Report};
 use crate::run::RunInfo;
-use crate::scope::{Continuation, Position, Source, Weight};
+use crate::scope::{Continuation, Position, Source};
 use crate::tree::Node;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,18 +42,25 @@ pub enum Record {
         hop: u64,
     },
     /// A scope opened by its owner: `continuation` is `None` for the run's root scope, `source`
-    /// is the stream feeding it, if one does.
+    /// is the stream feeding it, if one does, and `count` its number of branches if known.
     Scope {
         run: RunId,
         scope: ScopeId,
         continuation: Option<Continuation>,
         source: Option<Source>,
+        count: Option<u64>,
     },
     /// How far the stream feeding `scope` has got.
     Position {
         run: RunId,
         scope: ScopeId,
         position: Position,
+    },
+    /// The stream feeding `scope` has ended: the scope has `count` branches.
+    Closed {
+        run: RunId,
+        scope: ScopeId,
+        count: u64,
     },
     /// The scope is over and its continuation recorded.
     ScopeGone {
@@ -75,17 +82,14 @@ pub enum Record {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndRecord {
-    pub branch: BranchId,
-    pub weight: Weight,
+    /// The branch's index in its scope.
+    pub index: u64,
     pub item: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportRecord {
     pub branch: BranchId,
-    /// The scope the branch's weight goes back to.
-    pub scope: ScopeId,
-    pub weight: Weight,
     pub report: Report,
 }
 
@@ -110,6 +114,8 @@ pub struct ScopeEstate {
     pub continuation: Option<Continuation>,
     /// The stream feeding the scope, at its last logged position.
     pub source: Option<Source>,
+    /// How many branches the scope has, if known.
+    pub count: Option<u64>,
     pub ends: Vec<EndRecord>,
 }
 
@@ -183,11 +189,13 @@ impl MemoryLog {
                     scope,
                     continuation,
                     source,
+                    count,
                 } => {
                     let estate = ScopeEstate {
                         scope,
                         continuation,
                         source,
+                        count,
                         ends: Vec::new(),
                     };
                     runs.entry(run).or_default().scopes.insert(scope, estate);
@@ -203,6 +211,14 @@ impl MemoryLog {
                         .and_then(|scope| scope.source.as_mut());
                     if let Some(source) = source {
                         source.position = position;
+                    }
+                }
+                Record::Closed { run, scope, count } => {
+                    let scope = runs
+                        .get_mut(&run)
+                        .and_then(|run| run.scopes.get_mut(&scope));
+                    if let Some(scope) = scope {
+                        scope.count = Some(count);
                     }
                 }
                 Record::ScopeGone { run, scope } => {
