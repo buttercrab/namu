@@ -3,7 +3,6 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use namu_core::value::Value;
 
@@ -16,9 +15,6 @@ use crate::message::{Branch, BranchId, Message, Report, Resume};
 use crate::run::{RunOutcome, WorkerStats};
 use crate::scope::{Continuation, Ended, Finish, Scope, Then};
 use crate::tree::Node;
-
-/// How long the owner of a finished run waits for every worker to confirm it forgot the run.
-const FORGET_PATIENCE: Duration = Duration::from_secs(2);
 
 /// A finished run waiting for the other workers to forget it.
 pub(super) struct Ending {
@@ -90,8 +86,7 @@ impl Inner {
     /// hold any more is over.
     pub(super) fn is_over(&self, scope: ScopeId) -> bool {
         let owner = owner(scope);
-        (owner == self.id && scope < self.ids.peek())
-            || self.adopted.lock().unwrap().contains(&owner)
+        (owner == self.id && scope < self.ids.peek()) || self.has_adopted(owner)
     }
 
     pub(super) fn scope_over(self: &Arc<Self>, run: &Arc<Run>, id: ScopeId, scope: Scope) {
@@ -282,16 +277,31 @@ impl Inner {
             );
         }
         self.check_forgotten(run_id);
+    }
 
-        let worker = self.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(FORGET_PATIENCE).await;
-            let ending = worker.ending.lock().unwrap().remove(&run_id);
-            if let Some(ending) = ending {
-                tracing::warn!(%run_id, missing = ?ending.waiting, "workers did not confirm the end of the run");
-                worker.complete(run_id, ending);
+    /// Workers that left the membership will never confirm the end of a run: stop waiting for
+    /// them. What they did for it is lost with them.
+    pub(super) fn drop_departed(self: &Arc<Self>) {
+        let members: HashSet<WorkerId> = self.routes.workers().into_iter().collect();
+        let runs: Vec<RunId> = {
+            let mut ending = self.ending.lock().unwrap();
+            for (run, ending) in ending.iter_mut() {
+                let departed: Vec<WorkerId> = ending
+                    .waiting
+                    .iter()
+                    .copied()
+                    .filter(|worker| !members.contains(worker))
+                    .collect();
+                if !departed.is_empty() {
+                    tracing::warn!(%run, ?departed, "workers left before confirming the end of the run");
+                    ending.waiting.retain(|worker| members.contains(worker));
+                }
             }
-        });
+            ending.keys().copied().collect()
+        };
+        for run in runs {
+            self.check_forgotten(run);
+        }
     }
 
     pub(super) fn on_forget(self: &Arc<Self>, run: RunId, reply_to: WorkerId) {
