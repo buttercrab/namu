@@ -5,6 +5,7 @@
 //! steps. A task with several outputs returns a tuple. Runtimes outside this process see the
 //! arguments packed by the task ABI's convention ([`encode_args`](namu_core::value::encode_args)).
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::marker::PhantomData;
@@ -12,12 +13,82 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use namu_core::OpId;
 use namu_core::value::{Data, Value, from_args};
 use serde::{Deserialize, Serialize};
 
 /// A task call's arguments, in order.
 pub type Args = Vec<Value>;
 
+/// Names one task call, for tasks with side effects to deduplicate on (design §7.5): the same
+/// each time recovery runs the call again, and different for every other call. It is the call's
+/// place in its run: the `call`-th call of its branch, at `op`. A branch run again from a record
+/// starts from the count recorded with it, so it names its calls as it did the first time; the
+/// op tells calls apart if a task's output sent the branch down another path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CallKey {
+    pub run: RunId,
+    pub branch: BranchId,
+    pub call: u64,
+    pub op: OpId,
+}
+
+impl Display for CallKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            run,
+            branch,
+            call,
+            op,
+        } = self;
+        write!(f, "{run}/{:x}.{}/{call}/{op}", branch.scope, branch.index)
+    }
+}
+
+thread_local! {
+    static CALL_KEY: Cell<Option<CallKey>> = const { Cell::new(None) };
+    static CALL_KEYS: RefCell<Vec<CallKey>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The key of the call an in-process task is running for, read from inside the task. A stream has
+/// the key of the call that opened it, while it opens and while each item is pulled. `None`
+/// outside a call, and in batch tasks, whose steps serve many calls at once: see [`call_keys`].
+pub fn call_key() -> Option<CallKey> {
+    CALL_KEY.get()
+}
+
+/// The keys of the calls an in-process batch step serves, in the order of its items: the list a
+/// dynamic batch task is given, or what a continuous one admits. Empty outside a batch step.
+pub fn call_keys() -> Vec<CallKey> {
+    CALL_KEYS.with_borrow(Clone::clone)
+}
+
+/// Runs `f` with `keys` as the current batch step's keys.
+fn with_keys<T>(keys: Vec<CallKey>, f: impl FnOnce() -> T) -> T {
+    struct Reset(Vec<CallKey>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CALL_KEYS.set(std::mem::take(&mut self.0));
+        }
+    }
+    let _reset = Reset(CALL_KEYS.replace(keys));
+    f()
+}
+
+/// Runs `f` with `key` as the current call's key.
+fn with_key<T>(key: CallKey, f: impl FnOnce() -> T) -> T {
+    struct Reset(Option<CallKey>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CALL_KEY.set(self.0);
+        }
+    }
+    let _reset = Reset(CALL_KEY.replace(Some(key)));
+    f()
+}
+
+use crate::ids::RunId;
+use crate::message::BranchId;
 use crate::run::RunSpec;
 
 /// A task at the version a run uses.
@@ -84,16 +155,18 @@ impl Task {
 /// Errors, for every kind of task: `Ok(Err(message))` is the task's own failure, which fails its
 /// branch; `Err` is a failure of the machinery around it.
 pub trait CallTask: Send + Sync {
-    fn call(&self, args: Args) -> anyhow::Result<Result<Value, String>>;
+    /// Runs the call named `key` on `args`.
+    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>>;
 }
 
 pub trait StreamTask: Send + Sync {
-    /// Opens the stream, at `cursor` if one of its items gave one. The open stream keeps its
-    /// task alive.
+    /// Opens the stream for the call named `key`, at `cursor` if one of its items gave one. The
+    /// open stream keeps its task alive.
     fn open(
         self: Arc<Self>,
         args: Args,
         cursor: Option<String>,
+        key: CallKey,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>>;
 }
 
@@ -124,7 +197,14 @@ pub trait BatchSession: Send {
     /// Hands the session `admit` and returns the items it finished, in any order: all of them for
     /// a dynamic batch, possibly fewer (and possibly earlier ones) for a continuous one. `Err` is a
     /// failure of the whole session, which fails every item in it.
-    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished>;
+    fn step(&mut self, admit: Vec<Admitted>) -> anyhow::Result<Finished>;
+}
+
+/// An item a batch step takes in: its id in the session, and its call's arguments and key.
+pub struct Admitted {
+    pub id: u64,
+    pub args: Args,
+    pub key: CallKey,
 }
 
 /// The items a batch step finished: each item's id, and its output or its own error.
@@ -329,8 +409,8 @@ type Items = Box<dyn Iterator<Item = Result<Value, String>> + Send>;
 struct FnCall<F>(F);
 
 impl<F: Fn(Args) -> Result<Value, String> + Send + Sync> CallTask for FnCall<F> {
-    fn call(&self, args: Args) -> anyhow::Result<Result<Value, String>> {
-        Ok((self.0)(args))
+    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
+        Ok(with_key(key, || (self.0)(args)))
     }
 }
 
@@ -341,8 +421,10 @@ impl<F: Fn(Args) -> Result<Items, String> + Send + Sync> StreamTask for FnStream
         self: Arc<Self>,
         args: Args,
         _cursor: Option<String>,
+        key: CallKey,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        Ok((self.0)(args).map(|items| Box::new(FnStream(items)) as Box<dyn TaskStream>))
+        let items = with_key(key, || (self.0)(args));
+        Ok(items.map(|items| Box::new(FnStream { items, key }) as Box<dyn TaskStream>))
     }
 }
 
@@ -367,15 +449,15 @@ where
     E: Display,
     F: Fn(Vec<I>) -> Result<Vec<Result<O, E>>, E> + Send,
 {
-    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
+    fn step(&mut self, admit: Vec<Admitted>) -> anyhow::Result<Finished> {
         // An item whose input does not fit fails alone; the rest run.
         let mut finished = Vec::new();
-        let mut ids = Vec::new();
-        let mut items = Vec::new();
-        for (id, args) in admit {
+        let (mut ids, mut keys, mut items) = (Vec::new(), Vec::new(), Vec::new());
+        for Admitted { id, args, key } in admit {
             match from_args(args) {
                 Ok(item) => {
                     ids.push(id);
+                    keys.push(key);
                     items.push(item);
                 }
                 Err(err) => finished.push((id, Err(format!("bad input: {err:#}")))),
@@ -384,7 +466,7 @@ where
         if items.is_empty() {
             return Ok(finished);
         }
-        let outputs = match (self.f)(items) {
+        let outputs = match with_keys(keys, || (self.f)(items)) {
             Ok(outputs) => outputs,
             Err(err) => {
                 let message = err.to_string();
@@ -410,18 +492,20 @@ where
 struct ContinuousSession<C>(C);
 
 impl<C: Continuous> BatchSession for ContinuousSession<C> {
-    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
+    fn step(&mut self, admit: Vec<Admitted>) -> anyhow::Result<Finished> {
         let mut finished = Vec::new();
-        let mut items = Vec::new();
-        for (id, args) in admit {
+        let (mut keys, mut items) = (Vec::new(), Vec::new());
+        for Admitted { id, args, key } in admit {
             match from_args(args) {
-                Ok(item) => items.push((id, item)),
+                Ok(item) => {
+                    keys.push(key);
+                    items.push((id, item));
+                }
                 Err(err) => finished.push((id, Err(format!("bad input: {err:#}")))),
             }
         }
         finished.extend(
-            self.0
-                .step(items)
+            with_keys(keys, || self.0.step(items))
                 .into_iter()
                 .map(|(id, output)| (id, output.map(Value::new))),
         );
@@ -429,11 +513,16 @@ impl<C: Continuous> BatchSession for ContinuousSession<C> {
     }
 }
 
-struct FnStream(Items);
+/// An in-process stream, which has its call's key while each item is pulled.
+struct FnStream {
+    items: Items,
+    key: CallKey,
+}
 
 impl TaskStream for FnStream {
     fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
-        Ok(self.0.next().map(|item| {
+        let item = with_key(self.key, || self.items.next());
+        Ok(item.map(|item| {
             item.map(|value| StreamItem {
                 value,
                 cursor: None,
@@ -467,7 +556,7 @@ mod tests {
             .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
             .with("fail", |_: ()| Err::<i32, _>("no"));
         let call = |id: &str, args: Args| match tasks.task(&task(id)).map(|task| task.kind) {
-            Some(Kind::Call(task)) => task.call(args).unwrap(),
+            Some(Kind::Call(task)) => task.call(args, key(0)).unwrap(),
             _ => panic!("{id} is not a call task"),
         };
         assert!(tasks.task(&task("mul")).is_none());
@@ -475,5 +564,31 @@ mod tests {
         assert_eq!(sum.to::<i32>().unwrap(), 5);
         assert_eq!(call("fail", vec![]).unwrap_err(), "no");
         assert!(call("add", vec![Value::new("x".to_string())]).is_err());
+    }
+
+    fn key(call: u64) -> CallKey {
+        CallKey {
+            run: RunId::nil(),
+            branch: BranchId { scope: 1, index: 2 },
+            call,
+            op: 4,
+        }
+    }
+
+    #[test]
+    fn an_in_process_task_reads_its_call_key() {
+        let tasks = FnTasks::new().with("whoami", |_: ()| {
+            Ok::<_, String>(call_key().map(|key| key.to_string()))
+        });
+        let Some(Kind::Call(task)) = tasks.task(&task("whoami")).map(|task| task.kind) else {
+            panic!("whoami is a call task");
+        };
+        let named = task.call(vec![], key(5)).unwrap().unwrap();
+        assert_eq!(
+            named.to::<Option<String>>().unwrap().as_deref(),
+            Some("00000000-0000-0000-0000-000000000000/1.2/5/4")
+        );
+        // Only while the call runs.
+        assert_eq!(call_key(), None);
     }
 }

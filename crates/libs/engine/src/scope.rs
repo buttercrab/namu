@@ -20,6 +20,7 @@ use tokio::sync::Semaphore;
 use crate::ids::{NodeId, ScopeId};
 use crate::message::BranchId;
 use crate::run::RunOutcome;
+use crate::tasks::CallKey;
 use crate::tree::Node;
 
 /// A scope, held by its owner.
@@ -60,6 +61,8 @@ pub struct Continuation {
     pub branch: BranchId,
     /// Its hop when it fanned out; it continues as the next hop.
     pub hop: u64,
+    /// The calls it had made when it fanned out.
+    pub calls: u64,
     /// The context it fanned out from.
     pub ctx: NodeId,
     /// The scopes enclosing it, innermost last.
@@ -73,6 +76,8 @@ pub struct Continuation {
 pub struct Source {
     /// The op that calls the stream task, in the continuation's context.
     pub call: OpId,
+    /// The call's key: the stream has it however often it is opened.
+    pub key: CallKey,
     /// The fan-out it feeds.
     pub fan_out: OpId,
     pub position: Position,

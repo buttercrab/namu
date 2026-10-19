@@ -286,3 +286,29 @@ async fn a_batch_survives_its_worker_dying() {
     assert_eq!(json(&outcome.results), [json!(7800 - 130)]);
     assert_eq!(outcome.failures, ["embed: unlucky"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_item_of_a_step_has_its_own_call_key() {
+    // Each step records its items with the keys it was given for them.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let tasks = tasks(Arc::default())
+        .with_batch("embed", {
+            let seen = seen.clone();
+            move |xs: Vec<i32>| {
+                let keys = namu_engine::call_keys();
+                assert_eq!(keys.len(), xs.len(), "a key per item");
+                seen.lock()
+                    .unwrap()
+                    .extend(keys.iter().map(ToString::to_string));
+                Ok::<_, String>(xs.into_iter().map(Ok).collect())
+            }
+        })
+        .batch("embed", policy(8, None));
+    let cluster = LocalCluster::uniform(1, Arc::new(tasks));
+    let outcome = run_on(&cluster, embed_all().to_serializable("e".into())).await;
+    assert_eq!(json(&outcome.results), [json!(780)]);
+    let seen = seen.lock().unwrap();
+    let distinct: std::collections::HashSet<_> = seen.iter().collect();
+    assert_eq!((seen.len(), distinct.len()), (40, 40));
+    assert!(namu_engine::call_keys().is_empty());
+}

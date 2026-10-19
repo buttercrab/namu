@@ -28,6 +28,10 @@ pub struct Branch {
     pub id: BranchId,
     /// How many times the branch has moved; each stop on a worker is its own log record.
     pub hop: u64,
+    /// How many task calls it has made: its logical clock, which names its calls (see
+    /// [`CallKey`](crate::tasks::CallKey)). Logged with it, so a branch run again from a record
+    /// counts its calls as it did the first time.
+    pub calls: u64,
     pub ctx: NodeId,
     pub resume: Resume,
     /// The scopes it is in, innermost (`id.scope`) last. The first is the run's root scope.

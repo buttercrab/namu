@@ -61,7 +61,10 @@ Design §7, in short:
   durable it leaves. Its successor takes over the scopes it owned from the log; nothing runs
   twice (the engine's drain tests count every call; `scripts/e2e.sh` drains a worker mid-run).
 
-Not covered yet: idempotency keys passed to tasks, Redis failure (run Redis with persistence), and
+- **Call keys.** Every call gets a key, the same each time recovery runs it again, which a task
+  with side effects passes on as an idempotency key (`namu_guest::call_key()`).
+
+Not covered yet: Redis failure (run Redis with persistence), and
 runs whose only server for a task never comes back (they wait).
 
 ## Running it
@@ -114,13 +117,12 @@ How to read these:
 
 ## Known gaps
 
-1. **No idempotency keys** for tasks with external side effects.
-2. **A run's reports stay in the log until it ends**: they are its results. Everything else in the
+1. **A run's reports stay in the log until it ends**: they are its results. Everything else in the
    log is the run's live frontier: finished scopes and the nodes nothing live reaches are dropped
    as the run goes.
-3. **Large values travel inline** in messages; there is no object-store path for them yet.
-4. **Routing is by load only**: work goes to the least loaded worker that can take it (loads
+2. **Large values travel inline** in messages; there is no object-store path for them yet.
+3. **Routing is by load only**: work goes to the least loaded worker that can take it (loads
    ride on acknowledgements), but where a context's nodes are held is not considered, and batch
    items are not packed into one worker's batch.
-5. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated
+4. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated
    stubs come later.

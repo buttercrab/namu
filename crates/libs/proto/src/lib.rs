@@ -24,6 +24,10 @@ pub enum TaskTrust {
     Untrusted,
 }
 
+/// The task ABI artifacts are built for: the native C ABI's version, and the `namu:task` WIT
+/// world's (major) version. It must match `namu_guest::NATIVE_ABI_VERSION`.
+pub const TASK_ABI_VERSION: u32 = 6;
+
 /// How a task's artifact is executed. Each task picks its own runtime; workers advertise which
 /// runtimes they support and only receive work they can run.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]

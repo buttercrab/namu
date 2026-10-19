@@ -22,7 +22,7 @@ use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
 use crate::scope::{Continuation, Position, Scope, Source, Then};
-use crate::tasks::{Args, Kind, Stream, StreamTask, Task, TaskStream};
+use crate::tasks::{Args, CallKey, Kind, Stream, StreamTask, Task, TaskStream};
 use crate::tree::Node;
 
 impl Inner {
@@ -31,22 +31,25 @@ impl Inner {
     pub(super) fn start_stream(
         self: &Arc<Self>,
         run: &Arc<Run>,
-        at: &Driving,
+        at: &mut Driving,
         call: OpId,
         fan_out: OpId,
         stream: Stream,
     ) {
+        let key = at.key(run, call);
         let branch = &at.branch;
         let scope = self.ids.next();
         let continuation = Continuation {
             branch: branch.id,
             hop: branch.hop,
+            calls: branch.calls,
             ctx: branch.ctx,
             scopes: branch.scopes.clone(),
             collect: run.spec.collect_ops[fan_out],
         };
         let source = Source {
             call,
+            key,
             fan_out,
             position: Position::default(),
         };
@@ -194,7 +197,8 @@ impl Inner {
             None => (None, 0),
         };
         let task = feeding.stream.clone();
-        let mut stream = match run_task(|| task.open(args, cursor))? {
+        let key = feeding.source.key;
+        let mut stream = match run_task(|| task.open(args, cursor, key))? {
             Ok(stream) => stream,
             Err(message) => return Ok(Err(message)),
         };
@@ -232,6 +236,7 @@ impl Inner {
                 index,
             },
             hop: 0,
+            calls: 0,
             ctx: node.id(),
             resume: Resume::Kernel(Start::After {
                 op: feeding.source.fan_out,
@@ -266,11 +271,12 @@ impl Inner {
         &self,
         stream: &Stream,
         args: Args,
+        key: CallKey,
     ) -> anyhow::Result<Result<Value, String>> {
         let _slot = self.task_slots.acquire().await?;
         let task = stream.task.clone();
         run_task(|| {
-            let mut stream = match task.open(args, None)? {
+            let mut stream = match task.open(args, None, key)? {
                 Ok(stream) => stream,
                 Err(message) => return Ok(Err(message)),
             };
@@ -326,6 +332,8 @@ impl Inner {
         let branch = Branch {
             id: continuation.branch,
             hop: continuation.hop + 1,
+            // The stream call is run again, under the key it had.
+            calls: source.key.call,
             ctx: continuation.ctx,
             resume: Resume::Call { op: source.call },
             scopes: continuation.scopes,

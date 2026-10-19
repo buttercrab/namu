@@ -311,6 +311,7 @@ impl Inner {
                 index: 0,
             },
             hop: 0,
+            calls: 0,
             ctx: info.root,
             resume: Resume::Kernel(Start::At { op: 0, pred: None }),
             scopes: Arc::from([info.root_scope]),
