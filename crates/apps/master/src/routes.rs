@@ -377,7 +377,7 @@ pub async fn record_outcome(
     let names: Vec<Option<String>> = if ids.is_empty() {
         Vec::new()
     } else {
-        redis.hget(keys::WORKER_NAMES, &ids).await?
+        redis.hmget(keys::WORKER_NAMES, &ids).await?
     };
     let status = if outcome.failures.is_empty() {
         "succeeded"
