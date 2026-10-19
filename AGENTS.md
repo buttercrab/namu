@@ -15,6 +15,7 @@
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` — lint with warnings as errors.
 - `cargo +nightly fmt --all --check` — enforce formatting (nightly rustfmt).
 - `cargo doc --workspace --all-features --no-deps` — ensure docs build without external deps.
+- `cargo bench --bench engine` — engine benchmarks (kernel loop, fan-out, values, lookups).
 
 ## Coding Style & Naming Conventions
 - Rust formatting follows `rustfmt` (nightly in CI). Use standard Rust 4-space indentation.
