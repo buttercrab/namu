@@ -489,9 +489,9 @@ its **shape**:
   the argument, or an array), outputs as MessagePack, errors as text. The WIT types are
   `list<u8>`; `namu-guest` does the encoding. Outputs stay encoded until a Rust task asks for a
   type.
-- **Wire and log**: mesh frames and log records are MessagePack, and a value inside them is its
-  MessagePack bytes. A live value is encoded each time its node is sent; keeping the encoding with
-  the node, so a node shipped to several workers is encoded once, is not done yet.
+- **Wire and log**: mesh frames and log records are MessagePack. A node is encoded the first time
+  it crosses a boundary and keeps its encoding, so a node shipped to several workers and logged is
+  encoded once; a node that arrived encoded goes on as the bytes it came as.
 - **The service API** (HTTP) shows results as JSON, converted from MessagePack at that edge only.
   Values are JSON nowhere else.
 
@@ -624,7 +624,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | `return` in a branch | Not supported | Drops that item (filter) |
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
-| Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | Keep a node's encoding with it, so it is encoded once however often it is sent; an object store for large values |
+| Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |
 | Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
 | Distributed path | ✅ Peer-to-peer TCP mesh with a reliable session per pair of workers (sequence numbers, replay on reconnect); the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |

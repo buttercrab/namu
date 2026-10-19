@@ -12,10 +12,15 @@
 //! Each worker indexes the nodes it holds for a run in [`Nodes`], without owning them, to serve
 //! them to other workers and to share one copy of each. A node asked for after it was freed is
 //! read from the log, which holds every node a live branch can reach (design §7.2).
+//!
+//! A node crosses a process boundary as MessagePack, encoded the first time it does and kept, so
+//! a node shipped to several workers and logged is encoded once. A node that arrived encoded
+//! keeps the bytes it came as.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+use bytes::Bytes;
 use namu_core::ValueId;
 use namu_core::value::Value;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -26,6 +31,8 @@ pub struct Node {
     id: NodeId,
     parent: Option<Parent>,
     values: Vec<(ValueId, Value)>,
+    /// The node as MessagePack, once it has been encoded or arrived encoded.
+    encoded: OnceLock<Bytes>,
 }
 
 struct Parent {
@@ -40,6 +47,7 @@ impl Node {
             id,
             parent: None,
             values: Vec::new(),
+            encoded: OnceLock::new(),
         }
     }
 
@@ -52,6 +60,7 @@ impl Node {
                 node: OnceLock::from(parent),
             }),
             values,
+            encoded: OnceLock::new(),
         }
     }
 
@@ -130,20 +139,33 @@ struct Wire {
     values: Vec<(ValueId, Value)>,
 }
 
-impl Serialize for Node {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl Node {
+    /// The node as MessagePack, encoded on first use.
+    fn encoded(&self) -> Result<&Bytes, rmp_serde::encode::Error> {
+        if let Some(encoded) = self.encoded.get() {
+            return Ok(encoded);
+        }
         let wire = WireRef {
             id: self.id,
             parent: self.parent_id(),
             values: &self.values,
         };
-        wire.serialize(serializer)
+        let encoded = rmp_serde::to_vec_named(&wire)?;
+        Ok(self.encoded.get_or_init(|| encoded.into()))
+    }
+}
+
+impl Serialize for Node {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let encoded = self.encoded().map_err(serde::ser::Error::custom)?;
+        serializer.serialize_bytes(encoded)
     }
 }
 
 impl<'de> Deserialize<'de> for Node {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let wire = Wire::deserialize(deserializer)?;
+        let encoded = serde_bytes::ByteBuf::deserialize(deserializer)?.into_vec();
+        let wire: Wire = rmp_serde::from_slice(&encoded).map_err(serde::de::Error::custom)?;
         Ok(Self {
             id: wire.id,
             parent: wire.parent.map(|id| Parent {
@@ -151,6 +173,7 @@ impl<'de> Deserialize<'de> for Node {
                 node: OnceLock::new(),
             }),
             values: wire.values,
+            encoded: OnceLock::from(Bytes::from(encoded)),
         })
     }
 }
@@ -239,6 +262,33 @@ mod tests {
         assert!(child.parent().is_none());
         let child = nodes.receive([Arc::new(child)]).remove(0);
         assert!(Arc::ptr_eq(child.parent().unwrap(), &root));
+    }
+
+    #[test]
+    fn a_node_is_encoded_once_however_often_it_is_sent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static ENCODED: AtomicUsize = AtomicUsize::new(0);
+        #[derive(Clone, Deserialize)]
+        struct Counted(i32);
+        impl Serialize for Counted {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                ENCODED.fetch_add(1, Ordering::Relaxed);
+                self.0.serialize(serializer)
+            }
+        }
+        impl namu_core::value::Data for Counted {}
+
+        let root = Arc::new(Node::root(1));
+        let node = Node::new(2, root, vec![(0, Value::new(Counted(7)))]);
+        let first = rmp_serde::to_vec(&node).unwrap();
+        let second = rmp_serde::to_vec(&node).unwrap();
+        assert_eq!(first, second);
+        // A node that arrived goes on as the bytes it came as.
+        let arrived: Node = rmp_serde::from_slice(&first).unwrap();
+        assert_eq!(rmp_serde::to_vec(&arrived).unwrap(), first);
+        assert_eq!(ENCODED.load(Ordering::Relaxed), 1);
+        assert_eq!(arrived.get(0).unwrap().to::<Counted>().unwrap().0, 7);
     }
 
     #[test]
