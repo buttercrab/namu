@@ -405,3 +405,30 @@ async fn independent_calls_in_a_branch_run_at_once() {
         "the two probes ran one after the other"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_log_keeps_the_live_frontier_not_the_history() {
+    #[workflow]
+    fn wf() -> i32 {
+        let mut i = 0;
+        let mut total = 0;
+        while less_than(i, 200) {
+            let xs = range(1, 4);
+            let ys = double(xs);
+            total = add(total, sum(ys));
+            i = add(i, 1);
+        }
+        total
+    }
+
+    let cluster = LocalCluster::uniform(1, Arc::new(tasks()));
+    let outcome = cluster
+        .run(wf().to_serializable("frontier".into()))
+        .await
+        .unwrap();
+    // (10 + 20 + 30) * 2 per iteration.
+    assert_eq!(json(&outcome.results), [json!(120 * 200)]);
+    // 200 fan-outs log over a thousand nodes; the log drops those nothing live reaches.
+    let peak = cluster.log().peak_nodes();
+    assert!(peak <= 128, "the log held {peak} nodes at once");
+}

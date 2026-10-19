@@ -5,7 +5,7 @@
 //! acknowledgements wait for that. Nothing reads the log on the common path: a successor reads a
 //! dead worker's estate, and workers read nodes whose holder is dead.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -93,6 +93,36 @@ pub struct ReportRecord {
     pub report: Report,
 }
 
+/// The nodes of a run's log that nothing live reaches: neither the context of a live record (a
+/// branch's, or a scope's continuation) nor an ancestor of one. `parents` maps every logged node
+/// to its parent. A log drops them, so it holds the live frontier of a run rather than its history
+/// (design §7.5). No dead node comes back: a branch that could still reach one is recorded
+/// somewhere, and its record's chain is live.
+pub fn dead_nodes(
+    parents: &HashMap<NodeId, Option<NodeId>>,
+    live: impl IntoIterator<Item = NodeId>,
+) -> Vec<NodeId> {
+    let mut reached = HashSet::new();
+    for ctx in live {
+        let mut cursor = Some(ctx);
+        while let Some(id) = cursor {
+            if !reached.insert(id) {
+                break;
+            }
+            cursor = parents.get(&id).copied().flatten();
+        }
+    }
+    parents
+        .keys()
+        .filter(|id| !reached.contains(id))
+        .copied()
+        .collect()
+}
+
+/// A log sweeps a run's dead nodes when it holds at least this many, and twice as many as after
+/// its last sweep: a sweep costs O(nodes), so this is O(1) per node logged.
+pub const SWEEP_FLOOR: usize = 64;
+
 /// Resolves once an append is durable. Dropped if the append failed.
 pub type Durable = oneshot::Receiver<()>;
 
@@ -142,6 +172,8 @@ pub trait Log: Send + Sync + 'static {
 #[derive(Debug, Default)]
 pub struct MemoryLog {
     runs: Mutex<HashMap<RunId, MemoryRun>>,
+    /// The most nodes any run held at once.
+    peak: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Debug, Default)]
@@ -151,9 +183,39 @@ struct MemoryRun {
     branches: HashMap<(WorkerId, BranchId, u64), Branch>,
     scopes: HashMap<ScopeId, ScopeEstate>,
     reports: Vec<ReportRecord>,
+    /// Nodes held after the last sweep.
+    swept: usize,
+}
+
+impl MemoryRun {
+    /// Drops the nodes nothing live reaches, if enough have been logged since the last sweep.
+    fn sweep(&mut self) {
+        if self.nodes.len() < SWEEP_FLOOR.max(2 * self.swept) {
+            return;
+        }
+        let parents = self
+            .nodes
+            .iter()
+            .map(|(&id, node)| (id, node.parent_id()))
+            .collect();
+        let live = self.branches.values().map(|branch| branch.ctx).chain(
+            self.scopes
+                .values()
+                .filter_map(|scope| scope.continuation.as_ref().map(|c| c.ctx)),
+        );
+        for id in dead_nodes(&parents, live) {
+            self.nodes.remove(&id);
+        }
+        self.swept = self.nodes.len();
+    }
 }
 
 impl MemoryLog {
+    /// The most nodes any run's log held at once.
+    pub fn peak_nodes(&self) -> usize {
+        self.peak.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn apply(&self, records: Vec<Record>) {
         let mut runs = self.runs.lock().unwrap();
         for record in records {
@@ -165,6 +227,9 @@ impl MemoryLog {
                 Record::Nodes { run, nodes } => {
                     let held = &mut runs.entry(run).or_default().nodes;
                     held.extend(nodes.into_iter().map(|node| (node.id(), node)));
+                    let held = held.len();
+                    self.peak
+                        .fetch_max(held, std::sync::atomic::Ordering::Relaxed);
                 }
                 Record::Branch {
                     run,
@@ -182,6 +247,7 @@ impl MemoryLog {
                 } => {
                     if let Some(run) = runs.get_mut(&run) {
                         run.branches.remove(&(holder, id, hop));
+                        run.sweep();
                     }
                 }
                 Record::Scope {
@@ -224,6 +290,7 @@ impl MemoryLog {
                 Record::ScopeGone { run, scope } => {
                     if let Some(run) = runs.get_mut(&run) {
                         run.scopes.remove(&scope);
+                        run.sweep();
                     }
                 }
                 Record::End { run, scope, end } => {

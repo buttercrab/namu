@@ -91,7 +91,14 @@ impl Inner {
 
     pub(super) fn scope_over(self: &Arc<Self>, run: &Arc<Run>, id: ScopeId, scope: Scope) {
         match scope.into_parts() {
-            (_, Then::Finish(finish)) => self.finish(run, *finish),
+            (_, Then::Finish(finish)) => {
+                let gone = Record::ScopeGone {
+                    run: run.id(),
+                    scope: id,
+                };
+                self.log.record(vec![gone]);
+                self.finish(run, *finish)
+            }
             (items, Then::Continue { continuation, ctx }) => {
                 self.resume(run, id, continuation, ctx, items);
             }

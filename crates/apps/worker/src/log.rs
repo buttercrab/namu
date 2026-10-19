@@ -1,18 +1,27 @@
 //! The durable log in Redis (design §7). Run Redis with persistence (`appendonly yes`) for the
 //! log to survive Redis restarts too. Records are MessagePack.
 //!
-//! Appends go through one writer task, so they are applied in order, and are pipelined in batches;
-//! an append is durable once its batch has been applied. Per run, the log is a handful of keys
-//! under `namu:log:{run}:`; a set of live runs lets a successor find a dead worker's estate.
+//! Appends go through one writer task, so they are applied in order, a batch at a time in one
+//! transaction; an append is durable once its batch has been applied. Per run, the log is a
+//! handful of keys under `namu:log:{run}:`; a set of live runs lets a successor find a dead
+//! worker's estate.
+//!
+//! The log holds a run's live frontier, not its history (design §7.5). A scope's ends, count and
+//! position go with the scope, and nodes nothing live reaches are swept: after a batch that removed
+//! records, once a run's nodes have doubled since its last sweep. A sweep reads nodes and records
+//! in one transaction, and every append is a transaction too, so it never sees a node without the
+//! record that refers to it.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use namu_engine::RunInfo;
 use namu_engine::ids::{NodeId, RunId, WorkerId, owner};
-use namu_engine::log::{Durable, EndRecord, Log, Record, ReportRecord, RunEstate, ScopeEstate};
+use namu_engine::log::{
+    Durable, EndRecord, Log, Record, ReportRecord, RunEstate, SWEEP_FLOOR, ScopeEstate, dead_nodes,
+};
 use namu_engine::message::{Branch, BranchId};
 use namu_engine::scope::{Continuation, Position, Source};
 use namu_engine::tree::Node;
@@ -25,6 +34,11 @@ const RUNS: &str = "namu:log:runs";
 
 fn key(run: RunId, part: &str) -> String {
     format!("namu:log:{run}:{part}")
+}
+
+/// The ends of one scope.
+fn ends_key(run: RunId, scope: u64) -> String {
+    key(run, &format!("ends:{scope}"))
 }
 
 fn encode(record: &impl serde::Serialize) -> anyhow::Result<Vec<u8>> {
@@ -53,6 +67,7 @@ async fn write(
     mut redis: ConnectionManager,
     mut queue: mpsc::UnboundedReceiver<(Vec<Record>, oneshot::Sender<()>)>,
 ) {
+    let sweeps = Sweeps::default();
     while let Some(first) = queue.recv().await {
         let mut batch = vec![first];
         while batch.len() < 256 {
@@ -62,10 +77,16 @@ async fn write(
             }
         }
         let mut pipe = redis::pipe();
+        pipe.atomic();
+        // Runs that lost records in this batch: their dead nodes may be worth a sweep.
+        let mut shrunk = HashSet::new();
         for (records, _) in &batch {
             for record in records {
                 if let Err(err) = add(&mut pipe, record) {
                     tracing::error!("unencodable log record dropped: {err:#}");
+                }
+                if let Record::BranchGone { run, .. } | Record::ScopeGone { run, .. } = record {
+                    shrunk.insert(*run);
                 }
             }
         }
@@ -82,7 +103,81 @@ async fn write(
         for (_, durable) in batch {
             let _ = durable.send(());
         }
+        for run in shrunk {
+            sweeps.start(&redis, run);
+        }
     }
+}
+
+/// The runs being swept by this worker, so each is swept by at most one task at a time.
+#[derive(Clone, Default)]
+struct Sweeps(Arc<Mutex<HashSet<RunId>>>);
+
+impl Sweeps {
+    fn start(&self, redis: &ConnectionManager, run: RunId) {
+        if !self.0.lock().unwrap().insert(run) {
+            return;
+        }
+        let (sweeps, mut redis) = (self.clone(), redis.clone());
+        tokio::spawn(async move {
+            if let Err(err) = sweep(&mut redis, run).await {
+                tracing::error!(%run, "sweeping the log failed: {err:#}");
+            }
+            sweeps.0.lock().unwrap().remove(&run);
+        });
+    }
+}
+
+/// Drops the run's nodes that nothing live reaches, if its nodes have doubled since the last
+/// sweep.
+async fn sweep(redis: &mut ConnectionManager, run: RunId) -> anyhow::Result<()> {
+    let (held, swept): (usize, Option<usize>) = redis::pipe()
+        .hlen(key(run, "parents"))
+        .get(key(run, "swept"))
+        .query_async(redis)
+        .await?;
+    if held < SWEEP_FLOOR.max(2 * swept.unwrap_or(0)) {
+        return Ok(());
+    }
+    // One snapshot of nodes and the records that keep them live.
+    type Snapshot = (
+        HashMap<NodeId, Vec<u8>>,
+        HashMap<String, Vec<u8>>,
+        HashMap<u64, Vec<u8>>,
+    );
+    let (parents, branches, scopes): Snapshot = redis::pipe()
+        .atomic()
+        .hgetall(key(run, "parents"))
+        .hgetall(key(run, "branches"))
+        .hgetall(key(run, "scopes"))
+        .query_async(redis)
+        .await?;
+    let parents = parents
+        .into_iter()
+        .map(|(id, parent)| Ok((id, rmp_serde::from_slice(&parent)?)))
+        .collect::<anyhow::Result<HashMap<NodeId, Option<NodeId>>>>()?;
+    let mut live = Vec::new();
+    for raw in branches.values() {
+        live.push(rmp_serde::from_slice::<Branch>(raw)?.ctx);
+    }
+    for raw in scopes.values() {
+        let (continuation, _): (Option<Continuation>, Option<Source>) = rmp_serde::from_slice(raw)?;
+        live.extend(continuation.map(|c| c.ctx));
+    }
+    let dead = dead_nodes(&parents, live);
+    let mut pipe = redis::pipe();
+    pipe.atomic();
+    if !dead.is_empty() {
+        pipe.hdel(key(run, "nodes"), &dead)
+            .ignore()
+            .hdel(key(run, "parents"), &dead)
+            .ignore();
+    }
+    pipe.set(key(run, "swept"), parents.len() - dead.len())
+        .ignore();
+    pipe.query_async::<()>(redis).await?;
+    tracing::debug!(%run, dropped = dead.len(), "swept the log");
+    Ok(())
 }
 
 fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
@@ -96,6 +191,8 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
         Record::Nodes { run, nodes } => {
             for node in nodes {
                 pipe.hset(key(*run, "nodes"), node.id(), encode(node)?)
+                    .ignore()
+                    .hset(key(*run, "parents"), node.id(), encode(&node.parent_id())?)
                     .ignore();
             }
         }
@@ -142,25 +239,32 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             pipe.hset(key(*run, "counts"), scope, count).ignore();
         }
         Record::ScopeGone { run, scope } => {
-            pipe.hdel(key(*run, "scopes"), scope).ignore();
-            pipe.hdel(key(*run, "counts"), scope).ignore();
+            pipe.hdel(key(*run, "scopes"), scope)
+                .ignore()
+                .hdel(key(*run, "counts"), scope)
+                .ignore()
+                .hdel(key(*run, "positions"), scope)
+                .ignore()
+                .del(ends_key(*run, *scope))
+                .ignore();
         }
         Record::End { run, scope, end } => {
-            pipe.rpush(key(*run, "ends"), encode(&(scope, end))?)
-                .ignore();
+            pipe.rpush(ends_key(*run, *scope), encode(end)?).ignore();
         }
         Record::Report { run, report } => {
             pipe.rpush(key(*run, "reports"), encode(report)?).ignore();
         }
         Record::RunGone(run) => {
+            // Every scope, the root included, is gone by now, and its ends with it.
             let parts = [
                 "info",
                 "nodes",
+                "parents",
+                "swept",
                 "branches",
                 "scopes",
                 "counts",
                 "positions",
-                "ends",
                 "reports",
             ];
             let keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
@@ -226,14 +330,13 @@ impl Log for RedisLog {
                 counts = redis.hgetall(key(run, "counts")).await?;
             }
             let mut ends: HashMap<u64, Vec<EndRecord>> = HashMap::new();
-            if !owned.is_empty() {
-                let raw: Vec<Vec<u8>> = redis.lrange(key(run, "ends"), 0, -1).await?;
-                for raw in raw {
-                    let (scope, end): (u64, EndRecord) = rmp_serde::from_slice(&raw)?;
-                    if owned.contains_key(&scope) {
-                        ends.entry(scope).or_default().push(end);
-                    }
-                }
+            for &scope in owned.keys() {
+                let raw: Vec<Vec<u8>> = redis.lrange(ends_key(run, scope), 0, -1).await?;
+                let records = raw
+                    .iter()
+                    .map(|raw| rmp_serde::from_slice(raw))
+                    .collect::<Result<Vec<EndRecord>, _>>()?;
+                ends.insert(scope, records);
             }
             let scopes: Vec<ScopeEstate> = owned
                 .into_iter()
