@@ -15,7 +15,7 @@ use tokio::time::Instant;
 
 use super::Inner;
 use super::drive::run_task;
-use crate::tasks::{BatchPolicy, BatchSession, TaskRef};
+use crate::tasks::{Batch, BatchPolicy, BatchSession, TaskRef};
 
 type Outcome = anyhow::Result<Result<Value, String>>;
 
@@ -34,8 +34,13 @@ struct Waiting {
 
 impl Inner {
     /// Runs one item of a batch task, in a step of one of this worker's sessions for it.
-    pub(super) async fn batch_call(self: &Arc<Self>, task: &TaskRef, input: Value) -> Outcome {
-        let batcher = self.batcher(task);
+    pub(super) async fn batch_call(
+        self: &Arc<Self>,
+        task: &TaskRef,
+        batch: &Batch,
+        input: Value,
+    ) -> Outcome {
+        let batcher = self.batcher(task, batch);
         let (done, result) = oneshot::channel();
         let waiting = Waiting {
             input,
@@ -48,16 +53,16 @@ impl Inner {
     }
 
     /// The task's batcher, with its sessions started on first use.
-    fn batcher(self: &Arc<Self>, task: &TaskRef) -> Arc<Batcher> {
+    fn batcher(self: &Arc<Self>, task: &TaskRef, batch: &Batch) -> Arc<Batcher> {
         let mut batchers = self.batchers.lock().unwrap();
         if let Some(batcher) = batchers.get(task) {
             return batcher.clone();
         }
         let batcher = Arc::new(Batcher::default());
-        let policy = self.tasks.batch_policy(task);
-        for _ in 0..policy.slots.max(1) {
-            let (worker, task, batcher) = (self.clone(), task.clone(), batcher.clone());
-            tokio::spawn(async move { worker.drive_session(task, policy, batcher).await });
+        for _ in 0..batch.policy.slots.max(1) {
+            let (worker, task, batch, batcher) =
+                (self.clone(), task.clone(), batch.clone(), batcher.clone());
+            tokio::spawn(async move { worker.drive_session(task, batch, batcher).await });
         }
         batchers.insert(task.clone(), batcher.clone());
         batcher
@@ -65,12 +70,8 @@ impl Inner {
 
     /// Steps one session for as long as the worker lives: admits what is queued, up to capacity,
     /// and hands back what each step finished.
-    async fn drive_session(
-        self: Arc<Self>,
-        task: TaskRef,
-        policy: BatchPolicy,
-        batcher: Arc<Batcher>,
-    ) {
+    async fn drive_session(self: Arc<Self>, task: TaskRef, batch: Batch, batcher: Arc<Batcher>) {
+        let policy = batch.policy;
         let mut session: Option<Box<dyn BatchSession>> = None;
         let mut active: HashMap<u64, oneshot::Sender<Outcome>> = HashMap::new();
         let mut next_id = 0;
@@ -91,7 +92,7 @@ impl Inner {
                     .collect()
             };
             if session.is_none() {
-                match run_task(|| self.tasks.open_batch(&task)) {
+                match run_task(|| batch.task.clone().open()) {
                     Ok(Ok(opened)) => session = Some(opened),
                     Ok(Err(message)) => {
                         fail_all(&mut active, |_| Ok(Err(message.clone())));

@@ -11,7 +11,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use libloading::Library;
-use namu_engine::tasks::{BatchSession, Finished, StreamItem, TaskStream};
+use namu_engine::tasks::{
+    BatchSession, BatchTask, CallTask, Finished, StreamItem, StreamTask, TaskStream,
+};
 use serde_json::Value;
 
 type AbiFn = unsafe extern "C" fn() -> u32;
@@ -79,13 +81,16 @@ impl NativeTask {
             _lib: lib,
         })
     }
+}
 
-    pub fn call(&self, input: &str) -> anyhow::Result<Result<String, String>> {
+impl CallTask for NativeTask {
+    fn call(&self, input: Value) -> anyhow::Result<Result<Value, String>> {
+        let input = input.to_string();
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the ABI contract: the library writes an owned buffer, which `take` frees.
         let code = unsafe { (self.call)(input.as_ptr(), input.len(), &mut out_ptr, &mut out_len) };
         let output = take(self.free, out_ptr, out_len);
-        Ok(if code == 0 { Ok(output) } else { Err(output) })
+        super::output(if code == 0 { Ok(output) } else { Err(output) })
     }
 }
 
@@ -103,11 +108,15 @@ impl NativeStreamTask {
             })
         }
     }
+}
 
-    pub fn open(
-        self: &Arc<Self>,
-        input: &str,
+impl StreamTask for NativeStreamTask {
+    fn open(
+        self: Arc<Self>,
+        input: Value,
+        _cursor: Option<String>,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+        let input = input.to_string();
         let mut handle = std::ptr::null_mut();
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the ABI contract: a handle on success, an owned error buffer otherwise.
@@ -123,8 +132,7 @@ impl NativeStreamTask {
         if code != 0 {
             return Ok(Err(take(self.free, out_ptr, out_len)));
         }
-        let task = self.clone();
-        Ok(Ok(Box::new(NativeItems { task, handle })))
+        Ok(Ok(Box::new(NativeItems { task: self, handle })))
     }
 }
 
@@ -188,8 +196,10 @@ impl NativeBatchTask {
             })
         }
     }
+}
 
-    pub fn open(self: &Arc<Self>) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
+impl BatchTask for NativeBatchTask {
+    fn open(self: Arc<Self>) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
         let mut handle = std::ptr::null_mut();
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the ABI contract: a handle on success, an owned error buffer otherwise.
@@ -197,8 +207,7 @@ impl NativeBatchTask {
         if code != 0 {
             return Ok(Err(take(self.free, out_ptr, out_len)));
         }
-        let task = self.clone();
-        Ok(Ok(Box::new(NativeSession { task, handle })))
+        Ok(Ok(Box::new(NativeSession { task: self, handle })))
     }
 }
 

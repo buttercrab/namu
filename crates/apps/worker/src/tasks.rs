@@ -7,17 +7,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
 use namu_engine::routes::Routes;
-use namu_engine::tasks::{BatchPolicy, BatchSession, DEFAULT_WINDOW, TaskStream};
+use namu_engine::tasks::Task;
 use namu_engine::{RunSpec, TaskRef, Tasks};
-use namu_proto::{Member, TaskKind, TaskManifest};
-use serde_json::Value;
+use namu_proto::{Member, TaskManifest};
 
-use crate::runtime::{Runner, Runtimes, safe_segment};
+use crate::runtime::{Runtimes, safe_segment};
 
 pub struct RuntimeTasks {
     http: reqwest::Client,
@@ -27,33 +25,17 @@ pub struct RuntimeTasks {
     runtime_keys: HashSet<String>,
     routes: Arc<Routes>,
     members: RwLock<Vec<Member>>,
-    tasks: RwLock<HashMap<TaskRef, Task>>,
+    tasks: RwLock<HashMap<TaskRef, Entry>>,
 }
 
-struct Task {
+/// A task a run on this worker calls.
+struct Entry {
     runtime_key: String,
-    checkpoint: bool,
-    kind: TaskKind,
-    window: Option<usize>,
-    policy: BatchPolicy,
     /// Loaded when this worker serves the task.
-    runner: Option<Arc<Runner>>,
+    task: Option<Task>,
 }
 
 impl RuntimeTasks {
-    fn entry(&self, task: &TaskRef, f: impl FnOnce(&Task) -> bool) -> bool {
-        self.tasks.read().unwrap().get(task).is_some_and(f)
-    }
-
-    fn runner(&self, task: &TaskRef) -> anyhow::Result<Arc<Runner>> {
-        self.tasks
-            .read()
-            .unwrap()
-            .get(task)
-            .and_then(|entry| entry.runner.clone())
-            .with_context(|| format!("task {} is not loaded here", task.id))
-    }
-
     pub fn new(
         http: reqwest::Client,
         orchestrator_url: String,
@@ -130,87 +112,24 @@ impl Tasks for RuntimeTasks {
                 .await
                 .with_context(|| format!("manifest of {}@{}", task.id, task.version))?;
             let runtime_key = manifest.runtime_key();
-            let runner = match self.runtime_keys.contains(&runtime_key) {
-                true => Some(Arc::new(self.runtimes.load(&manifest).await?)),
+            let loaded = match self.runtime_keys.contains(&runtime_key) {
+                true => Some(Task {
+                    kind: self.runtimes.load(&manifest).await?,
+                    checkpoint: manifest.checkpoint,
+                }),
                 false => None,
             };
             self.route(task, &runtime_key);
-            let entry = Task {
+            let entry = Entry {
                 runtime_key,
-                checkpoint: manifest.checkpoint,
-                kind: manifest.task_kind.clone(),
-                window: manifest.window,
-                policy: batch_policy(&manifest),
-                runner,
+                task: loaded,
             };
             self.tasks.write().unwrap().insert(task.clone(), entry);
         }
         Ok(())
     }
 
-    fn serves(&self, task: &TaskRef) -> bool {
-        self.entry(task, |entry| entry.runner.is_some())
-    }
-
-    fn checkpoint(&self, task: &TaskRef) -> bool {
-        self.entry(task, |entry| entry.checkpoint)
-    }
-
-    fn is_stream(&self, task: &TaskRef) -> bool {
-        self.entry(task, |entry| entry.kind == TaskKind::Stream)
-    }
-
-    fn is_batch(&self, task: &TaskRef) -> bool {
-        self.entry(task, |entry| entry.kind == TaskKind::Batch)
-    }
-
-    fn open_batch(&self, task: &TaskRef) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
-        self.runner(task)?.open_batch()
-    }
-
-    fn batch_policy(&self, task: &TaskRef) -> BatchPolicy {
-        let tasks = self.tasks.read().unwrap();
-        tasks
-            .get(task)
-            .map(|entry| entry.policy)
-            .unwrap_or_default()
-    }
-
-    fn window(&self, task: &TaskRef) -> usize {
-        self.tasks
-            .read()
-            .unwrap()
-            .get(task)
-            .and_then(|entry| entry.window)
-            .unwrap_or(DEFAULT_WINDOW)
-    }
-
-    fn open(
-        &self,
-        task: &TaskRef,
-        input: Value,
-        _cursor: Option<String>,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        self.runner(task)?.open(&input.to_string())
-    }
-
-    fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {
-        let runner = self.runner(task)?;
-        let output = match runner.call(&input.to_string())? {
-            Ok(output) => output,
-            Err(message) => return Ok(Err(message)),
-        };
-        let output = serde_json::from_str(&output)
-            .with_context(|| format!("task {} returned invalid JSON", task.id))?;
-        Ok(Ok(output))
-    }
-}
-
-fn batch_policy(manifest: &TaskManifest) -> BatchPolicy {
-    let defaults = BatchPolicy::default();
-    BatchPolicy {
-        size: manifest.batch_size.unwrap_or(defaults.size),
-        max_wait: manifest.max_wait_ms.map(Duration::from_millis),
-        slots: manifest.batch_slots.unwrap_or(defaults.slots),
+    fn task(&self, task: &TaskRef) -> Option<Task> {
+        self.tasks.read().unwrap().get(task)?.task.clone()
     }
 }

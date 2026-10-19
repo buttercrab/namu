@@ -17,7 +17,7 @@ use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Message, Report, Resume};
 use crate::scope::{Continuation, Scope, Then};
-use crate::tasks::{TaskRef, pack_input, unpack_output};
+use crate::tasks::{CallTask, Kind, Task, TaskRef, pack_input, unpack_output};
 use crate::tree::Node;
 
 impl Inner {
@@ -103,24 +103,27 @@ impl Inner {
             match plan {
                 Plan::Call { op, ctx } => {
                     at.set_ctx(ctx);
-                    let task = run.spec.task(op).context("op has no call")?;
-                    if !self.tasks.serves(task) {
-                        let to = self.routes.wait_for_server(task).await;
+                    let task_ref = run.spec.task(op).context("op has no call")?;
+                    let Some(task) = self.tasks.task(task_ref) else {
+                        let to = self.routes.wait_for_server(task_ref).await;
                         at.branch.resume = Resume::Call { op };
                         self.move_branch(run, at, to);
                         return Ok(());
-                    }
-                    if let Some(fan_out) = run.spec.fused[op]
-                        && self.tasks.is_stream(task)
+                    };
+                    if let Kind::Stream(stream) = &task.kind
+                        && let Some(fan_out) = run.spec.fused[op]
                     {
-                        self.start_stream(run, at, op, fan_out);
+                        self.start_stream(run, at, op, fan_out, stream.clone());
                         return Ok(());
                     }
                     let call = kernel::operation(workflow, op)?
                         .call
                         .as_ref()
                         .context("op has no call")?;
-                    let next = match self.run_call(&view, task, op, call, &at.ctx).await? {
+                    let next = match self
+                        .run_call(&view, task_ref, &task, op, call, &at.ctx)
+                        .await?
+                    {
                         Ok(next) => next,
                         Err(failure) => {
                             self.report(run, &at.branch, Report::Failure(failure));
@@ -129,7 +132,7 @@ impl Inner {
                     };
                     at.set_ctx(next);
                     at.branch.resume = Resume::Kernel(Start::After { op });
-                    if self.tasks.checkpoint(task) {
+                    if task.checkpoint {
                         self.checkpoint(run, at).await?;
                     }
                 }
@@ -174,7 +177,8 @@ impl Inner {
     async fn run_call(
         self: &Arc<Self>,
         view: &View<'_>,
-        task: &TaskRef,
+        task_ref: &TaskRef,
+        task: &Task,
         op: OpId,
         call: &Call,
         ctx: &Arc<Node>,
@@ -184,21 +188,19 @@ impl Inner {
             args.push(view.get(ctx, input).await?);
         }
         let input = pack_input(args);
-        let output = if self.tasks.is_batch(task) {
-            self.batch_call(task, input).await?
-        } else if self.tasks.is_stream(task) {
+        let output = match &task.kind {
+            Kind::Call(task) => self.call(task, input).await?,
             // Not feeding a fan-out: the stream is read to its end into a list.
-            self.read_stream(task, input).await?
-        } else {
-            self.call(task, input).await?
+            Kind::Stream(stream) => self.read_stream(stream, input).await?,
+            Kind::Batch(batch) => self.batch_call(task_ref, batch, input).await?,
         };
         view.run.calls.fetch_add(1, Ordering::Relaxed);
         let output = match output {
             Ok(output) => output,
-            Err(message) => return Ok(Err(format!("{}: {message}", task.id))),
+            Err(message) => return Ok(Err(format!("{}: {message}", task_ref.id))),
         };
         let outputs = unpack_output(output, call.outputs.len())
-            .with_context(|| format!("task {}", task.id))?;
+            .with_context(|| format!("task {}", task_ref.id))?;
         if outputs.is_empty() {
             return Ok(Ok(ctx.clone()));
         }
@@ -206,9 +208,13 @@ impl Inner {
         Ok(Ok(view.put(ctx, values, Point::Action(op)).await?))
     }
 
-    async fn call(&self, task: &TaskRef, input: Value) -> anyhow::Result<Result<Value, String>> {
+    async fn call(
+        &self,
+        task: &Arc<dyn CallTask>,
+        input: Value,
+    ) -> anyhow::Result<Result<Value, String>> {
         let _slot = self.task_slots.acquire().await?;
-        run_task(|| self.tasks.call(task, input))
+        run_task(|| task.call(input))
     }
 
     /// Records the branch past a checkpoint task, and waits until that is durable, so recovery
