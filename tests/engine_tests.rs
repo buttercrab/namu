@@ -533,3 +533,101 @@ async fn every_call_in_a_loop_has_its_own_key() {
     assert_eq!(keys.len(), 50);
     assert_eq!(keys.iter().collect::<HashSet<_>>().len(), 50);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn break_leaves_the_loop_with_the_values_it_had() {
+    #[workflow]
+    fn wf() -> i32 {
+        let mut i = 0;
+        let mut total = 0;
+        while less_than(i, 100) {
+            total = add(total, i);
+            if less_than(30, total) {
+                break;
+            }
+            i = add(i, 1);
+        }
+        // 0 + 1 + .. + 8 = 36 is the first total over 30, at i = 8.
+        add(add(total, total), i)
+    }
+
+    assert_eq!(
+        results(wf().to_serializable("break".into())).await,
+        [json!(80)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn continue_skips_the_rest_of_the_body() {
+    #[workflow]
+    fn wf() -> i32 {
+        let mut i = 0;
+        let mut odd = 0;
+        while less_than(i, 10) {
+            i = add(i, 1);
+            if is_even(i) {
+                continue;
+            }
+            odd = add(odd, i);
+        }
+        // 1 + 3 + 5 + 7 + 9
+        odd
+    }
+
+    assert_eq!(
+        results(wf().to_serializable("continue".into())).await,
+        [json!(25)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn break_and_continue_act_on_the_innermost_loop() {
+    #[workflow]
+    fn wf() -> i32 {
+        let mut i = 0;
+        let mut pairs = 0;
+        while less_than(i, 4) {
+            i = add(i, 1);
+            if is_even(i) {
+                continue;
+            }
+            let mut j = 0;
+            while less_than(j, 100) {
+                j = add(j, 1);
+                if less_than(i, j) {
+                    break;
+                }
+                pairs = add(pairs, 1);
+            }
+        }
+        // i = 1 counts j = 1; i = 3 counts j = 1, 2, 3.
+        pairs
+    }
+
+    assert_eq!(
+        results(wf().to_serializable("nested".into())).await,
+        [json!(4)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loop_in_a_fanned_out_branch_can_break() {
+    #[workflow]
+    fn wf() -> i32 {
+        let x = identity(range(1, 4));
+        let mut n = 0;
+        while less_than(n, 1000) {
+            if less_than(x, n) {
+                break;
+            }
+            n = add(n, 7);
+        }
+        // The first multiple of 7 over 10, 20, 30: 14, 21, 35.
+        sum(n)
+    }
+
+    assert_eq!(
+        results(wf().to_serializable("fan_break".into())).await,
+        [json!(70)]
+    );
+}

@@ -39,12 +39,17 @@ fn add_two<G: 'static>(
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
+#[allow(unused_mut)]
 pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
     let __builder = ::namu::__macro_exports::Builder::<i32>::new();
     let __result = {
         let mut i = ::namu::__macro_exports::literal(&__builder, 0);
         {
             let __pre_while_i_0 = i;
+            let mut __while_breaks_0: ::std::vec::Vec<(usize, ::std::vec::Vec<usize>)> = ::std::vec::Vec::new();
+            let mut __while_continues_0: ::std::vec::Vec<
+                (usize, ::std::vec::Vec<usize>),
+            > = ::std::vec::Vec::new();
             let __while_header_block_0 = __builder.new_block();
             let __while_body_block_0 = __builder.new_block();
             let __while_exit_block_0 = __builder.new_block();
@@ -70,6 +75,7 @@ pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
                 i,
                 ::namu::__macro_exports::literal(&__builder, 10),
             );
+            let __while_header_exit_0 = __builder.current_block_id();
             ::namu::__macro_exports::branch(
                 &__builder,
                 __while_cond,
@@ -142,9 +148,21 @@ pub fn nested_if_in_while_workflow() -> ::namu::__macro_exports::Graph<i32> {
                         ],
                     ),
                 );
+                from.extend(
+                    __while_continues_0.iter().map(|(block, ids)| (*block, ids[0usize])),
+                );
             }
             __builder.switch_to_block(__while_exit_block_0);
-            i = ::namu::__macro_exports::TracedValue::new(__i_phi_node_id_0);
+            i = if __while_breaks_0.is_empty() {
+                __i_phi_val_0
+            } else {
+                let __from = ::std::iter::once((__while_header_exit_0, __i_phi_val_0.id))
+                    .chain(
+                        __while_breaks_0.iter().map(|(block, ids)| (*block, ids[0usize])),
+                    )
+                    .collect();
+                ::namu::__macro_exports::TracedValue::new(__builder.phi(__from))
+            };
         }
         i
     };

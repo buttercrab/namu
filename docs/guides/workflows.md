@@ -41,7 +41,7 @@ summarize(stats)                 // summarize(stats: Vec<Stats>): collect every 
 
 ## Supported control flow
 - `if` / `if-else`
-- `while` loops
+- `while` loops, with `break` and `continue` (unlabeled; on the innermost loop)
 - early `return`. Inside a fanned-out branch, a `return` before the collect drops that item: a
   filter.
 
@@ -56,7 +56,7 @@ sum(y)                          // collects the rest
 
 Not yet supported:
 - `match` on anything but an attempt
-- `break` / `continue`
+- labeled `break` / `continue`, and `break` with a value
 
 ## Errors as values
 A task that fails fails its branch. To handle the failure instead, attempt the call and match on

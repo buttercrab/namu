@@ -19,6 +19,7 @@ fn task_b<G: 'static>(
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
+#[allow(unused_mut)]
 pub fn if_else_statement_workflow() -> ::namu::__macro_exports::Graph<()> {
     let __builder = ::namu::__macro_exports::Builder::<()>::new();
     {

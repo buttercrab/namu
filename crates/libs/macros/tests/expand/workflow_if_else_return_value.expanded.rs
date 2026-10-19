@@ -19,6 +19,7 @@ fn identity<G: 'static>(
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
+#[allow(unused_mut)]
 pub fn if_else_return_value_workflow() -> ::namu::__macro_exports::Graph<i32> {
     let __builder = ::namu::__macro_exports::Builder::<i32>::new();
     let __result = {
