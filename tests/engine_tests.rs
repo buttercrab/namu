@@ -399,5 +399,9 @@ async fn independent_calls_in_a_branch_run_at_once() {
         .await
         .unwrap();
     assert_eq!(json(&outcome.results), [json!(20)]);
-    assert_eq!(MOST.load(Ordering::SeqCst), 2, "the two probes ran one after the other");
+    assert_eq!(
+        MOST.load(Ordering::SeqCst),
+        2,
+        "the two probes ran one after the other"
+    );
 }
