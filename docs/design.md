@@ -642,7 +642,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 
 | Area | Today | Target |
 |------|-------|--------|
-| Parallelism | ✅ Fan-out, and calls in one branch that read none of each other's outputs, in a straight run: a worker serving them all runs them at once (`namu_core::parallel`) | Full dataflow within a block (calls separated by others that depend on one); parallel calls served by different workers |
+| Parallelism | ✅ Fan-out, and a straight run of calls in one branch as a dataflow DAG: a worker serving them all starts each call once the calls it reads from have finished, stores their outputs in order, and reports the first failure in order, as one call at a time would (`namu_core::parallel`) | Across literals and phis in a block; calls of a group served by different workers |
 | Value tree | ✅ Immutable nodes that own their parent: a context keeps its chain alive and nothing else, so a node is freed when its last child or context goes. A lookup walks up to 32 parents, then jumps in O(log depth): binary-lifting ancestors plus a persistent segment tree from value id to depth, built for a chain on its first deep lookup and kept. Workers index nodes weakly to serve fetches; a freed node asked for again is read from the log | |
 | Placement | ✅ A node attaches under the deepest node still holding a live value (liveness from the IR; a node's own values shadow older copies, which is what lets loops stay shallow). Chains stay as deep as the values in use | Several nodes per step, ordered longest-lived first |
 | Dedup | ✅ Constants are hoisted into the root context. Every other op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor (§13 q7) |
