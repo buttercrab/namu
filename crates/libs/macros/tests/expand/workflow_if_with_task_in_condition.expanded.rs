@@ -16,6 +16,7 @@ fn action_if_true<G: 'static>(
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
+#[allow(unused_mut)]
 pub fn if_with_task_in_condition_workflow() -> ::namu::__macro_exports::Graph<()> {
     let __builder = ::namu::__macro_exports::Builder::<()>::new();
     {

@@ -10,6 +10,7 @@ fn do_nothing<G: 'static>(
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
+#[allow(unused_mut)]
 pub fn if_statement_workflow() -> ::namu::__macro_exports::Graph<()> {
     let __builder = ::namu::__macro_exports::Builder::<()>::new();
     {

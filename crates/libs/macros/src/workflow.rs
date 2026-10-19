@@ -17,6 +17,8 @@ struct WorkflowVisitor {
     next_control_flow_id: usize,
     builder_ident: Ident,
     last_expr_has_value: bool,
+    /// The loops being lowered, innermost last: their ids and the variables their phis carry.
+    loops: Vec<(usize, Vec<Ident>)>,
     /// The first unsupported construct found; reported instead of the expansion.
     error: Option<syn::Error>,
 }
@@ -33,6 +35,7 @@ impl WorkflowVisitor {
             next_control_flow_id: 0,
             builder_ident,
             last_expr_has_value: false,
+            loops: Vec::new(),
             error: None,
         }
     }
@@ -123,6 +126,22 @@ impl VisitMut for WorkflowVisitor {
             Expr::Return(return_expr) => {
                 *i = self.handle_return(return_expr);
                 self.last_expr_has_value = false;
+            }
+            Expr::Break(break_expr) => {
+                if break_expr.label.is_some() || break_expr.expr.is_some() {
+                    let break_expr = break_expr.clone();
+                    self.fail(&break_expr, "only a plain `break` is supported");
+                    return;
+                }
+                *i = self.handle_loop_exit(i.clone(), LoopExit::Break);
+            }
+            Expr::Continue(continue_expr) => {
+                if continue_expr.label.is_some() {
+                    let continue_expr = continue_expr.clone();
+                    self.fail(&continue_expr, "only a plain `continue` is supported");
+                    return;
+                }
+                *i = self.handle_loop_exit(i.clone(), LoopExit::Continue);
             }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
@@ -451,6 +470,36 @@ impl WorkflowVisitor {
         }
     }
 
+    /// `break` or `continue`: an edge out of the innermost loop's body, to its exit or its header.
+    /// It records where it leaves from and the loop's variables there, for the phis at its
+    /// target. What follows in the same block can never run.
+    fn handle_loop_exit(&mut self, expr: Expr, exit: LoopExit) -> Expr {
+        let Some((id, vars)) = self.loops.last().cloned() else {
+            self.fail(&expr, "`break` and `continue` must be inside a `while`");
+            return expr;
+        };
+        self.last_expr_has_value = false;
+        let builder = self.builder_ident.clone();
+        let (edges, target) = match exit {
+            LoopExit::Break => (
+                format_ident!("__while_breaks_{}", id),
+                format_ident!("__while_exit_block_{}", id),
+            ),
+            LoopExit::Continue => (
+                format_ident!("__while_continues_{}", id),
+                format_ident!("__while_header_block_{}", id),
+            ),
+        };
+        parse_quote! {
+            {
+                #edges.push((#builder.current_block_id(), vec![#(#vars.id),*]));
+                ::namu::__macro_exports::jump(&#builder, #target);
+                let __unreachable = #builder.new_block();
+                #builder.switch_to_block(__unreachable);
+            }
+        }
+    }
+
     fn handle_while(&mut self, while_expr: &mut syn::ExprWhile) -> Expr {
         let id = self.new_control_flow_id();
         let builder = self.builder_ident.clone();
@@ -483,8 +532,13 @@ impl WorkflowVisitor {
         self.visit_expr_mut(&mut while_expr.cond);
         let cond = &while_expr.cond;
 
+        self.loops.push((id, vars.clone()));
         self.visit_block_mut(&mut while_expr.body);
+        self.loops.pop();
         let body_block = &while_expr.body;
+        let breaks = format_ident!("__while_breaks_{}", id);
+        let continues = format_ident!("__while_continues_{}", id);
+        let header_exit = format_ident!("__while_header_exit_{}", id);
 
         let post_body_captures = vars.iter().map(|name| {
             let post_body_name = format_ident!("__post_body_{}_{}", name, id);
@@ -493,8 +547,10 @@ impl WorkflowVisitor {
 
         let body_predecessor_id = format_ident!("__body_predecessor_id_{}", id);
 
+        // The header is entered from before the loop, from the end of the body, and from every
+        // `continue`.
         let mut phi_patchers = proc_macro2::TokenStream::new();
-        for var in &vars {
+        for (index, var) in vars.iter().enumerate() {
             let phi_node_id = format_ident!("__{}_phi_node_id_{}", var, id);
             let pre_while_name = format_ident!("__pre_while_{}_{}", var, id);
             let post_body_name = format_ident!("__post_body_{}_{}", var, id);
@@ -505,20 +561,32 @@ impl WorkflowVisitor {
                         (#parent_predecessor_id, #pre_while_name.id),
                         (#body_predecessor_id, #post_body_name.id)
                     ];
+                    from.extend(#continues.iter().map(|(block, ids)| (*block, ids[#index])));
                 }
             });
         }
 
-        let exit_phis = vars.iter().map(|name| {
-            let phi_node_id = format_ident!("__{}_phi_node_id_{}", name, id);
+        // The exit is reached from the header, where the variables are its phis, and from every
+        // `break`.
+        let exit_phis = vars.iter().enumerate().map(|(index, name)| {
+            let phi_val_ident = format_ident!("__{}_phi_val_{}", name, id);
             quote! {
-                #name = ::namu::__macro_exports::TracedValue::new(#phi_node_id);
+                #name = if #breaks.is_empty() {
+                    #phi_val_ident
+                } else {
+                    let __from = ::std::iter::once((#header_exit, #phi_val_ident.id))
+                        .chain(#breaks.iter().map(|(block, ids)| (*block, ids[#index])))
+                        .collect();
+                    ::namu::__macro_exports::TracedValue::new(#builder.phi(__from))
+                };
             }
         });
 
         parse_quote! {
             {
                 #(#pre_while_captures)*
+                let mut #breaks: ::std::vec::Vec<(usize, ::std::vec::Vec<usize>)> = ::std::vec::Vec::new();
+                let mut #continues: ::std::vec::Vec<(usize, ::std::vec::Vec<usize>)> = ::std::vec::Vec::new();
 
                 let #header_block_id = #builder.new_block();
                 let #body_block_id = #builder.new_block();
@@ -530,6 +598,7 @@ impl WorkflowVisitor {
                 #builder.switch_to_block(#header_block_id);
                 #(#phi_node_creations)*
                 let __while_cond = #cond;
+                let #header_exit = #builder.current_block_id();
                 ::namu::__macro_exports::branch(&#builder, __while_cond, #body_block_id, #exit_block_id);
 
                 #builder.switch_to_block(#body_block_id);
@@ -545,6 +614,11 @@ impl WorkflowVisitor {
             }
         }
     }
+}
+
+enum LoopExit {
+    Break,
+    Continue,
 }
 
 /// The blocks of a two-way split: then, else, and where they meet.
@@ -633,6 +707,7 @@ pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
     let expanded = quote! {
         #[allow(unused_assignments)]
         #[allow(unused_braces)]
+        #[allow(unused_mut)]
         pub fn #func_name() -> ::namu::__macro_exports::Graph<#return_type> {
             let #builder_ident = ::namu::__macro_exports::Builder::<#return_type>::new();
 

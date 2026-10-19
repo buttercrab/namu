@@ -1,0 +1,5 @@
+error: `break` and `continue` must be inside a `while`
+  --> tests/compile-fail/10-break-outside-loop.rs:10:9
+   |
+10 |         break;
+   |         ^^^^^

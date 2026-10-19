@@ -1,0 +1,5 @@
+error: only a plain `break` is supported
+  --> tests/compile-fail/11-labeled-break.rs:10:9
+   |
+10 |         break 'outer;
+   |         ^^^^^^^^^^^^

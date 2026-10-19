@@ -23,6 +23,7 @@ fn add<G: 'static>(
 }
 #[allow(unused_assignments)]
 #[allow(unused_braces)]
+#[allow(unused_mut)]
 pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
     let __builder = ::namu::__macro_exports::Builder::<i32>::new();
     let __result = {
@@ -33,6 +34,10 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __pre_while_a_0 = a;
             let __pre_while_b_0 = b;
             let __pre_while_i_0 = i;
+            let mut __while_breaks_0: ::std::vec::Vec<(usize, ::std::vec::Vec<usize>)> = ::std::vec::Vec::new();
+            let mut __while_continues_0: ::std::vec::Vec<
+                (usize, ::std::vec::Vec<usize>),
+            > = ::std::vec::Vec::new();
             let __while_header_block_0 = __builder.new_block();
             let __while_body_block_0 = __builder.new_block();
             let __while_exit_block_0 = __builder.new_block();
@@ -86,6 +91,7 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
                 i,
                 ::namu::__macro_exports::literal(&__builder, 5),
             );
+            let __while_header_exit_0 = __builder.current_block_id();
             ::namu::__macro_exports::branch(
                 &__builder,
                 __while_cond,
@@ -120,6 +126,9 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
                         ],
                     ),
                 );
+                from.extend(
+                    __while_continues_0.iter().map(|(block, ids)| (*block, ids[0usize])),
+                );
             }
             if let Some(
                 ::namu::__macro_exports::Node {
@@ -136,6 +145,9 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
                             (__body_predecessor_id_0, __post_body_b_0.id),
                         ],
                     ),
+                );
+                from.extend(
+                    __while_continues_0.iter().map(|(block, ids)| (*block, ids[1usize])),
                 );
             }
             if let Some(
@@ -154,11 +166,41 @@ pub fn multiple_mutable_vars_workflow() -> ::namu::__macro_exports::Graph<i32> {
                         ],
                     ),
                 );
+                from.extend(
+                    __while_continues_0.iter().map(|(block, ids)| (*block, ids[2usize])),
+                );
             }
             __builder.switch_to_block(__while_exit_block_0);
-            a = ::namu::__macro_exports::TracedValue::new(__a_phi_node_id_0);
-            b = ::namu::__macro_exports::TracedValue::new(__b_phi_node_id_0);
-            i = ::namu::__macro_exports::TracedValue::new(__i_phi_node_id_0);
+            a = if __while_breaks_0.is_empty() {
+                __a_phi_val_0
+            } else {
+                let __from = ::std::iter::once((__while_header_exit_0, __a_phi_val_0.id))
+                    .chain(
+                        __while_breaks_0.iter().map(|(block, ids)| (*block, ids[0usize])),
+                    )
+                    .collect();
+                ::namu::__macro_exports::TracedValue::new(__builder.phi(__from))
+            };
+            b = if __while_breaks_0.is_empty() {
+                __b_phi_val_0
+            } else {
+                let __from = ::std::iter::once((__while_header_exit_0, __b_phi_val_0.id))
+                    .chain(
+                        __while_breaks_0.iter().map(|(block, ids)| (*block, ids[1usize])),
+                    )
+                    .collect();
+                ::namu::__macro_exports::TracedValue::new(__builder.phi(__from))
+            };
+            i = if __while_breaks_0.is_empty() {
+                __i_phi_val_0
+            } else {
+                let __from = ::std::iter::once((__while_header_exit_0, __i_phi_val_0.id))
+                    .chain(
+                        __while_breaks_0.iter().map(|(block, ids)| (*block, ids[2usize])),
+                    )
+                    .collect();
+                ::namu::__macro_exports::TracedValue::new(__builder.phi(__from))
+            };
         }
         a
     };
