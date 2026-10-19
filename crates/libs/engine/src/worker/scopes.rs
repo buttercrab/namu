@@ -21,6 +21,7 @@ pub(super) struct Ending {
     outcome: RunOutcome,
     waiting: HashSet<WorkerId>,
     reply_to: Option<WorkerId>,
+    root_scope: ScopeId,
 }
 
 impl Inner {
@@ -91,6 +92,8 @@ impl Inner {
 
     pub(super) fn scope_over(self: &Arc<Self>, run: &Arc<Run>, id: ScopeId, scope: Scope) {
         match scope.into_parts() {
+            // The root scope stays in the log until the run is gone, so a successor of this
+            // worker can still finish the run.
             (_, Then::Finish(finish)) => self.finish(run, *finish),
             (items, Then::Continue { continuation, ctx }) => {
                 self.resume(run, id, continuation, ctx, items);
@@ -263,6 +266,7 @@ impl Inner {
             outcome,
             waiting: waiting.clone(),
             reply_to: run.spec.info.reply_to,
+            root_scope: run.spec.info.root_scope,
         };
         self.ending.lock().unwrap().insert(run_id, ending);
         for worker in waiting {
@@ -339,7 +343,10 @@ impl Inner {
 
     fn complete(self: &Arc<Self>, run: RunId, ending: Ending) {
         tracing::debug!(%run, "run finished");
-        self.log.record(vec![Record::RunGone(run)]);
+        self.log.record(vec![Record::RunGone {
+            run,
+            root_scope: ending.root_scope,
+        }]);
         if let Some(reply_to) = ending.reply_to {
             let outcome = ending.outcome;
             self.deliver(reply_to, Message::Finished { run, outcome });

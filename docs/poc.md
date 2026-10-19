@@ -115,9 +115,9 @@ How to read these:
 ## Known gaps
 
 1. **No idempotency keys** for tasks with external side effects.
-2. **The log keeps a run's branch ends, reports and trail nodes until the run ends.** Workers'
-   memory stays flat (nodes are freed), but the log of a run lasting weeks grows; it needs
-   compaction.
+2. **A run's reports stay in the log until it ends**: they are its results. Everything else in the
+   log is the run's live frontier: finished scopes and the nodes nothing live reaches are dropped
+   as the run goes.
 3. **Large values travel inline** in messages; there is no object-store path for them yet.
 4. **Routing is by load only**: work goes to the least loaded worker that can take it (loads
    ride on acknowledgements), but where a context's nodes are held is not considered, and batch

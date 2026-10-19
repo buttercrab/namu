@@ -41,6 +41,7 @@ pub struct LocalCluster {
     successors: Mutex<HashMap<WorkerId, WorkerId>>,
     tasks: Mutex<BTreeSet<TaskRef>>,
     next_owner: AtomicUsize,
+    log: Arc<MemoryLog>,
 }
 
 /// Workers that were killed: nothing they send or log arrives anywhere.
@@ -149,7 +150,13 @@ impl LocalCluster {
             leaving: Mutex::default(),
             tasks: Mutex::default(),
             next_owner: AtomicUsize::new(0),
+            log,
         }
+    }
+
+    /// The log the workers share.
+    pub fn log(&self) -> &MemoryLog {
+        &self.log
     }
 
     /// The workers that take work: neither dead nor leaving.
