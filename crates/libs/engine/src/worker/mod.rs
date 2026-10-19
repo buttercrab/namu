@@ -17,7 +17,7 @@ mod scopes;
 mod streams;
 mod view;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -30,7 +30,7 @@ use self::scopes::Ending;
 use crate::ids::{Minter, NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
 use crate::log::{Log, Record};
-use crate::message::{Branch, BranchId, Message, Resume};
+use crate::message::{Branch, BranchId, FetchRun, Message, Resume};
 use crate::routes::{Load, Routes};
 use crate::run::{RunInfo, RunOutcome, RunSpec, WorkerStats};
 use crate::scope::{Finish, Scope, Then};
@@ -87,6 +87,8 @@ struct Run {
     nodes: Arc<Nodes>,
     /// The scopes this worker owns that are open: opened here, or taken over from a dead worker.
     scopes: Mutex<HashMap<ScopeId, Scope>>,
+    /// The run's outcome as it is collected, on the worker that owns the run (or took it over).
+    finish: Mutex<Option<Finish>>,
     calls: AtomicU64,
     fetches: AtomicU64,
 }
@@ -243,16 +245,16 @@ impl Inner {
             Message::Finished { run, .. } => {
                 tracing::warn!(%run, "run outcome sent to a worker; only the control plane takes them");
             }
-            message @ Message::Handoff { .. } => self.on_handoff(message),
-            message @ Message::End { .. } => self.on_end(message),
-            message @ Message::Report { .. } => self.on_report(message),
+            Message::Handoff(handoff) => self.on_handoff(handoff),
+            Message::End(end) => self.on_end(end),
+            Message::Report(reported) => self.on_report(reported),
             Message::Ack { from, seqs, load } => self.on_ack(from, seqs, load),
             Message::FetchNode { run, id, reply_to } => {
                 let node = self.run_state(run).and_then(|state| state.nodes.get(id));
                 self.deliver(reply_to, Message::Node { run, id, node });
             }
             Message::Node { run, id, node } => self.on_node(run, id, node),
-            message @ Message::FetchRun { .. } => self.on_fetch_run(message),
+            Message::FetchRun(fetch) => self.on_fetch_run(fetch),
             Message::Run { info } => {
                 let worker = self.clone();
                 tokio::spawn(async move { worker.install(info).await });
@@ -299,12 +301,9 @@ impl Inner {
         let run = self.install_spec(spec);
 
         let root = run.nodes.hold(Arc::new(Node::root(info.root)));
-        let finish = Finish {
-            outcome: RunOutcome::default(),
-            reported: HashSet::new(),
-        };
+        *run.finish.lock().unwrap() = Some(Finish::default());
         // The root scope has one branch: the run's root branch.
-        let root_scope = Scope::new(Then::Finish(Box::new(finish)), Some(1));
+        let root_scope = Scope::new(Then::Finish, Some(1));
         run.open_scope(info.root_scope, root_scope);
         let branch = Branch {
             id: BranchId {
@@ -375,6 +374,7 @@ impl Inner {
                         spec,
                         nodes: Arc::default(),
                         scopes: Mutex::default(),
+                        finish: Mutex::default(),
                         calls: AtomicU64::new(0),
                         fetches: AtomicU64::new(0),
                     })
@@ -391,12 +391,12 @@ impl Inner {
 
     /// The run if it is known here. Otherwise `message` waits for the run's description, which is
     /// requested from `owner` on first contact.
-    fn known_or_wait(
+    fn known_or_wait<M: Into<Message>>(
         self: &Arc<Self>,
         run: RunId,
         owner: WorkerId,
-        message: Message,
-    ) -> Option<(Arc<Run>, Message)> {
+        message: M,
+    ) -> Option<(Arc<Run>, M)> {
         let mut pending = self.pending.lock().unwrap();
         if let Some(state) = self.run_state(run) {
             return Some((state, message));
@@ -408,25 +408,22 @@ impl Inner {
             messages: Vec::new(),
         });
         let first = entry.messages.is_empty();
-        entry.messages.push(message);
+        entry.messages.push(message.into());
         drop(pending);
         if first {
             let reply_to = self.id;
-            self.deliver(asked, Message::FetchRun { run, reply_to });
+            self.deliver(asked, FetchRun { run, reply_to }.into());
         }
         None
     }
 
-    fn on_fetch_run(self: &Arc<Self>, message: Message) {
-        let Message::FetchRun { run, reply_to } = message else {
-            unreachable!()
-        };
-        if let Some(state) = self.run_state(run) {
+    fn on_fetch_run(self: &Arc<Self>, fetch: FetchRun) {
+        if let Some(state) = self.run_state(fetch.run) {
             let info = state.spec.info.clone();
-            return self.deliver(reply_to, Message::Run { info });
+            return self.deliver(fetch.reply_to, Message::Run { info });
         }
         // Not known here: the run is over, or this worker is about to take it over.
-        self.orphan(message);
+        self.orphan(fetch.into());
     }
 
     /// The run is over: messages that waited for it are acknowledged and dropped.

@@ -81,30 +81,9 @@ pub enum Message {
         outcome: RunOutcome,
     },
 
-    /// Continue `branch` on the receiving worker. `nodes` are the nodes the sender created for
-    /// this branch since it arrived there, innermost first: the receiver cannot hold them yet,
-    /// and is likely to read them.
-    Handoff {
-        run: RunId,
-        branch: Branch,
-        nodes: Vec<Arc<Node>>,
-        delivery: Delivery,
-    },
-    /// `branch` ended, with its item if it reached the collect. Goes to the owner of its scope.
-    End {
-        run: RunId,
-        branch: BranchId,
-        item: Option<Value>,
-        delivery: Delivery,
-    },
-    /// A branch's report to the run's owner. The owner ends the branch in its scope once the
-    /// report is recorded, so the run cannot finish before its reports arrive.
-    Report {
-        run: RunId,
-        branch: BranchId,
-        report: Report,
-        delivery: Delivery,
-    },
+    Handoff(Handoff),
+    End(End),
+    Report(Reported),
     /// The receiver has made what these deliveries produced durable; the sender may let go. It
     /// carries the receiver's load (design §10.3).
     Ack {
@@ -124,11 +103,7 @@ pub enum Message {
         id: NodeId,
         node: Option<Arc<Node>>,
     },
-    /// Asks the run's owner how the run is described, on first contact with the run.
-    FetchRun {
-        run: RunId,
-        reply_to: WorkerId,
-    },
+    FetchRun(FetchRun),
     Run {
         info: Arc<RunInfo>,
     },
@@ -153,10 +128,64 @@ impl Message {
     /// The delivery to acknowledge, for messages their sender keeps until acknowledged.
     pub fn delivery(&self) -> Option<Delivery> {
         match self {
-            Message::Handoff { delivery, .. }
-            | Message::End { delivery, .. }
-            | Message::Report { delivery, .. } => Some(*delivery),
+            Message::Handoff(Handoff { delivery, .. })
+            | Message::End(End { delivery, .. })
+            | Message::Report(Reported { delivery, .. }) => Some(*delivery),
             _ => None,
         }
     }
 }
+
+/// Continue `branch` on the receiving worker. `nodes` are the nodes the sender created for this
+/// branch since it arrived there, innermost first: the receiver cannot hold them yet, and is
+/// likely to read them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Handoff {
+    pub run: RunId,
+    pub branch: Branch,
+    pub nodes: Vec<Arc<Node>>,
+    pub delivery: Delivery,
+}
+
+/// `branch` ended, with its item if it reached the collect. Goes to the owner of its scope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct End {
+    pub run: RunId,
+    pub branch: BranchId,
+    pub item: Option<Value>,
+    pub delivery: Delivery,
+}
+
+/// A branch's report to the run's owner. The owner ends the branch in its scope once the report
+/// is recorded, so the run cannot finish before its reports arrive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reported {
+    pub run: RunId,
+    pub branch: BranchId,
+    pub report: Report,
+    pub delivery: Delivery,
+}
+
+/// Asks the run's owner how the run is described, on first contact with the run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FetchRun {
+    pub run: RunId,
+    pub reply_to: WorkerId,
+}
+
+macro_rules! message_from {
+    ($($variant:ident($type:ident)),*) => {$(
+        impl From<$type> for Message {
+            fn from(message: $type) -> Self {
+                Message::$variant(message)
+            }
+        }
+    )*};
+}
+
+message_from!(
+    Handoff(Handoff),
+    End(End),
+    Report(Reported),
+    FetchRun(FetchRun)
+);

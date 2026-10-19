@@ -11,7 +11,7 @@ use super::{Inner, Run};
 use crate::ids::{RunId, ScopeId, WorkerId, owner};
 use crate::kernel::Start;
 use crate::log::{EndRecord, Record, ReportRecord};
-use crate::message::{Branch, BranchId, Message, Report, Resume};
+use crate::message::{Branch, BranchId, End, Message, Report, Reported, Resume};
 use crate::run::{RunOutcome, WorkerStats};
 use crate::scope::{Continuation, Ended, Finish, Scope, Then};
 use crate::tree::Node;
@@ -25,25 +25,22 @@ pub(super) struct Ending {
 }
 
 impl Inner {
-    pub(super) fn on_end(self: &Arc<Self>, message: Message) {
-        let Message::End {
+    pub(super) fn on_end(self: &Arc<Self>, end: End) {
+        let End {
             run,
             branch,
             item,
             delivery,
-        } = &message
-        else {
-            unreachable!()
-        };
+        } = &end;
         let scope_id = &branch.scope;
         let Some(state) = self.run_state(*run) else {
-            return self.orphan(message);
+            return self.orphan(end.into());
         };
         let over = {
             let mut scopes = state.scopes.lock().unwrap();
             let Some(scope) = scopes.get_mut(scope_id) else {
                 drop(scopes);
-                return self.unknown_scope(*scope_id, message);
+                return self.unknown_scope(*scope_id, end.into());
             };
             let ended = scope.end(branch.index, item.clone());
             if ended != Ended::Again {
@@ -58,14 +55,14 @@ impl Inner {
                 Ended::Over => scopes.remove(scope_id),
             }
         };
-        let end = EndRecord {
+        let record = EndRecord {
             index: branch.index,
             item: item.clone(),
         };
         let durable = self.log.append(vec![Record::End {
             run: *run,
             scope: *scope_id,
-            end,
+            end: record,
         }]);
         self.ack_when(durable, *delivery);
         if let Some(scope) = over {
@@ -94,7 +91,13 @@ impl Inner {
         match scope.into_parts() {
             // The root scope stays in the log until the run is gone, so a successor of this
             // worker can still finish the run.
-            (_, Then::Finish(finish)) => self.finish(run, *finish),
+            (_, Then::Finish) => {
+                let finish = run.finish.lock().unwrap().take();
+                self.finish(
+                    run,
+                    finish.expect("the run's outcome is kept where its root scope is"),
+                )
+            }
             (items, Then::Continue { continuation, ctx }) => {
                 self.resume(run, id, continuation, ctx, items);
             }
@@ -194,36 +197,35 @@ impl Inner {
         let run = run.id();
         self.send_kept(
             owner(branch.scope),
-            |delivery| Message::End {
-                run,
-                branch,
-                item,
-                delivery,
+            |delivery| {
+                End {
+                    run,
+                    branch,
+                    item,
+                    delivery,
+                }
+                .into()
             },
             release,
         );
     }
 
-    pub(super) fn on_report(self: &Arc<Self>, message: Message) {
-        let Message::Report {
+    pub(super) fn on_report(self: &Arc<Self>, reported: Reported) {
+        let Reported {
             run,
             branch,
             report,
             delivery,
-        } = &message
-        else {
-            unreachable!()
-        };
+        } = &reported;
         let Some(state) = self.run_state(*run) else {
-            return self.orphan(message);
+            return self.orphan(reported.into());
         };
         let recorded = {
-            let mut scopes = state.scopes.lock().unwrap();
-            let root = scopes.get_mut(&state.spec.info.root_scope);
-            let Some(Then::Finish(finish)) = root.map(|root| &mut root.then) else {
+            let mut finish = state.finish.lock().unwrap();
+            let Some(finish) = finish.as_mut() else {
                 // The run's owner is dead and this worker is (about to be) its successor.
-                drop(scopes);
-                return self.orphan(message);
+                drop(finish);
+                return self.orphan(reported.into());
             };
             record_report(finish, *branch, report.clone())
         };

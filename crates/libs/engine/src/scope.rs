@@ -37,7 +37,7 @@ pub struct Scope {
 /// What happens when a scope is over.
 pub enum Then {
     /// The run's root scope: the run is over.
-    Finish(Box<Finish>),
+    Finish,
     /// A fan-out scope: the branch that fanned out continues from `ctx`, which the scope holds
     /// until then.
     Continue {
@@ -47,6 +47,7 @@ pub enum Then {
 }
 
 /// The run's outcome as its owner collects it.
+#[derive(Default)]
 pub struct Finish {
     pub outcome: RunOutcome,
     /// Branches whose report is recorded.
@@ -184,16 +185,9 @@ impl Indices {
 mod tests {
     use super::*;
 
-    fn finish() -> Then {
-        Then::Finish(Box::new(Finish {
-            outcome: RunOutcome::default(),
-            reported: HashSet::new(),
-        }))
-    }
-
     #[test]
     fn a_scope_is_over_when_every_branch_has_ended() {
-        let mut scope = Scope::new(finish(), Some(3));
+        let mut scope = Scope::new(Then::Finish, Some(3));
         let ends = [
             scope.end(2, Some(Value::new(3))),
             scope.end(1, None),
@@ -207,7 +201,7 @@ mod tests {
 
     #[test]
     fn a_branch_counts_once() {
-        let mut scope = Scope::new(finish(), Some(2));
+        let mut scope = Scope::new(Then::Finish, Some(2));
         assert_eq!(scope.end(0, None), Ended::Open);
         assert_eq!(scope.end(0, None), Ended::Again);
         assert_eq!(scope.end(1, None), Ended::Over);
@@ -215,11 +209,11 @@ mod tests {
 
     #[test]
     fn a_streamed_scope_is_over_once_closed_and_drained() {
-        let mut scope = Scope::new(finish(), None);
+        let mut scope = Scope::new(Then::Finish, None);
         assert_eq!(scope.end(0, None), Ended::Open);
         assert_eq!(scope.close(2), Ended::Open);
         assert_eq!(scope.end(1, None), Ended::Over);
-        let mut empty = Scope::new(finish(), None);
+        let mut empty = Scope::new(Then::Finish, None);
         assert_eq!(empty.close(0), Ended::Over);
     }
 

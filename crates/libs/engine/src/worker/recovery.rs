@@ -18,7 +18,7 @@ use super::scopes::record_report;
 use super::{Inner, Run};
 use crate::ids::{RunId, WorkerId, owner};
 use crate::log::{Record, ReportRecord, RunEstate, ScopeEstate};
-use crate::message::{Branch, Message};
+use crate::message::{Branch, End, FetchRun, Message, Reported};
 use crate::run::RunInfo;
 use crate::scope::{Finish, Scope, Then};
 
@@ -75,7 +75,7 @@ impl Inner {
         }
         for (run, target) in moved {
             let reply_to = self.id;
-            self.deliver(target, Message::FetchRun { run, reply_to });
+            self.deliver(target, FetchRun { run, reply_to }.into());
         }
     }
 
@@ -140,14 +140,13 @@ impl Inner {
                 Then::Continue { continuation, ctx }
             }
             None => {
-                let mut finish = Finish {
-                    outcome: Default::default(),
-                    reported: HashSet::new(),
-                };
+                // The root scope: this worker now collects the run's outcome.
+                let mut finish = Finish::default();
                 for report in reports {
                     record_report(&mut finish, report.branch, report.report.clone());
                 }
-                Then::Finish(Box::new(finish))
+                *run.finish.lock().unwrap() = Some(finish);
+                Then::Finish
             }
         };
         let mut scope = Scope::new(then, estate.count);
@@ -198,9 +197,9 @@ impl Inner {
 
     async fn place(self: &Arc<Self>, message: Message) {
         let (run, addressee) = match &message {
-            Message::End { run, branch, .. } => (*run, Some(owner(branch.scope))),
-            Message::Report { run, .. } => (*run, None),
-            Message::FetchRun { run, reply_to } => {
+            Message::End(End { run, branch, .. }) => (*run, Some(owner(branch.scope))),
+            Message::Report(Reported { run, .. }) => (*run, None),
+            Message::FetchRun(FetchRun { run, reply_to }) => {
                 let (run, reply_to) = (*run, *reply_to);
                 return match self.log.run(run).await {
                     Ok(Some(info)) => self.deliver(reply_to, Message::Run { info }),
@@ -253,7 +252,9 @@ impl Inner {
             return self.drop_late(message);
         }
         let held = self.run_state(run).is_some_and(|state| match &message {
-            Message::End { branch, .. } => state.scopes.lock().unwrap().contains_key(&branch.scope),
+            Message::End(End { branch, .. }) => {
+                state.scopes.lock().unwrap().contains_key(&branch.scope)
+            }
             _ => state
                 .scopes
                 .lock()
