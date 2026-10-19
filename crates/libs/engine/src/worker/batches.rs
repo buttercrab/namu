@@ -15,7 +15,7 @@ use tokio::time::Instant;
 
 use super::Inner;
 use super::drive::run_task;
-use crate::tasks::{Args, Batch, BatchPolicy, BatchSession, TaskRef};
+use crate::tasks::{Admitted, Args, Batch, BatchPolicy, BatchSession, CallKey, TaskRef};
 
 type Outcome = anyhow::Result<Result<Value, String>>;
 
@@ -28,6 +28,7 @@ pub(super) struct Batcher {
 
 struct Waiting {
     args: Args,
+    key: CallKey,
     since: Instant,
     done: oneshot::Sender<Outcome>,
 }
@@ -39,11 +40,13 @@ impl Inner {
         task: &TaskRef,
         batch: &Batch,
         args: Args,
+        key: CallKey,
     ) -> Outcome {
         let batcher = self.batcher(task, batch);
         let (done, result) = oneshot::channel();
         let waiting = Waiting {
             args,
+            key,
             since: Instant::now(),
             done,
         };
@@ -79,7 +82,7 @@ impl Inner {
             if active.is_empty() {
                 batcher.wait_for_items(&policy).await;
             }
-            let admit: Vec<(u64, Args)> = {
+            let admit: Vec<Admitted> = {
                 let mut queue = batcher.queue.lock().unwrap();
                 let room = policy.size.saturating_sub(active.len()).min(queue.len());
                 queue
@@ -87,7 +90,11 @@ impl Inner {
                     .map(|waiting| {
                         next_id += 1;
                         active.insert(next_id, waiting.done);
-                        (next_id, waiting.args)
+                        Admitted {
+                            id: next_id,
+                            args: waiting.args,
+                            key: waiting.key,
+                        }
                     })
                     .collect()
             };

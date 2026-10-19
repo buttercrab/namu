@@ -276,7 +276,7 @@ impl Inner {
         Ok(Ok(ctx))
     }
 
-    /// Runs a task on `args`, whatever its kind. Only call tasks are given the call's key.
+    /// Runs a task on `args`, whatever its kind, as the call named `key`.
     async fn invoke(
         self: &Arc<Self>,
         task_ref: &TaskRef,
@@ -288,7 +288,7 @@ impl Inner {
             Kind::Call(task) => self.call(task, args, key).await,
             // Not feeding a fan-out: the stream is read to its end into a list.
             Kind::Stream(stream) => self.read_stream(stream, args, key).await,
-            Kind::Batch(batch) => self.batch_call(task_ref, batch, args).await,
+            Kind::Batch(batch) => self.batch_call(task_ref, batch, args, key).await,
         }
     }
 

@@ -440,7 +440,8 @@ asynchronous; the receiver starts on the work immediately.
   branch, so a branch run again from a record counts its calls exactly as it did the first time,
   and the calls of a loop each get their own key. Tasks read it in the guest
   (`namu_guest::call_key()`, passed through the task ABI, version 6) or in process; a stream has
-  its call's key, recorded with its source, for as long as it runs and whenever it is reopened.
+  its call's key, recorded with its source, for as long as it runs and whenever it is reopened;
+  a batch step has the keys of its items (`call_keys()`).
 - **Long runs stay small.** With liveness-based placement (§6.2), dead nodes are freed, in the log
   as well as in memory. The persisted state is then the live frontier of the run, not its history,
   so a run's footprint and its recovery time do not grow with its age.
@@ -658,6 +659,6 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v6; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |
-| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, and nodes no live record reaches are swept whenever a run's nodes double (§7.5) | Keys for batch items; reports, which are the run's results, stay until it ends |
+| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, and nodes no live record reaches are swept whenever a run's nodes double (§7.5) | Reports, which are the run's results, stay until it ends |
 | Fan-in termination | ✅ Counting at scope owners: every branch of a scope is created by its owner, so it knows the count; ended indices are a watermark plus the out-of-order window | |
 | Membership | ✅ Join (register + heartbeats); a worker whose heartbeats stop is replaced by a successor (§7.4). Drain on SIGTERM (§10.4): routed around, branches move on at their next task call, stream sources stop at an item, and once nothing is in flight and everything is durable the worker leaves and its successor takes over its scopes from the log, with nothing run twice | Heartbeats tied to the registering process, not just its id |

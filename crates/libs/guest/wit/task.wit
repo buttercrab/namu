@@ -28,9 +28,11 @@ world stream-task {
 /// newly arrived items and gives back the ones it finished, in any order: all of them for dynamic
 /// batching, possibly fewer for continuous batching, where items stay across steps.
 interface batch {
-  /// An item handed to a session: its id, and its input.
+  /// An item handed to a session: its id, its call's key (as `call` in the `task` world), and
+  /// its input.
   record admitted {
     id: u64,
+    key: string,
     input: list<u8>,
   }
 

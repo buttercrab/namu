@@ -70,15 +70,23 @@ pub const NATIVE_ABI_VERSION: u32 = 6;
 
 std::thread_local! {
     static CALL_KEY: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static CALL_KEYS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The key of the call this task is running for: the same each time the engine runs the call
 /// again after a crash, and different for every other call. A task with side effects passes it
 /// to what it calls (an idempotency key) so the effect happens once. A stream has the key of the
 /// call that opened it, while it opens and while each item is pulled. `None` outside a call, and
-/// in batch tasks, whose steps serve many calls at once.
+/// in batch tasks, whose steps serve many calls at once: see [`call_keys`].
 pub fn call_key() -> Option<String> {
     CALL_KEY.with_borrow(Clone::clone)
+}
+
+/// The keys of the calls a batch step serves, in the order of its items: the list a dynamic batch
+/// task is given, or `admit` for a continuous one (which keeps a key with its item if it needs it
+/// later). Empty outside a batch step.
+pub fn call_keys() -> Vec<String> {
+    CALL_KEYS.with_borrow(Clone::clone)
 }
 
 /// A batch task that keeps items across steps (continuous batching). A session is made with
@@ -142,9 +150,24 @@ pub mod __private {
     /// What a batch step finished: each item's id, and its output or its own error.
     pub type Finished = Vec<(u64, Result<Bytes, String>)>;
 
-    /// An open batch session: takes in `(id, input)` and returns what it finished. An error fails
-    /// every item in it.
-    pub type Session = Box<dyn FnMut(Vec<(u64, Bytes)>) -> Result<Finished, String>>;
+    /// An item a batch step takes in: its id, its call's key, and its input.
+    pub type Admitted = (u64, String, Bytes);
+
+    /// An open batch session: takes in items and returns what it finished. An error fails every
+    /// item in it.
+    pub type Session = Box<dyn FnMut(Vec<Admitted>) -> Result<Finished, String>>;
+
+    /// Runs `f` with `keys` as the current batch step's keys.
+    fn with_keys<T>(keys: Vec<String>, f: impl FnOnce() -> T) -> T {
+        struct Reset(Vec<String>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::CALL_KEYS.set(std::mem::take(&mut self.0));
+            }
+        }
+        let _reset = Reset(super::CALL_KEYS.replace(keys));
+        f()
+    }
 
     /// A dynamic batch session over `f`: each step runs it over the items given.
     pub fn dynamic<T, R, E>(f: fn(Vec<T>) -> Vec<Result<R, E>>) -> Session
@@ -155,11 +178,12 @@ pub mod __private {
     {
         Box::new(move |admit| {
             let mut finished = Vec::new();
-            let (mut ids, mut items) = (Vec::new(), Vec::new());
-            for (id, input) in admit {
+            let (mut ids, mut keys, mut items) = (Vec::new(), Vec::new(), Vec::new());
+            for (id, key, input) in admit {
                 match rmp_serde::from_slice(&input) {
                     Ok(item) => {
                         ids.push(id);
+                        keys.push(key);
                         items.push(item);
                     }
                     Err(err) => finished.push((id, Err(format!("invalid task input: {err}")))),
@@ -168,7 +192,7 @@ pub mod __private {
             if items.is_empty() {
                 return Ok(finished);
             }
-            let outputs = catch_unwind(AssertUnwindSafe(|| f(items)))
+            let outputs = catch_unwind(AssertUnwindSafe(|| with_keys(keys, || f(items))))
                 .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
             if outputs.len() != ids.len() {
                 return Err(format!(
@@ -191,14 +215,17 @@ pub mod __private {
         let mut session = C::default();
         Box::new(move |admit| {
             let mut finished = Vec::new();
-            let mut items = Vec::new();
-            for (id, input) in admit {
+            let (mut keys, mut items) = (Vec::new(), Vec::new());
+            for (id, key, input) in admit {
                 match rmp_serde::from_slice(&input) {
-                    Ok(item) => items.push((id, item)),
+                    Ok(item) => {
+                        keys.push(key);
+                        items.push((id, item));
+                    }
                     Err(err) => finished.push((id, Err(format!("invalid task input: {err}")))),
                 }
             }
-            let done = catch_unwind(AssertUnwindSafe(|| session.step(items)))
+            let done = catch_unwind(AssertUnwindSafe(|| with_keys(keys, || session.step(items))))
                 .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
             finished.extend(done.into_iter().map(|(id, output)| (id, encode(output))));
             Ok(finished)
@@ -386,13 +413,15 @@ pub mod __private {
         }
     }
 
-    /// An item of a batch step as it crosses the native ABI: its id and its encoded input.
-    type Admitted = (u64, serde_bytes::ByteBuf);
+    /// An item of a batch step as it crosses the native ABI: its id, its key and its encoded
+    /// input.
+    type NativeAdmitted = (u64, String, serde_bytes::ByteBuf);
 
     /// An item a batch step finished: its id and its encoded output, or its error.
     type Done = (u64, Result<serde_bytes::ByteBuf, String>);
 
-    /// Native ABI entry point for a batch step. The input is a MessagePack array of `[id, input]`,
+    /// Native ABI entry point for a batch step. The input is a MessagePack array of
+    /// `[id, key, input]`,
     /// the output one of `[id, {"Ok": output} | {"Err": error}]`; or 1 and the session's error.
     ///
     /// # Safety
@@ -406,12 +435,12 @@ pub mod __private {
         out_len: *mut usize,
     ) -> i32 {
         let session = unsafe { &mut *handle.cast::<Session>() };
-        let step = rmp_serde::from_slice::<Vec<Admitted>>(unsafe { input(in_ptr, in_len) })
+        let step = rmp_serde::from_slice::<Vec<NativeAdmitted>>(unsafe { input(in_ptr, in_len) })
             .map_err(|err| err.to_string())
             .map(|admit| {
                 admit
                     .into_iter()
-                    .map(|(id, input)| (id, input.into_vec()))
+                    .map(|(id, key, input)| (id, key, input.into_vec()))
                     .collect()
             })
             .and_then(session)
@@ -677,7 +706,7 @@ macro_rules! __export_batch {
                 ) -> ::std::result::Result<Vec<Finished>, String> {
                     let admit = admit
                         .into_iter()
-                        .map(|item| (item.id, item.input))
+                        .map(|item| (item.id, item.key, item.input))
                         .collect();
                     let finished = (self.0.borrow_mut())(admit)?;
                     Ok(finished
@@ -746,8 +775,10 @@ macro_rules! __export_native_common {
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
-    use super::__private::{Bytes, Items, native_call, native_free, open_keyed};
-    use super::call_key;
+    use super::__private::{
+        Bytes, Items, dynamic, native_call, native_free, open_keyed, rmp_serde,
+    };
+    use super::{call_key, call_keys};
 
     fn whoami(_input: &[u8]) -> Result<Bytes, String> {
         call_key().map(String::into_bytes).ok_or("no key".into())
@@ -791,5 +822,28 @@ mod tests {
         assert_eq!(items.next(), Some(Ok(b"k".to_vec())));
         assert_eq!(items.next(), Some(Ok(b"k".to_vec())));
         assert_eq!(call_key(), None);
+    }
+
+    #[test]
+    fn a_batch_step_has_the_keys_of_its_items_in_order() {
+        let mut session = dynamic(|xs: Vec<i32>| {
+            let keys = call_keys();
+            xs.into_iter()
+                .zip(keys)
+                .map(|(x, key)| Ok::<_, String>(format!("{x}:{key}")))
+                .collect()
+        });
+        let item = |id, key: &str, x: i32| (id, key.to_string(), rmp_serde::to_vec(&x).unwrap());
+        // An item whose input does not decode is left out of the list, and of the keys.
+        let bad = (2, "b".to_string(), vec![0xc1]);
+        let finished = session(vec![item(1, "a", 10), bad, item(3, "c", 30)]).unwrap();
+        let outputs: Vec<_> = finished
+            .into_iter()
+            .filter_map(|(id, output)| {
+                Some((id, rmp_serde::from_slice::<String>(&output.ok()?).ok()?))
+            })
+            .collect();
+        assert_eq!(outputs, [(1, "10:a".to_string()), (3, "30:c".to_string())]);
+        assert!(call_keys().is_empty());
     }
 }

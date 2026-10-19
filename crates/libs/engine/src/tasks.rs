@@ -5,7 +5,7 @@
 //! steps. A task with several outputs returns a tuple. Runtimes outside this process see the
 //! arguments packed by the task ABI's convention ([`encode_args`](namu_core::value::encode_args)).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::marker::PhantomData;
@@ -47,13 +47,32 @@ impl Display for CallKey {
 
 thread_local! {
     static CALL_KEY: Cell<Option<CallKey>> = const { Cell::new(None) };
+    static CALL_KEYS: RefCell<Vec<CallKey>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The key of the call an in-process task is running for, read from inside the task. A stream has
 /// the key of the call that opened it, while it opens and while each item is pulled. `None`
-/// outside a call, and in batch tasks, whose steps serve many calls at once.
+/// outside a call, and in batch tasks, whose steps serve many calls at once: see [`call_keys`].
 pub fn call_key() -> Option<CallKey> {
     CALL_KEY.get()
+}
+
+/// The keys of the calls an in-process batch step serves, in the order of its items: the list a
+/// dynamic batch task is given, or what a continuous one admits. Empty outside a batch step.
+pub fn call_keys() -> Vec<CallKey> {
+    CALL_KEYS.with_borrow(Clone::clone)
+}
+
+/// Runs `f` with `keys` as the current batch step's keys.
+fn with_keys<T>(keys: Vec<CallKey>, f: impl FnOnce() -> T) -> T {
+    struct Reset(Vec<CallKey>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CALL_KEYS.set(std::mem::take(&mut self.0));
+        }
+    }
+    let _reset = Reset(CALL_KEYS.replace(keys));
+    f()
 }
 
 /// Runs `f` with `key` as the current call's key.
@@ -178,7 +197,14 @@ pub trait BatchSession: Send {
     /// Hands the session `admit` and returns the items it finished, in any order: all of them for
     /// a dynamic batch, possibly fewer (and possibly earlier ones) for a continuous one. `Err` is a
     /// failure of the whole session, which fails every item in it.
-    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished>;
+    fn step(&mut self, admit: Vec<Admitted>) -> anyhow::Result<Finished>;
+}
+
+/// An item a batch step takes in: its id in the session, and its call's arguments and key.
+pub struct Admitted {
+    pub id: u64,
+    pub args: Args,
+    pub key: CallKey,
 }
 
 /// The items a batch step finished: each item's id, and its output or its own error.
@@ -423,15 +449,15 @@ where
     E: Display,
     F: Fn(Vec<I>) -> Result<Vec<Result<O, E>>, E> + Send,
 {
-    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
+    fn step(&mut self, admit: Vec<Admitted>) -> anyhow::Result<Finished> {
         // An item whose input does not fit fails alone; the rest run.
         let mut finished = Vec::new();
-        let mut ids = Vec::new();
-        let mut items = Vec::new();
-        for (id, args) in admit {
+        let (mut ids, mut keys, mut items) = (Vec::new(), Vec::new(), Vec::new());
+        for Admitted { id, args, key } in admit {
             match from_args(args) {
                 Ok(item) => {
                     ids.push(id);
+                    keys.push(key);
                     items.push(item);
                 }
                 Err(err) => finished.push((id, Err(format!("bad input: {err:#}")))),
@@ -440,7 +466,7 @@ where
         if items.is_empty() {
             return Ok(finished);
         }
-        let outputs = match (self.f)(items) {
+        let outputs = match with_keys(keys, || (self.f)(items)) {
             Ok(outputs) => outputs,
             Err(err) => {
                 let message = err.to_string();
@@ -466,18 +492,20 @@ where
 struct ContinuousSession<C>(C);
 
 impl<C: Continuous> BatchSession for ContinuousSession<C> {
-    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
+    fn step(&mut self, admit: Vec<Admitted>) -> anyhow::Result<Finished> {
         let mut finished = Vec::new();
-        let mut items = Vec::new();
-        for (id, args) in admit {
+        let (mut keys, mut items) = (Vec::new(), Vec::new());
+        for Admitted { id, args, key } in admit {
             match from_args(args) {
-                Ok(item) => items.push((id, item)),
+                Ok(item) => {
+                    keys.push(key);
+                    items.push((id, item));
+                }
                 Err(err) => finished.push((id, Err(format!("bad input: {err:#}")))),
             }
         }
         finished.extend(
-            self.0
-                .step(items)
+            with_keys(keys, || self.0.step(items))
                 .into_iter()
                 .map(|(id, output)| (id, output.map(Value::new))),
         );

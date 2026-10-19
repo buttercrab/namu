@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    Args, BatchSession, BatchTask, CallKey, CallTask, Finished, StreamItem, StreamTask, TaskStream,
+    Admitted, Args, BatchSession, BatchTask, CallKey, CallTask, Finished, StreamItem, StreamTask,
+    TaskStream,
 };
 use wasmtime::component::{Component, InstancePre, Linker, ResourceAny, ResourceTable, TypedFunc};
 use wasmtime::{Engine, Store};
@@ -233,15 +234,17 @@ struct WasmSession {
 }
 
 impl BatchSession for WasmSession {
-    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
-        use batch::exports::namu::task::batch::Admitted;
-
+    fn step(&mut self, admit: Vec<Admitted>) -> anyhow::Result<Finished> {
         let session = self.session.expect("the session is open");
         let admit = admit
             .into_iter()
-            .map(|(id, args)| {
+            .map(|Admitted { id, args, key }| {
                 let input = encode_args(&args)?.to_vec();
-                Ok(Admitted { id, input })
+                Ok(batch::exports::namu::task::batch::Admitted {
+                    id,
+                    key: key.to_string(),
+                    input,
+                })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let finished = self

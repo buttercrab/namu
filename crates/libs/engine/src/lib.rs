@@ -22,5 +22,5 @@ mod worker;
 
 pub use cluster::LocalCluster;
 pub use run::{RunInfo, RunOutcome, RunSpec, WorkerStats};
-pub use tasks::{CallKey, FnTasks, TaskRef, Tasks, call_key};
+pub use tasks::{CallKey, FnTasks, TaskRef, Tasks, call_key, call_keys};
 pub use worker::Worker;

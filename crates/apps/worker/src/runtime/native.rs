@@ -15,7 +15,8 @@ use std::sync::Arc;
 use libloading::Library;
 use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    Args, BatchSession, BatchTask, CallKey, CallTask, Finished, StreamItem, StreamTask, TaskStream,
+    Admitted, Args, BatchSession, BatchTask, CallKey, CallTask, Finished, StreamItem, StreamTask,
+    TaskStream,
 };
 use namu_proto::TASK_ABI_VERSION;
 use serde_bytes::ByteBuf;
@@ -243,10 +244,13 @@ struct NativeSession {
 unsafe impl Send for NativeSession {}
 
 impl BatchSession for NativeSession {
-    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
+    fn step(&mut self, admit: Vec<Admitted>) -> anyhow::Result<Finished> {
         let admit = admit
             .into_iter()
-            .map(|(id, args)| Ok((id, ByteBuf::from(encode_args(&args)?.to_vec()))))
+            .map(|Admitted { id, args, key }| {
+                let input = ByteBuf::from(encode_args(&args)?.to_vec());
+                Ok((id, key.to_string(), input))
+            })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let input = rmp_serde::to_vec(&admit)?;
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
