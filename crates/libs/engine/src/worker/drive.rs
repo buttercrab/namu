@@ -1,13 +1,15 @@
 //! Driving branches through the IR on this worker.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use anyhow::Context;
-use namu_core::OpId;
 use namu_core::ir::Call;
 use namu_core::value::Value;
+use namu_core::{OpId, ValueId};
 use tokio::runtime::{Handle, RuntimeFlavor};
+use tokio::task::{AbortHandle, JoinSet};
 
 use super::delivery::Release;
 use super::view::View;
@@ -234,44 +236,98 @@ impl Inner {
         Ok(Some(calls))
     }
 
-    /// Runs a group of independent calls at once, and stores their outputs in order.
+    /// Runs a group of calls as a dataflow DAG: each starts as soon as the calls of the group it
+    /// reads from have finished. Their outputs are then stored in order, as if they had run one
+    /// at a time, and as then, the first call to fail (in that order) fails the branch.
     async fn run_group(
         self: &Arc<Self>,
         view: &View<'_>,
         calls: Vec<Planned<'_>>,
         at: &mut Driving,
     ) -> anyhow::Result<Result<Arc<Node>, String>> {
-        // Every call reads only values from before the group.
-        let mut running = Vec::with_capacity(calls.len());
-        for planned in &calls {
-            let args = gather(view, planned.call, &at.ctx).await?;
-            let key = at.key(view.run, planned.op);
-            let (worker, task_ref, task) =
-                (self.clone(), planned.task_ref.clone(), planned.task.clone());
-            running.push(tokio::spawn(async move {
-                worker.invoke(&task_ref, &task, args, key).await
-            }));
+        // Named in order, as one call at a time would name them.
+        let keys: Vec<CallKey> = calls.iter().map(|p| at.key(view.run, p.op)).collect();
+        // Where each output of the group is made: the call, and which of its outputs.
+        let made: HashMap<ValueId, (usize, usize)> = (0..)
+            .zip(&calls)
+            .flat_map(|(index, planned)| {
+                (0..)
+                    .zip(&planned.call.outputs)
+                    .map(move |(nth, &output)| (output, (index, nth)))
+            })
+            .collect();
+        let mut outputs: Vec<Option<Vec<Value>>> = vec![None; calls.len()];
+        let mut started: Vec<Option<AbortHandle>> = vec![None; calls.len()];
+        // The first call, in order, that failed. Calls after it would not have run: they are
+        // stopped, and not started. Calls before it still run, as they would have; one of them
+        // may fail first.
+        let mut failed: Option<(usize, String)> = None;
+        let mut running = JoinSet::new();
+        loop {
+            let stop = failed.as_ref().map_or(calls.len(), |(first, _)| *first);
+            for (index, planned) in calls.iter().enumerate().take(stop) {
+                let ready = planned.call.inputs.iter().all(|input| {
+                    made.get(input)
+                        .is_none_or(|&(producer, _)| outputs[producer].is_some())
+                });
+                if started[index].is_some() || !ready {
+                    continue;
+                }
+                let mut args = Vec::with_capacity(planned.call.inputs.len());
+                for input in &planned.call.inputs {
+                    args.push(match made.get(input) {
+                        Some(&(producer, nth)) => {
+                            outputs[producer].as_ref().expect("ready")[nth].clone()
+                        }
+                        None => view.get(&at.ctx, *input).await?,
+                    });
+                }
+                let (worker, task_ref, task, key) = (
+                    self.clone(),
+                    planned.task_ref.clone(),
+                    planned.task.clone(),
+                    keys[index],
+                );
+                started[index] = Some(running.spawn(async move {
+                    (index, worker.invoke(&task_ref, &task, args, key).await)
+                }));
+            }
+            let (index, output) = match running.join_next().await {
+                None => break,
+                Some(Ok(finished)) => finished,
+                Some(Err(err)) if err.is_cancelled() => continue,
+                Some(Err(err)) => return Err(err.into()),
+            };
+            view.run.calls.fetch_add(1, Ordering::Relaxed);
+            let planned = &calls[index];
+            match output? {
+                Ok(output) => {
+                    let parts = unpack_output(output, planned.call.outputs.len())
+                        .with_context(|| format!("task {}", planned.task_ref.id))?;
+                    outputs[index] = Some(parts);
+                }
+                Err(message) => {
+                    if failed.as_ref().is_none_or(|(first, _)| index < *first) {
+                        started[index + 1..]
+                            .iter()
+                            .flatten()
+                            .for_each(AbortHandle::abort);
+                        failed = Some((index, format!("{}: {message}", planned.task_ref.id)));
+                    }
+                }
+            }
+        }
+        if let Some((_, failure)) = failed {
+            return Ok(Err(failure));
         }
         let mut ctx = at.ctx.clone();
-        for (index, planned) in calls.iter().enumerate() {
-            let output = (&mut running[index]).await??;
-            view.run.calls.fetch_add(1, Ordering::Relaxed);
-            let output = match output {
-                Ok(output) => output,
-                Err(message) => {
-                    running[index + 1..].iter().for_each(|call| call.abort());
-                    return Ok(Err(format!("{}: {message}", planned.task_ref.id)));
-                }
-            };
-            ctx = store(
-                view,
-                planned.op,
-                planned.call,
-                planned.task_ref,
-                &ctx,
-                output,
-            )
-            .await?;
+        for (planned, parts) in calls.iter().zip(outputs) {
+            let parts = parts.expect("every call of the group finished");
+            if parts.is_empty() {
+                continue;
+            }
+            let values = planned.call.outputs.iter().copied().zip(parts).collect();
+            ctx = view.put(&ctx, values, Point::Action(planned.op)).await?;
         }
         Ok(Ok(ctx))
     }

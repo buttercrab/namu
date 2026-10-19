@@ -631,3 +631,71 @@ async fn a_loop_in_a_fanned_out_branch_can_break() {
         [json!(70)]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_overlaps_a_chain_it_does_not_read_from() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[namu::task]
+    fn step(x: i32) -> anyhow::Result<i32>;
+
+    #[workflow]
+    fn wf() -> i32 {
+        let x = 1;
+        let a = step(x);
+        let b = step(a);
+        let c = step(x);
+        add(b, c)
+    }
+
+    static RUNNING: AtomicUsize = AtomicUsize::new(0);
+    static MOST: AtomicUsize = AtomicUsize::new(0);
+    let tasks = tasks().with("step", |x: i32| {
+        let now = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+        MOST.fetch_max(now, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(100));
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
+        Ok::<_, String>(x + 1)
+    });
+    let cluster = LocalCluster::uniform(1, Arc::new(tasks));
+    let outcome = cluster
+        .run(wf().to_serializable("dataflow".into()))
+        .await
+        .unwrap();
+    // b = 3, c = 2
+    assert_eq!(json(&outcome.results), [json!(5)]);
+    assert_eq!(MOST.load(Ordering::SeqCst), 2, "c waited for the chain");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn in_a_group_the_first_failure_in_order_is_the_one_reported() {
+    use std::time::Duration;
+
+    #[namu::task]
+    fn fail_slowly(x: i32) -> anyhow::Result<i32>;
+
+    #[namu::task]
+    fn fail_fast(x: i32) -> anyhow::Result<i32>;
+
+    #[workflow]
+    fn wf() -> i32 {
+        let x = 1;
+        let a = fail_slowly(x);
+        let b = fail_fast(x);
+        add(a, b)
+    }
+
+    let tasks = tasks()
+        .with("fail_slowly", |_: i32| {
+            std::thread::sleep(Duration::from_millis(100));
+            Err::<i32, _>("first".to_string())
+        })
+        .with("fail_fast", |_: i32| Err::<i32, _>("second".to_string()));
+    let cluster = LocalCluster::uniform(1, Arc::new(tasks));
+    let outcome = cluster
+        .run(wf().to_serializable("failures".into()))
+        .await
+        .unwrap();
+    assert_eq!(outcome.failures, ["fail_slowly: first"]);
+}
