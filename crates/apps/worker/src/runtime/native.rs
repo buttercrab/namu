@@ -24,8 +24,15 @@ type AbiFn = unsafe extern "C" fn() -> u32;
 type FreeFn = unsafe extern "C" fn(*mut u8, usize);
 type CallFn =
     unsafe extern "C" fn(*const u8, usize, *const u8, usize, *mut *mut u8, *mut usize) -> i32;
-type OpenFn =
-    unsafe extern "C" fn(*const u8, usize, *mut *mut c_void, *mut *mut u8, *mut usize) -> i32;
+type OpenFn = unsafe extern "C" fn(
+    *const u8,
+    usize,
+    *const u8,
+    usize,
+    *mut *mut c_void,
+    *mut *mut u8,
+    *mut usize,
+) -> i32;
 type NextFn = unsafe extern "C" fn(*mut c_void, *mut *mut u8, *mut usize) -> i32;
 type CloseFn = unsafe extern "C" fn(*mut c_void);
 type BatchOpenFn = unsafe extern "C" fn(*mut *mut c_void, *mut *mut u8, *mut usize) -> i32;
@@ -134,13 +141,17 @@ impl StreamTask for NativeStreamTask {
         self: Arc<Self>,
         args: Args,
         _cursor: Option<String>,
+        key: CallKey,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
         let input = encode_args(&args)?;
+        let key = key.to_string();
         let mut handle = std::ptr::null_mut();
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the ABI contract: a handle on success, an owned error buffer otherwise.
         let code = unsafe {
             (self.open)(
+                key.as_ptr(),
+                key.len(),
                 input.as_ptr(),
                 input.len(),
                 &mut handle,

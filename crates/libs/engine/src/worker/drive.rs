@@ -287,7 +287,7 @@ impl Inner {
         match &task.kind {
             Kind::Call(task) => self.call(task, args, key).await,
             // Not feeding a fan-out: the stream is read to its end into a list.
-            Kind::Stream(stream) => self.read_stream(stream, args).await,
+            Kind::Stream(stream) => self.read_stream(stream, args, key).await,
             Kind::Batch(batch) => self.batch_call(task_ref, batch, args).await,
         }
     }
@@ -453,7 +453,7 @@ impl Driving {
     }
 
     /// The key of the branch's next call, at `op`, which it counts.
-    fn key(&mut self, run: &Run, op: OpId) -> CallKey {
+    pub(super) fn key(&mut self, run: &Run, op: OpId) -> CallKey {
         let key = CallKey {
             run: run.id(),
             branch: self.branch.id,

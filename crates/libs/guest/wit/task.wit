@@ -16,8 +16,8 @@ interface source {
     next: func() -> option<result<list<u8>, string>>;
   }
 
-  /// Opens the stream over its input.
-  open: func(input: list<u8>) -> result<items, string>;
+  /// Opens the stream over its input, for the call named `key` (as `call` in the `task` world).
+  open: func(key: string, input: list<u8>) -> result<items, string>;
 }
 
 world stream-task {

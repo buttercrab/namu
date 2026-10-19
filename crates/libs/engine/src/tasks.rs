@@ -25,7 +25,7 @@ pub type Args = Vec<Value>;
 /// place in its run: the `call`-th call of its branch, at `op`. A branch run again from a record
 /// starts from the count recorded with it, so it names its calls as it did the first time; the
 /// op tells calls apart if a task's output sent the branch down another path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CallKey {
     pub run: RunId,
     pub branch: BranchId,
@@ -49,8 +49,9 @@ thread_local! {
     static CALL_KEY: Cell<Option<CallKey>> = const { Cell::new(None) };
 }
 
-/// The key of the call an in-process task is running for, read from inside the task. `None`
-/// outside a call.
+/// The key of the call an in-process task is running for, read from inside the task. A stream has
+/// the key of the call that opened it, while it opens and while each item is pulled. `None`
+/// outside a call, and in batch tasks, whose steps serve many calls at once.
 pub fn call_key() -> Option<CallKey> {
     CALL_KEY.get()
 }
@@ -140,12 +141,13 @@ pub trait CallTask: Send + Sync {
 }
 
 pub trait StreamTask: Send + Sync {
-    /// Opens the stream, at `cursor` if one of its items gave one. The open stream keeps its
-    /// task alive.
+    /// Opens the stream for the call named `key`, at `cursor` if one of its items gave one. The
+    /// open stream keeps its task alive.
     fn open(
         self: Arc<Self>,
         args: Args,
         cursor: Option<String>,
+        key: CallKey,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>>;
 }
 
@@ -393,8 +395,10 @@ impl<F: Fn(Args) -> Result<Items, String> + Send + Sync> StreamTask for FnStream
         self: Arc<Self>,
         args: Args,
         _cursor: Option<String>,
+        key: CallKey,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        Ok((self.0)(args).map(|items| Box::new(FnStream(items)) as Box<dyn TaskStream>))
+        let items = with_key(key, || (self.0)(args));
+        Ok(items.map(|items| Box::new(FnStream { items, key }) as Box<dyn TaskStream>))
     }
 }
 
@@ -481,11 +485,16 @@ impl<C: Continuous> BatchSession for ContinuousSession<C> {
     }
 }
 
-struct FnStream(Items);
+/// An in-process stream, which has its call's key while each item is pulled.
+struct FnStream {
+    items: Items,
+    key: CallKey,
+}
 
 impl TaskStream for FnStream {
     fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
-        Ok(self.0.next().map(|item| {
+        let item = with_key(self.key, || self.items.next());
+        Ok(item.map(|item| {
             item.map(|value| StreamItem {
                 value,
                 cursor: None,

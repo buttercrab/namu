@@ -74,8 +74,9 @@ std::thread_local! {
 
 /// The key of the call this task is running for: the same each time the engine runs the call
 /// again after a crash, and different for every other call. A task with side effects passes it
-/// to what it calls (an idempotency key) so the effect happens once. `None` outside a call, and
-/// in stream and batch tasks.
+/// to what it calls (an idempotency key) so the effect happens once. A stream has the key of the
+/// call that opened it, while it opens and while each item is pulled. `None` outside a call, and
+/// in batch tasks, whose steps serve many calls at once.
 pub fn call_key() -> Option<String> {
     CALL_KEY.with_borrow(Clone::clone)
 }
@@ -99,14 +100,37 @@ pub mod __private {
 
     /// Runs `f` with `key` as the current call's key.
     pub fn with_key<T>(key: String, f: impl FnOnce() -> T) -> T {
-        struct Reset(Option<String>);
-        impl Drop for Reset {
+        lend_key(&mut Some(key), f)
+    }
+
+    /// Runs `f` with `key` lent as the current call's key, and takes it back after.
+    fn lend_key<T>(key: &mut Option<String>, f: impl FnOnce() -> T) -> T {
+        struct Back<'a> {
+            key: &'a mut Option<String>,
+            previous: Option<String>,
+        }
+        impl Drop for Back<'_> {
             fn drop(&mut self) {
-                super::CALL_KEY.set(self.0.take());
+                *self.key = super::CALL_KEY.replace(self.previous.take());
             }
         }
-        let _reset = Reset(super::CALL_KEY.replace(Some(key)));
+        let previous = super::CALL_KEY.replace(key.take());
+        let _back = Back { key, previous };
         f()
+    }
+
+    /// Opens a stream for the call named `key`, which stays its key while it opens and while
+    /// each item is pulled.
+    pub fn open_keyed(
+        key: String,
+        input: &[u8],
+        open: fn(&[u8]) -> Result<Items, String>,
+    ) -> Result<Items, String> {
+        let mut key = Some(key);
+        let mut items = lend_key(&mut key, || open(input))?;
+        Ok(Box::new(std::iter::from_fn(move || {
+            lend_key(&mut key, || items.next())
+        })))
     }
 
     /// A value as it crosses the task boundary: MessagePack.
@@ -287,7 +311,10 @@ pub mod __private {
     ///
     /// # Safety
     /// `in_ptr` must point to `in_len` readable bytes; the out-pointers must be writable.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn native_open(
+        key_ptr: *const u8,
+        key_len: usize,
         in_ptr: *const u8,
         in_len: usize,
         handle: *mut *mut std::ffi::c_void,
@@ -295,7 +322,8 @@ pub mod __private {
         out_len: *mut usize,
         open: fn(&[u8]) -> Result<Items, String>,
     ) -> i32 {
-        match open(unsafe { input(in_ptr, in_len) }) {
+        let key = String::from_utf8_lossy(unsafe { input(key_ptr, key_len) }).into_owned();
+        match open_keyed(key, unsafe { input(in_ptr, in_len) }, open) {
             Ok(items) => {
                 unsafe { *handle = Box::into_raw(Box::new(items)).cast() };
                 0
@@ -558,8 +586,8 @@ macro_rules! __export_stream {
             impl Guest for NamuStream {
                 type Items = NamuItems;
 
-                fn open(input: Vec<u8>) -> ::std::result::Result<Items, String> {
-                    let items = __namu_open(&input)?;
+                fn open(key: String, input: Vec<u8>) -> ::std::result::Result<Items, String> {
+                    let items = $crate::__private::open_keyed(key, &input, __namu_open)?;
                     Ok(Items::new(NamuItems(::std::cell::RefCell::new(items))))
                 }
             }
@@ -576,6 +604,8 @@ macro_rules! __export_stream {
         #[cfg(not(target_family = "wasm"))]
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn namu_stream_open(
+            key_ptr: *const u8,
+            key_len: usize,
             in_ptr: *const u8,
             in_len: usize,
             handle: *mut *mut ::std::ffi::c_void,
@@ -583,7 +613,16 @@ macro_rules! __export_stream {
             out_len: *mut usize,
         ) -> i32 {
             unsafe {
-                $crate::__private::native_open(in_ptr, in_len, handle, out_ptr, out_len, __namu_open)
+                $crate::__private::native_open(
+                    key_ptr,
+                    key_len,
+                    in_ptr,
+                    in_len,
+                    handle,
+                    out_ptr,
+                    out_len,
+                    __namu_open,
+                )
             }
         }
 
@@ -707,7 +746,7 @@ macro_rules! __export_native_common {
 
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
-    use super::__private::{Bytes, native_call, native_free};
+    use super::__private::{Bytes, Items, native_call, native_free, open_keyed};
     use super::call_key;
 
     fn whoami(_input: &[u8]) -> Result<Bytes, String> {
@@ -734,6 +773,23 @@ mod tests {
         unsafe { native_free(out_ptr, out_len) };
         assert_eq!((code, output.as_slice()), (0, key.as_bytes()));
         // Only while the call runs.
+        assert_eq!(call_key(), None);
+    }
+
+    fn keys(_input: &[u8]) -> Result<Items, String> {
+        let opened = call_key();
+        Ok(Box::new([opened, None].into_iter().map(|key| {
+            Ok(key.or_else(call_key).unwrap_or_default().into_bytes())
+        })))
+    }
+
+    #[test]
+    fn a_stream_has_its_key_when_it_opens_and_at_every_item() {
+        let mut items = open_keyed("k".into(), &[], keys).unwrap();
+        assert_eq!(call_key(), None);
+        // The first item is the key seen at open, the second the one seen when pulled.
+        assert_eq!(items.next(), Some(Ok(b"k".to_vec())));
+        assert_eq!(items.next(), Some(Ok(b"k".to_vec())));
         assert_eq!(call_key(), None);
     }
 }

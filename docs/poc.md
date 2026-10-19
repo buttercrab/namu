@@ -64,7 +64,7 @@ Design §7, in short:
 - **Call keys.** Every call gets a key, the same each time recovery runs it again, which a task
   with side effects passes on as an idempotency key (`namu_guest::call_key()`).
 
-Not covered yet: keys for stream and batch tasks, Redis failure (run Redis with persistence), and
+Not covered yet: keys for batch items, Redis failure (run Redis with persistence), and
 runs whose only server for a task never comes back (they wait).
 
 ## Running it
@@ -117,7 +117,7 @@ How to read these:
 
 ## Known gaps
 
-1. **Stream and batch tasks get no call key**; call tasks do.
+1. **Batch items get no call key**; calls and streams do.
 2. **A run's reports stay in the log until it ends**: they are its results. Everything else in the
    log is the run's live frontier: finished scopes and the nodes nothing live reaches are dropped
    as the run goes.

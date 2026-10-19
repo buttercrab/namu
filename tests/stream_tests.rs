@@ -284,3 +284,61 @@ async fn a_stream_restarts_where_its_task_is_served() {
     assert_eq!(json(&outcome.results), [json!(870)]);
     assert!(outcome.succeeded(), "{:?}", outcome.failures);
 }
+
+/// `tasks`, with `numbers` recording the call key it sees when it opens and at every item.
+fn keyed(keys: Arc<std::sync::Mutex<Vec<String>>>) -> FnTasks {
+    let seen = move || {
+        let key = namu_engine::call_key().expect("a stream has its call's key");
+        keys.lock().unwrap().push(key.to_string());
+    };
+    tasks(Arc::default()).with_stream("numbers", move |(n, delay): (i32, u64)| {
+        seen();
+        let seen = seen.clone();
+        Ok::<_, String>((0..n).map(move |i| {
+            seen();
+            std::thread::sleep(Duration::from_millis(delay));
+            Ok::<_, String>(i)
+        }))
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_keeps_its_call_key_when_resumed_or_restarted() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    for restarted in [false, true] {
+        let keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let all: Arc<dyn Tasks> = Arc::new(keyed(keys.clone()));
+        // Without the stream, worker 2 (worker 1's successor) restarts it on worker 3.
+        let second: Arc<dyn Tasks> = match restarted {
+            true => Arc::new(
+                FnTasks::new()
+                    .with("double", |x: i32| Ok::<_, String>(x * 2))
+                    .with("sum", |xs: Vec<i32>| {
+                        Ok::<_, String>(xs.iter().sum::<i32>())
+                    }),
+            ),
+            false => all.clone(),
+        };
+        let cluster = Arc::new(LocalCluster::new(vec![all.clone(), second, all]));
+        let run = tokio::spawn({
+            let cluster = cluster.clone();
+            async move { cluster.run(slow_stream().to_serializable("s".into())).await }
+        });
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        cluster.kill(1).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .expect("the run finished")
+            .unwrap()
+            .unwrap();
+        assert_eq!(json(&outcome.results), [json!(870)]);
+        let keys = keys.lock().unwrap();
+        let opened = keys.iter().collect::<std::collections::HashSet<_>>();
+        // Opened twice (before and after the crash), every item pulled under the one key.
+        assert!(
+            keys.len() > 31,
+            "restarted: {restarted}: the stream was not reopened"
+        );
+        assert_eq!(opened.len(), 1, "restarted: {restarted}: {opened:?}");
+    }
+}

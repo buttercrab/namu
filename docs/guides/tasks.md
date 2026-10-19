@@ -133,7 +133,9 @@ namu_guest::task! {
 }
 ```
 
-In-process tasks read it with `namu_engine::call_key()`. Stream and batch tasks get no key yet.
+In-process tasks read it with `namu_engine::call_key()`. A stream has the key of the call that
+opened it, while it opens and while each item is pulled, however often it is reopened after a
+crash. Batch tasks get no key yet: one step serves many calls.
 A task that must never run twice once it has returned is a checkpoint task instead (see
 `docs/design.md` §7.5); the key covers a crash during the call too.
 

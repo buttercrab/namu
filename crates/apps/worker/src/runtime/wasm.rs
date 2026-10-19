@@ -120,6 +120,7 @@ impl StreamTask for WasmStreamTask {
         self: Arc<Self>,
         args: Args,
         _cursor: Option<String>,
+        key: CallKey,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
         let input = encode_args(&args)?;
         let host = Host {
@@ -128,7 +129,11 @@ impl StreamTask for WasmStreamTask {
         };
         let mut store = Store::new(&self.engine, host);
         let instance = self.pre.instantiate(&mut store)?;
-        let items = match instance.namu_task_source().call_open(&mut store, &input)? {
+        let key = key.to_string();
+        let items = match instance
+            .namu_task_source()
+            .call_open(&mut store, &key, &input)?
+        {
             Ok(items) => items,
             Err(message) => return Ok(Err(message)),
         };
