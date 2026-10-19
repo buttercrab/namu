@@ -434,8 +434,12 @@ asynchronous; the receiver starts on the work immediately.
   checkpoints. After one runs, its branch is recorded again, past the task, and continues only
   once that record is durable. Recovery therefore never runs it again (a crash during the task
   itself still repeats it).
-- Task execution is **at-least-once**. Each call gets a deterministic **idempotency key** (run id +
-  branch id + op) so side-effecting tasks can deduplicate.
+- Task execution is **at-least-once**. Each call gets a deterministic **idempotency key** so
+  side-effecting tasks can deduplicate: run id, branch id, how many calls the branch made before
+  this one, and the op. The count is the branch's logical clock: it travels and is logged with the
+  branch, so a branch run again from a record counts its calls exactly as it did the first time,
+  and the calls of a loop each get their own key. Call tasks read it in the guest
+  (`namu_guest::call_key()`, passed through the task ABI, version 6) or in process.
 - **Long runs stay small.** With liveness-based placement (§6.2), dead nodes are freed, in the log
   as well as in memory. The persisted state is then the live frontier of the run, not its history,
   so a run's footprint and its recovery time do not grow with its age.
@@ -498,7 +502,7 @@ its **shape**:
 - **Rust tasks in process** (`FnTasks`): a task takes its input by type (the argument itself, a
   tuple for several, `()` for none) and its output is wrapped as a value. A task with several
   outputs returns a tuple, which splits into them.
-- **WASM and native tasks** (task ABI v5): the arguments cross as one MessagePack document (nil,
+- **WASM and native tasks** (task ABI v6): the arguments cross as one MessagePack document (nil,
   the argument, or an array), outputs as MessagePack, errors as text. The WIT types are
   `list<u8>`; `namu-guest` does the encoding. Outputs stay encoded until a Rust task asks for a
   type.
@@ -644,8 +648,8 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Routing | ✅ To the least loaded worker that can take it, per task slot: each worker reports the branches it drives on the acknowledgements it sends, and a sender counts what it sent since. A worker that has not reported counts as idle; a branch waits for a server to join | Locality (holders of a context's nodes); packing batch items into one worker's batch; work stealing (§10.3) |
 | Streams | ✅ Fused with their fan-out, per-item credits at the source, resumable by position (§6.5). Guest streams yield no cursors yet; a resumed stream is reopened and skipped forward | Cursors from guest streams; windows for unbounded streams |
 | Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
-| Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
+| Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v6; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |
-| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, and nodes no live record reaches are swept whenever a run's nodes double (§7.5) | Idempotency keys for tasks; reports, which are the run's results, stay until it ends |
+| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, and nodes no live record reaches are swept whenever a run's nodes double (§7.5) | Keys for stream and batch tasks; reports, which are the run's results, stay until it ends |
 | Fan-in termination | ✅ Counting at scope owners: every branch of a scope is created by its owner, so it knows the count; ended indices are a watermark plus the out-of-order window | |
 | Membership | ✅ Join (register + heartbeats); a worker whose heartbeats stop is replaced by a successor (§7.4). Drain on SIGTERM (§10.4): routed around, branches move on at their next task call, stream sources stop at an item, and once nothing is in flight and everything is durable the worker leaves and its successor takes over its scopes from the log, with nothing run twice | Heartbeats tied to the registering process, not just its id |

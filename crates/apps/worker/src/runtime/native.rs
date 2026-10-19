@@ -1,4 +1,4 @@
-//! Runs tasks compiled as native shared libraries exporting the NAMU C ABI (version 5). Every
+//! Runs tasks compiled as native shared libraries exporting the NAMU C ABI (version 6). Every
 //! buffer the library hands over is owned by it and given back through `namu_task_free`.
 //!
 //! - A task exports `namu_task_call`, and runs exactly once per call.
@@ -15,21 +15,21 @@ use std::sync::Arc;
 use libloading::Library;
 use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    Args, BatchSession, BatchTask, CallTask, Finished, StreamItem, StreamTask, TaskStream,
+    Args, BatchSession, BatchTask, CallKey, CallTask, Finished, StreamItem, StreamTask, TaskStream,
 };
+use namu_proto::TASK_ABI_VERSION;
 use serde_bytes::ByteBuf;
 
 type AbiFn = unsafe extern "C" fn() -> u32;
 type FreeFn = unsafe extern "C" fn(*mut u8, usize);
-type CallFn = unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32;
+type CallFn =
+    unsafe extern "C" fn(*const u8, usize, *const u8, usize, *mut *mut u8, *mut usize) -> i32;
 type OpenFn =
     unsafe extern "C" fn(*const u8, usize, *mut *mut c_void, *mut *mut u8, *mut usize) -> i32;
 type NextFn = unsafe extern "C" fn(*mut c_void, *mut *mut u8, *mut usize) -> i32;
 type CloseFn = unsafe extern "C" fn(*mut c_void);
 type BatchOpenFn = unsafe extern "C" fn(*mut *mut c_void, *mut *mut u8, *mut usize) -> i32;
 type StepFn = unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut *mut u8, *mut usize) -> i32;
-
-const ABI_VERSION: u32 = 5;
 
 pub struct NativeTask {
     call: CallFn,
@@ -53,8 +53,8 @@ fn load(path: &Path) -> anyhow::Result<(Library, FreeFn)> {
         let lib = Library::new(path)?;
         let version = (*lib.get::<AbiFn>(b"namu_abi_version")?)();
         anyhow::ensure!(
-            version == ABI_VERSION,
-            "native task ABI version {version}, expected {ABI_VERSION}; rebuild the task"
+            version == TASK_ABI_VERSION,
+            "native task ABI version {version}, expected {TASK_ABI_VERSION}; rebuild the task"
         );
         let free = *lib.get::<FreeFn>(b"namu_task_free")?;
         Ok((lib, free))
@@ -91,11 +91,21 @@ impl NativeTask {
 }
 
 impl CallTask for NativeTask {
-    fn call(&self, args: Args) -> anyhow::Result<Result<Value, String>> {
+    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
         let input = encode_args(&args)?;
+        let key = key.to_string();
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the ABI contract: the library writes an owned buffer, which `take` frees.
-        let code = unsafe { (self.call)(input.as_ptr(), input.len(), &mut out_ptr, &mut out_len) };
+        let code = unsafe {
+            (self.call)(
+                key.as_ptr(),
+                key.len(),
+                input.as_ptr(),
+                input.len(),
+                &mut out_ptr,
+                &mut out_len,
+            )
+        };
         Ok(super::output(match code {
             0 => Ok(take(self.free, out_ptr, out_len)),
             _ => Err(take_error(self.free, out_ptr, out_len)),

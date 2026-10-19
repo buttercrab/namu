@@ -502,3 +502,34 @@ async fn a_failed_call_is_retried_in_a_loop() {
         [json!(21)]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_call_in_a_loop_has_its_own_key() {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    #[workflow]
+    fn wf() -> i32 {
+        let mut i = 0;
+        while less_than(i, 50) {
+            i = add(i, 1);
+        }
+        i
+    }
+
+    static KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let tasks = tasks().with("add", |(a, b): (i32, i32)| {
+        let key = namu_engine::call_key().expect("a call has a key");
+        KEYS.lock().unwrap().push(key.to_string());
+        Ok::<_, String>(a + b)
+    });
+    let cluster = LocalCluster::uniform(1, Arc::new(tasks));
+    let outcome = cluster
+        .run(wf().to_serializable("keys".into()))
+        .await
+        .unwrap();
+    assert_eq!(json(&outcome.results), [json!(50)]);
+    let keys = KEYS.lock().unwrap();
+    assert_eq!(keys.len(), 50);
+    assert_eq!(keys.iter().collect::<HashSet<_>>().len(), 50);
+}

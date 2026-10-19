@@ -17,7 +17,7 @@ use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Handoff, Report, Reported, Resume};
 use crate::scope::{Continuation, Scope, Then};
-use crate::tasks::{Args, CallTask, Kind, Task, TaskRef, unpack_output};
+use crate::tasks::{Args, CallKey, CallTask, Kind, Task, TaskRef, unpack_output};
 use crate::tree::Node;
 
 impl Inner {
@@ -125,7 +125,7 @@ impl Inner {
                         && let Some(calls) = self.servable(run, group)?
                     {
                         let last = *group.last().expect("a group has calls");
-                        match self.run_group(&view, calls, &at.ctx).await? {
+                        match self.run_group(&view, calls, at).await? {
                             Ok(next) => at.set_ctx(next),
                             Err(failure) => {
                                 self.report(run, &at.branch, Report::Failure(failure));
@@ -135,10 +135,7 @@ impl Inner {
                         at.branch.resume = Resume::Kernel(Start::After { op: last });
                         continue;
                     }
-                    match self
-                        .run_call(&view, task_ref, &task, op, call, &at.ctx)
-                        .await?
-                    {
+                    match self.run_call(&view, task_ref, &task, op, call, at).await? {
                         Ok(next) => {
                             at.set_ctx(next);
                             at.branch.resume = Resume::Kernel(Start::After { op });
@@ -189,8 +186,8 @@ impl Inner {
         }
     }
 
-    /// Runs a task call here and stores its outputs in a new node under `ctx`. `Ok(Err(_))` is
-    /// the task's own failure, with its message.
+    /// Runs a task call here and stores its outputs in a new node under the branch's context.
+    /// `Ok(Err(_))` is the task's own failure, with its message.
     async fn run_call(
         self: &Arc<Self>,
         view: &View<'_>,
@@ -198,13 +195,14 @@ impl Inner {
         task: &Task,
         op: OpId,
         call: &Call,
-        ctx: &Arc<Node>,
+        at: &mut Driving,
     ) -> anyhow::Result<Result<Arc<Node>, String>> {
-        let args = gather(view, call, ctx).await?;
-        let output = self.invoke(task_ref, task, args).await?;
+        let args = gather(view, call, &at.ctx).await?;
+        let key = at.key(view.run, op);
+        let output = self.invoke(task_ref, task, args, key).await?;
         view.run.calls.fetch_add(1, Ordering::Relaxed);
         match output {
-            Ok(output) => Ok(Ok(store(view, op, call, task_ref, ctx, output).await?)),
+            Ok(output) => Ok(Ok(store(view, op, call, task_ref, &at.ctx, output).await?)),
             Err(message) => Ok(Err(message)),
         }
     }
@@ -241,19 +239,20 @@ impl Inner {
         self: &Arc<Self>,
         view: &View<'_>,
         calls: Vec<Planned<'_>>,
-        ctx: &Arc<Node>,
+        at: &mut Driving,
     ) -> anyhow::Result<Result<Arc<Node>, String>> {
         // Every call reads only values from before the group.
         let mut running = Vec::with_capacity(calls.len());
         for planned in &calls {
-            let args = gather(view, planned.call, ctx).await?;
+            let args = gather(view, planned.call, &at.ctx).await?;
+            let key = at.key(view.run, planned.op);
             let (worker, task_ref, task) =
                 (self.clone(), planned.task_ref.clone(), planned.task.clone());
             running.push(tokio::spawn(async move {
-                worker.invoke(&task_ref, &task, args).await
+                worker.invoke(&task_ref, &task, args, key).await
             }));
         }
-        let mut ctx = ctx.clone();
+        let mut ctx = at.ctx.clone();
         for (index, planned) in calls.iter().enumerate() {
             let output = (&mut running[index]).await??;
             view.run.calls.fetch_add(1, Ordering::Relaxed);
@@ -277,15 +276,16 @@ impl Inner {
         Ok(Ok(ctx))
     }
 
-    /// Runs a task on `args`, whatever its kind.
+    /// Runs a task on `args`, whatever its kind. Only call tasks are given the call's key.
     async fn invoke(
         self: &Arc<Self>,
         task_ref: &TaskRef,
         task: &Task,
         args: Args,
+        key: CallKey,
     ) -> anyhow::Result<Result<Value, String>> {
         match &task.kind {
-            Kind::Call(task) => self.call(task, args).await,
+            Kind::Call(task) => self.call(task, args, key).await,
             // Not feeding a fan-out: the stream is read to its end into a list.
             Kind::Stream(stream) => self.read_stream(stream, args).await,
             Kind::Batch(batch) => self.batch_call(task_ref, batch, args).await,
@@ -296,9 +296,10 @@ impl Inner {
         &self,
         task: &Arc<dyn CallTask>,
         args: Args,
+        key: CallKey,
     ) -> anyhow::Result<Result<Value, String>> {
         let _slot = self.task_slots.acquire().await?;
-        run_task(|| task.call(args))
+        run_task(|| task.call(args, key))
     }
 
     /// Records the branch past a checkpoint task, and waits until that is durable, so recovery
@@ -338,6 +339,7 @@ impl Inner {
         let continuation = Continuation {
             branch: branch.id,
             hop: branch.hop,
+            calls: branch.calls,
             ctx: branch.ctx,
             scopes: branch.scopes.clone(),
             collect: run.spec.collect_ops[op],
@@ -378,6 +380,7 @@ impl Inner {
             let child = Branch {
                 id: BranchId { scope, index },
                 hop: 0,
+                calls: 0,
                 ctx,
                 resume: Resume::Kernel(Start::After { op }),
                 scopes: inner.clone(),
@@ -447,6 +450,18 @@ impl Driving {
     fn set_ctx(&mut self, ctx: Arc<Node>) {
         self.branch.ctx = ctx.id();
         self.ctx = ctx;
+    }
+
+    /// The key of the branch's next call, at `op`, which it counts.
+    fn key(&mut self, run: &Run, op: OpId) -> CallKey {
+        let key = CallKey {
+            run: run.id(),
+            branch: self.branch.id,
+            call: self.branch.calls,
+            op,
+        };
+        self.branch.calls += 1;
+        key
     }
 }
 

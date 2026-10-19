@@ -117,6 +117,26 @@ let tasks = FnTasks::new()
 
 See `examples/basic`.
 
+## Side effects: the call key
+A task can run more than once for one call: after a crash, the engine runs again what the dead
+worker had not finished. A task whose effect must happen once (a payment, an email, a write to
+another system) passes its **call key** to that system as an idempotency key. The key is the same
+each time the engine runs the call again, and different for every other call, loop iterations
+included:
+
+```rust
+namu_guest::task! {
+    fn charge(order: Order) -> anyhow::Result<Receipt> {
+        let key = namu_guest::call_key().expect("called by the engine");
+        payments().charge(&order, &key) // the payment service dedups on `key`
+    }
+}
+```
+
+In-process tasks read it with `namu_engine::call_key()`. Stream and batch tasks get no key yet.
+A task that must never run twice once it has returned is a checkpoint task instead (see
+`docs/design.md` §7.5); the key covers a crash during the call too.
+
 ## Task kinds
 - `single`: one input, one output
 - `batch`: written for a list of inputs, called per item; a session on each worker takes items

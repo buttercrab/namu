@@ -61,7 +61,10 @@ Design §7, in short:
   durable it leaves. Its successor takes over the scopes it owned from the log; nothing runs
   twice (the engine's drain tests count every call; `scripts/e2e.sh` drains a worker mid-run).
 
-Not covered yet: idempotency keys passed to tasks, Redis failure (run Redis with persistence), and
+- **Call keys.** Every call gets a key, the same each time recovery runs it again, which a task
+  with side effects passes on as an idempotency key (`namu_guest::call_key()`).
+
+Not covered yet: keys for stream and batch tasks, Redis failure (run Redis with persistence), and
 runs whose only server for a task never comes back (they wait).
 
 ## Running it
@@ -114,7 +117,7 @@ How to read these:
 
 ## Known gaps
 
-1. **No idempotency keys** for tasks with external side effects.
+1. **Stream and batch tasks get no call key**; call tasks do.
 2. **A run's reports stay in the log until it ends**: they are its results. Everything else in the
    log is the run's live frontier: finished scopes and the nodes nothing live reaches are dropped
    as the run goes.

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    Args, BatchSession, BatchTask, CallTask, Finished, StreamItem, StreamTask, TaskStream,
+    Args, BatchSession, BatchTask, CallKey, CallTask, Finished, StreamItem, StreamTask, TaskStream,
 };
 use wasmtime::component::{Component, InstancePre, Linker, ResourceAny, ResourceTable, TypedFunc};
 use wasmtime::{Engine, Store};
@@ -26,7 +26,7 @@ impl WasiView for Host {
     }
 }
 
-type CallFunc = TypedFunc<(Vec<u8>,), (Result<Vec<u8>, String>,)>;
+type CallFunc = TypedFunc<(String, Vec<u8>), (Result<Vec<u8>, String>,)>;
 
 /// A live instance. Instances are reused across calls, so a task keeps its state (e.g. a loaded
 /// model) between calls; an instance that traps is discarded.
@@ -64,14 +64,14 @@ impl WasmTask {
         let mut store = Store::new(&self.engine, host);
         let instance = self.pre.instantiate(&mut store)?;
         let func = instance
-            .get_typed_func::<(Vec<u8>,), (Result<Vec<u8>, String>,)>(&mut store, "call")
+            .get_typed_func(&mut store, "call")
             .map_err(|err| anyhow::anyhow!("component does not export `call`: {err:?}"))?;
         Ok(Instance { store, func })
     }
 }
 
 impl CallTask for WasmTask {
-    fn call(&self, args: Args) -> anyhow::Result<Result<Value, String>> {
+    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
         let input = encode_args(&args)?;
         let pooled = self.idle.lock().unwrap().pop();
         let mut instance = match pooled {
@@ -79,7 +79,9 @@ impl CallTask for WasmTask {
             None => self.instantiate()?,
         };
         // On a trap the instance is dropped instead of returned to the pool.
-        let (result,) = instance.func.call(&mut instance.store, (input.to_vec(),))?;
+        let (result,) = instance
+            .func
+            .call(&mut instance.store, (key.to_string(), input.to_vec()))?;
         self.idle.lock().unwrap().push(instance);
         Ok(super::output(result))
     }

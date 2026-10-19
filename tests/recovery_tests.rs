@@ -202,3 +202,47 @@ async fn a_drained_worker_hands_everything_on_and_nothing_runs_twice() {
         assert_eq!(calls.load(Ordering::SeqCst), 48, "draining {leaving}");
     }
 }
+
+/// Like `tasks`, recording the key of every call of `slow`.
+fn keyed(keys: Arc<std::sync::Mutex<Vec<String>>>) -> Arc<dyn Tasks> {
+    Arc::new(
+        FnTasks::new()
+            .with("range", |(start, end): (i32, i32)| {
+                Ok::<_, String>((start..end).map(|x| x * 10).collect::<Vec<_>>())
+            })
+            .with("slow", move |x: i32| {
+                let key = namu_engine::call_key().expect("a call has a key");
+                keys.lock().unwrap().push(key.to_string());
+                std::thread::sleep(Duration::from_millis(30));
+                Ok::<_, String>(x * 2)
+            })
+            .with("sum", |xs: Vec<i32>| {
+                Ok::<_, String>(xs.iter().sum::<i32>())
+            }),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_run_again_after_a_crash_keeps_its_key() {
+    for victim in [2, 1] {
+        let keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cluster = Arc::new(LocalCluster::new(vec![keyed(keys.clone()); 3]));
+        let run = tokio::spawn({
+            let cluster = cluster.clone();
+            async move { cluster.run(workflow()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        cluster.kill(victim).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .expect("the run finished")
+            .unwrap()
+            .unwrap();
+        assert_eq!(json(&outcome.results), [json!(DOUBLED_SUM)]);
+        let keys = keys.lock().unwrap();
+        let distinct: std::collections::HashSet<_> = keys.iter().collect();
+        // 24 items, two calls each. The crash runs some again, under the keys they had.
+        assert_eq!(distinct.len(), 48, "killing {victim}");
+        assert!(keys.len() > 48, "killing {victim} repeated no call");
+    }
+}

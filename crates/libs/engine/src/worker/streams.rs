@@ -41,6 +41,7 @@ impl Inner {
         let continuation = Continuation {
             branch: branch.id,
             hop: branch.hop,
+            calls: branch.calls,
             ctx: branch.ctx,
             scopes: branch.scopes.clone(),
             collect: run.spec.collect_ops[fan_out],
@@ -232,6 +233,7 @@ impl Inner {
                 index,
             },
             hop: 0,
+            calls: 0,
             ctx: node.id(),
             resume: Resume::Kernel(Start::After {
                 op: feeding.source.fan_out,
@@ -326,6 +328,7 @@ impl Inner {
         let branch = Branch {
             id: continuation.branch,
             hop: continuation.hop + 1,
+            calls: continuation.calls,
             ctx: continuation.ctx,
             resume: Resume::Call { op: source.call },
             scopes: continuation.scopes,

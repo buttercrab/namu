@@ -64,8 +64,21 @@ pub mod stream_bindings {
 }
 
 /// Version of the native C ABI exported by the task macros. Version 3 added streams, version 4
-/// batch sessions, version 5 moved values from JSON to MessagePack.
-pub const NATIVE_ABI_VERSION: u32 = 5;
+/// batch sessions, version 5 moved values from JSON to MessagePack, version 6 gave each call its
+/// key.
+pub const NATIVE_ABI_VERSION: u32 = 6;
+
+std::thread_local! {
+    static CALL_KEY: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The key of the call this task is running for: the same each time the engine runs the call
+/// again after a crash, and different for every other call. A task with side effects passes it
+/// to what it calls (an idempotency key) so the effect happens once. `None` outside a call, and
+/// in stream and batch tasks.
+pub fn call_key() -> Option<String> {
+    CALL_KEY.with_borrow(Clone::clone)
+}
 
 /// A batch task that keeps items across steps (continuous batching). A session is made with
 /// `Default` when the worker opens it.
@@ -83,6 +96,18 @@ pub mod __private {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     pub use rmp_serde;
+
+    /// Runs `f` with `key` as the current call's key.
+    pub fn with_key<T>(key: String, f: impl FnOnce() -> T) -> T {
+        struct Reset(Option<String>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                super::CALL_KEY.set(self.0.take());
+            }
+        }
+        let _reset = Reset(super::CALL_KEY.replace(Some(key)));
+        f()
+    }
 
     /// A value as it crosses the task boundary: MessagePack.
     pub type Bytes = Vec<u8>;
@@ -233,18 +258,23 @@ pub mod __private {
         unsafe { std::slice::from_raw_parts(in_ptr, in_len) }
     }
 
-    /// Native ABI entry point shared by every native task.
+    /// Native ABI entry point shared by every native task. The key is UTF-8.
     ///
     /// # Safety
-    /// `in_ptr` must point to `in_len` readable bytes; `out_ptr` and `out_len` must be writable.
+    /// `key_ptr` must point to `key_len` readable bytes and `in_ptr` to `in_len`; `out_ptr` and
+    /// `out_len` must be writable.
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn native_call(
+        key_ptr: *const u8,
+        key_len: usize,
         in_ptr: *const u8,
         in_len: usize,
         out_ptr: *mut *mut u8,
         out_len: *mut usize,
         call: fn(&[u8]) -> Result<Bytes, String>,
     ) -> i32 {
-        let (code, payload) = match call(unsafe { input(in_ptr, in_len) }) {
+        let key = String::from_utf8_lossy(unsafe { input(key_ptr, key_len) }).into_owned();
+        let (code, payload) = match with_key(key, || call(unsafe { input(in_ptr, in_len) })) {
             Ok(output) => (0, output),
             Err(err) => (1, err.into_bytes()),
         };
@@ -476,8 +506,8 @@ macro_rules! __export_task {
         const _: () = {
             struct NamuTask;
             impl $crate::bindings::Guest for NamuTask {
-                fn call(input: Vec<u8>) -> ::std::result::Result<Vec<u8>, String> {
-                    __namu_call(&input)
+                fn call(key: String, input: Vec<u8>) -> ::std::result::Result<Vec<u8>, String> {
+                    $crate::__private::with_key(key, || __namu_call(&input))
                 }
             }
     $crate::bindings::export!(NamuTask with_types_in $crate::bindings);
@@ -486,12 +516,24 @@ macro_rules! __export_task {
         #[cfg(not(target_family = "wasm"))]
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn namu_task_call(
+            key_ptr: *const u8,
+            key_len: usize,
             in_ptr: *const u8,
             in_len: usize,
             out_ptr: *mut *mut u8,
             out_len: *mut usize,
         ) -> i32 {
-            unsafe { $crate::__private::native_call(in_ptr, in_len, out_ptr, out_len, __namu_call) }
+            unsafe {
+                $crate::__private::native_call(
+                    key_ptr,
+                    key_len,
+                    in_ptr,
+                    in_len,
+                    out_ptr,
+                    out_len,
+                    __namu_call,
+                )
+            }
         }
 
         $crate::__export_native_common!();
@@ -661,4 +703,37 @@ macro_rules! __export_native_common {
             unsafe { $crate::__private::native_free(ptr, len) }
         }
     };
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::__private::{Bytes, native_call, native_free};
+    use super::call_key;
+
+    fn whoami(_input: &[u8]) -> Result<Bytes, String> {
+        call_key().map(String::into_bytes).ok_or("no key".into())
+    }
+
+    #[test]
+    fn a_native_call_reads_its_key() {
+        let (key, input) = ("run/1.2/3/4", [0xc0u8]);
+        let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
+        // SAFETY: valid buffers; the output is handed back to `native_free`.
+        let code = unsafe {
+            native_call(
+                key.as_ptr(),
+                key.len(),
+                input.as_ptr(),
+                input.len(),
+                &mut out_ptr,
+                &mut out_len,
+                whoami,
+            )
+        };
+        let output = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { native_free(out_ptr, out_len) };
+        assert_eq!((code, output.as_slice()), (0, key.as_bytes()));
+        // Only while the call runs.
+        assert_eq!(call_key(), None);
+    }
 }

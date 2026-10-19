@@ -1,9 +1,11 @@
-package namu:task@0.1.0;
+package namu:task@0.2.0;
 
 /// A NAMU task. Inputs and outputs are MessagePack documents: no arguments is nil, one argument
-/// is the value itself, and several arguments are an array. Errors are text.
+/// is the value itself, and several arguments are an array. Errors are text. `key` names the
+/// call: the same each time the engine runs it again after a crash, so a task with side effects
+/// can make them once.
 world task {
-  export call: func(input: list<u8>) -> result<list<u8>, string>;
+  export call: func(key: string, input: list<u8>) -> result<list<u8>, string>;
 }
 
 /// A stream task yields its outputs one at a time, as MessagePack documents.
