@@ -1,0 +1,5 @@
+error: each of `Ok` and `Err` takes one arm
+  --> tests/compile-fail/08-attempt-without-err-arm.rs:11:9
+   |
+11 |         Ok(w) => w,
+   |         ^^^^^

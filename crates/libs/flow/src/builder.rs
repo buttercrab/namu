@@ -94,6 +94,25 @@ impl<T> Builder<T> {
         self.add_node(kind, 1)[0]
     }
 
+    /// Gives the call that ends the current block an error edge, and seals the block: control
+    /// goes to `ok` if the task succeeds, else to `err`. Returns the error message's value.
+    pub fn catch(&self, ok: BlockId, err: BlockId) -> ValueId {
+        let error = {
+            let mut inner = self.inner.borrow_mut();
+            let inner = &mut *inner;
+            let last = inner.blocks[inner.current_block_id].instructions.last();
+            assert!(
+                last.is_some_and(|&node| {
+                    matches!(inner.node_arena.nodes[node].kind, NodeKind::Call { .. })
+                }),
+                "only a task call can be attempted"
+            );
+            inner.val_arena.new_value()
+        };
+        self.seal_block(Terminator::Catch { ok, err, error });
+        error
+    }
+
     fn seal_block(&self, terminator: Terminator) {
         let mut inner = self.inner.borrow_mut();
         let current_block_id = inner.current_block_id;
@@ -235,6 +254,11 @@ pub fn branch<T>(
     false_target: BlockId,
 ) {
     builder.seal_block(Terminator::branch(condition.id, true_target, false_target));
+}
+
+/// Ends the current block with the call just emitted, which may fail: see [`Builder::catch`].
+pub fn catch<T>(builder: &Builder<T>, ok: BlockId, err: BlockId) -> TracedValue<String> {
+    TracedValue::new(builder.catch(ok, err))
 }
 
 pub fn return_value<T: 'static, U: 'static>(builder: &Builder<T>, value: TracedValue<U>) {

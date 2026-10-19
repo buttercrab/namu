@@ -432,3 +432,73 @@ async fn the_log_keeps_the_live_frontier_not_the_history() {
     let peak = cluster.log().peak_nodes();
     assert!(peak <= 128, "the log held {peak} nodes at once");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_attempted_failure_is_a_value() {
+    #[workflow]
+    fn wf() -> i32 {
+        let x = range(1, 4);
+        match attempt(maybe_fail(x)) {
+            Ok(v) => v,
+            Err(e) => length(e),
+        }
+    }
+
+    // 20 fails with "intentional failure", 19 bytes; nothing is reported as a failure.
+    assert_eq!(
+        ints(&results(wf().to_serializable("attempt".into())).await),
+        [10, 19, 30]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_attempt_falls_back_and_merges_variables() {
+    #[workflow]
+    fn wf() -> i32 {
+        let x = identity(range(1, 4));
+        let mut fell_back = 0;
+        let y = match attempt(maybe_fail(x)) {
+            Ok(v) => v,
+            Err(_) => {
+                fell_back = 1;
+                double(x)
+            }
+        };
+        sum(add(y, fell_back))
+    }
+
+    // 10 + (40 + 1) + 30
+    assert_eq!(
+        results(wf().to_serializable("fallback".into())).await,
+        [json!(81)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_call_is_retried_in_a_loop() {
+    #[workflow]
+    fn wf() -> i32 {
+        let mut x = 20;
+        let mut tries = 0;
+        let mut out = 0;
+        while less_than(tries, 3) {
+            match attempt(maybe_fail(x)) {
+                Ok(v) => {
+                    out = v;
+                    tries = 3;
+                }
+                Err(_) => {
+                    x = add(x, 1);
+                    tries = add(tries, 1);
+                }
+            }
+        }
+        out
+    }
+
+    // 20 fails; the retry with 21 succeeds.
+    assert_eq!(
+        results(wf().to_serializable("retry".into())).await,
+        [json!(21)]
+    );
+}

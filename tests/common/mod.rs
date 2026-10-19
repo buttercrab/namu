@@ -62,6 +62,10 @@ pub fn maybe_fail(v: i32) -> Result<i32>;
 #[task]
 pub fn sum(xs: Vec<i32>) -> Result<i32>;
 
+/// The length of `s` in bytes.
+#[task]
+pub fn length(s: String) -> Result<i32>;
+
 #[task]
 pub fn count(xs: Vec<i32>) -> Result<i32>;
 
@@ -93,6 +97,7 @@ pub fn tasks() -> FnTasks {
             v => Ok(v),
         })
         .with("sum", |xs: Vec<i32>| ok(xs.iter().sum::<i32>()))
+        .with("length", |s: String| ok(s.len() as i32))
         .with("count", |xs: Vec<i32>| ok(xs.len() as i32))
 }
 

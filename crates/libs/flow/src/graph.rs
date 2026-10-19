@@ -1,7 +1,9 @@
 use std::marker::PhantomData;
 
 use namu_core::ValueId;
-use namu_core::ir::{Action, Call, Collect, FanOut, Literal, Next, Operation, Phi, Workflow};
+use namu_core::ir::{
+    Action, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Workflow,
+};
 
 use crate::ir::{BasicBlock, NodeId};
 use crate::{Node, NodeKind, Terminator};
@@ -127,6 +129,7 @@ impl<T> Graph<T> {
                             task_id: task_id.clone(),
                             inputs: inputs.clone(),
                             outputs: node.outputs.clone(),
+                            catch: None,
                         }));
                     }
                     NodeKind::FanOut { input } => {
@@ -192,6 +195,18 @@ impl<T> Graph<T> {
                     false_next: block_first_op[*false_target].unwrap(),
                 },
                 Terminator::Return { value } => Next::Return { var: *value },
+                Terminator::Catch { ok, err, error } => {
+                    let Some(Action::Call(call)) = &mut ops[last_op_idx].action else {
+                        panic!("block {block_idx} catches, but does not end with a call");
+                    };
+                    call.catch = Some(Catch {
+                        error: *error,
+                        next: block_first_op[*err].unwrap(),
+                    });
+                    Next::Jump {
+                        next: block_first_op[*ok].unwrap(),
+                    }
+                }
             };
             ops[last_op_idx].next = next_field;
         }
@@ -264,6 +279,9 @@ impl<T> Graph<T> {
                         "  branch var{} ? Block {} : Block {}",
                         condition, true_target, false_target
                     ),
+                    Terminator::Catch { ok, err, error } => {
+                        format!("  ok -> Block {}, err var{} -> Block {}", ok, error, err)
+                    }
                     Terminator::Return { value } => {
                         if let Some(value) = value {
                             format!("  return var{}", value)

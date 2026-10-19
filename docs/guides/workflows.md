@@ -52,10 +52,42 @@ let y = double(x);
 sum(y)                          // collects the rest
 ```
 
+- `match attempt(task(..))`: errors as values (below)
+
 Not yet supported:
-- `match`
+- `match` on anything but an attempt
 - `break` / `continue`
+
+## Errors as values
+A task that fails fails its branch. To handle the failure instead, attempt the call and match on
+it:
+
+```rust
+let x = identity(xs);
+let y = match attempt(fetch(x)) {
+    Ok(page) => page,
+    Err(message) => fallback(x, message), // `message` is the task's error, a String
+};
+```
+
+`Ok` binds the call's outputs (a tuple pattern for a task with several), `Err` its error message;
+either may be `_`. Both arms are needed, and they join afterwards like the arms of an `if`, so a
+variable assigned in one arm has the right value after the `match`. Retries are a loop:
+
+```rust
+let mut tries = 0;
+let mut out = 0;
+while less_than(tries, 3) {
+    match attempt(flaky(x)) {
+        Ok(v) => { out = v; tries = 3; }
+        Err(_) => { tries = add(tries, 1); }
+    }
+}
+```
+
+An attempt only catches the task's own failure. Crashes and lost workers are not errors a workflow
+sees: the engine recovers from them.
 
 ## Outputs
 Each `return` reached adds to the run's results. The run is `succeeded`, or `partial_failed` if any
-branch failed.
+branch failed (a caught error does not count).

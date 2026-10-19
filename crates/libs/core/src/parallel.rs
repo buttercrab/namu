@@ -4,8 +4,9 @@
 //! A group starts at a call and takes the calls that follow it in a straight line: each reached
 //! by a plain jump from the one before, with no literals or phis of its own, reading none of the
 //! group's earlier outputs. None of them may feed a stream fusion (its fan-out must start right
-//! after it). Every call in a group reads only values that exist before the group, so they can all
-//! start at once; their outputs are stored in order afterwards.
+//! after it) or have an error edge (where control goes depends on how it ends). Every call in a
+//! group reads only values that exist before the group, so they can all start at once; their
+//! outputs are stored in order afterwards.
 
 use std::collections::HashSet;
 
@@ -15,7 +16,8 @@ use crate::ir::{Next, Workflow};
 /// For every op that starts a group of two or more calls, the ops of the group, in order.
 pub fn parallel_calls(workflow: &Workflow, fused: &[Option<OpId>]) -> Vec<Option<Vec<OpId>>> {
     let ops = &workflow.operations;
-    let groupable = |op: OpId| ops[op].call().is_some() && fused[op].is_none();
+    let groupable =
+        |op: OpId| ops[op].call().is_some_and(|call| call.catch.is_none()) && fused[op].is_none();
     (0..ops.len())
         .map(|first| {
             if !groupable(first) {
@@ -55,6 +57,7 @@ mod tests {
             task_id: "t".into(),
             inputs,
             outputs: vec![output],
+            catch: None,
         };
         Operation::new(Vec::new(), Vec::new(), Some(Action::Call(call)), next)
     }

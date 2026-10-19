@@ -33,6 +33,18 @@ pub struct Call {
     pub task_id: String,
     pub inputs: Vec<ValueId>,
     pub outputs: Vec<ValueId>,
+    /// Where control goes if the task fails. Without it, a failure fails the branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catch: Option<Catch>,
+}
+
+/// A call's error edge, as LLVM's `invoke` has one: if the task fails, its outputs are not
+/// defined; its error message is bound to `error`, and control goes to `next` instead of the
+/// call's own `next`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct Catch {
+    pub error: ValueId,
+    pub next: OpId,
 }
 
 /// Fan-out: every element of the list `input` continues in its own child context, where it is
@@ -118,6 +130,18 @@ impl Operation {
             Some(Action::Collect(collect)) => Some(collect),
             _ => None,
         }
+    }
+
+    /// The error edge of its call, if it has one.
+    pub fn catch(&self) -> Option<&Catch> {
+        self.call()?.catch.as_ref()
+    }
+
+    /// The operations control can go to next: through `next`, or through a call's error edge.
+    pub fn successors(&self) -> impl Iterator<Item = OpId> {
+        self.next
+            .successors()
+            .chain(self.catch().map(|catch| catch.next))
     }
 }
 
