@@ -13,7 +13,7 @@ use namu_engine::tasks::{BatchPolicy, Continuous};
 use namu_engine::{FnTasks, LocalCluster, RunOutcome, Tasks};
 use serde_json::json;
 
-use crate::common::sum;
+use crate::common::{json, sum};
 
 /// `[0, 1, .., n - 1]`.
 #[task]
@@ -144,7 +144,7 @@ async fn items_from_many_branches_share_batches() {
     let cluster = LocalCluster::uniform(1, Arc::new(tasks));
     let outcome = run_on(&cluster, embed_all().to_serializable("e".into())).await;
     // (0 + .. + 39) * 10, without the failed 13
-    assert_eq!(outcome.results, [json!(7800 - 130)]);
+    assert_eq!(json(&outcome.results), [json!(7800 - 130)]);
     assert_eq!(outcome.failures, ["embed: unlucky"]);
     let sizes: Vec<usize> = log.steps().iter().map(Vec::len).collect();
     assert!(sizes.iter().all(|&size| size <= 8), "{sizes:?}");
@@ -167,7 +167,7 @@ async fn a_lone_item_runs_at_once_unless_told_to_wait() {
         let cluster = LocalCluster::uniform(1, Arc::new(tasks));
         let started = Instant::now();
         let outcome = run_on(&cluster, wf().to_serializable("one".into())).await;
-        assert_eq!(outcome.results, [json!(50)]);
+        assert_eq!(json(&outcome.results), [json!(50)]);
         let waited = started.elapsed() >= Duration::from_millis(250);
         assert_eq!(
             waited,
@@ -192,7 +192,7 @@ async fn a_failed_step_fails_every_item_in_it() {
     let tasks = tasks(Arc::default()).batch("broken", policy(6, Some(200)));
     let cluster = LocalCluster::uniform(1, Arc::new(tasks));
     let outcome = run_on(&cluster, wf().to_serializable("b".into())).await;
-    assert_eq!(outcome.results, [json!(0)]);
+    assert_eq!(json(&outcome.results), [json!(0)]);
     assert_eq!(outcome.failures, vec!["broken: the model crashed"; 6]);
 }
 
@@ -216,7 +216,7 @@ async fn short_items_overtake_a_long_one_in_continuous_batching() {
         .batch("decode", policy(4, None));
     let cluster = LocalCluster::uniform(1, Arc::new(tasks));
     let outcome = run_on(&cluster, wf().to_serializable("d".into())).await;
-    assert_eq!(outcome.results, [json!(31)]);
+    assert_eq!(json(&outcome.results), [json!(31)]);
     let finished = log.finished.lock().unwrap().clone();
     assert_eq!(
         finished.last(),
@@ -259,8 +259,8 @@ async fn runs_share_batches() {
         run_on(&cluster, embed_all().to_serializable("a".into())),
         run_on(&cluster, shifted().to_serializable("b".into())),
     );
-    assert_eq!(a.results, [json!(7800 - 130)]);
-    assert_eq!(b.results, [json!(201900)]);
+    assert_eq!(json(&a.results), [json!(7800 - 130)]);
+    assert_eq!(json(&b.results), [json!(201900)]);
     let mixed = log
         .steps()
         .iter()
@@ -283,6 +283,6 @@ async fn a_batch_survives_its_worker_dying() {
         .expect("the run finished")
         .unwrap()
         .unwrap();
-    assert_eq!(outcome.results, [json!(7800 - 130)]);
+    assert_eq!(json(&outcome.results), [json!(7800 - 130)]);
     assert_eq!(outcome.failures, ["embed: unlucky"]);
 }

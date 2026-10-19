@@ -7,9 +7,9 @@
 //! both live; a peer that dies is the business of recovery (design §7), not of the transport.
 //!
 //! A sender opens one connection per peer. It starts with the session's id, then carries frames:
-//! a sequence number, a big-endian `u32` length, and the message as JSON. Messages queued while a
-//! frame is written go out in the same flush. The receiver answers on the same connection with
-//! the number of messages of the session it has delivered.
+//! a sequence number, a big-endian `u32` length, and the message as MessagePack. Messages queued
+//! while a frame is written go out in the same flush. The receiver answers on the same connection
+//! with the number of messages of the session it has delivered.
 //!
 //! A worker can hear from a peer before it learns where the peer listens: a worker that just
 //! joined is in the membership the orchestrator gives it, but its peers learn of it only at their
@@ -196,7 +196,7 @@ impl Outgoing {
         let mut frame = Vec::new();
         frame.extend_from_slice(&self.next.to_be_bytes());
         frame.extend_from_slice(&[0; 4]);
-        if let Err(err) = serde_json::to_writer(&mut frame, message) {
+        if let Err(err) = rmp_serde::encode::write_named(&mut frame, message) {
             tracing::error!("unencodable message dropped: {err}");
             return None;
         }
@@ -353,7 +353,7 @@ async fn receive(
         }
         frame.resize(len as usize, 0);
         read.read_exact(&mut frame).await?;
-        let message = serde_json::from_slice::<Message>(&frame);
+        let message = rmp_serde::from_slice::<Message>(&frame);
         let count = {
             let mut delivered = delivered.lock().unwrap();
             let count = delivered.entry(session).or_default();

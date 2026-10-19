@@ -1,20 +1,23 @@
-//! Runs tasks compiled as native shared libraries exporting the NAMU C ABI (version 4). Every
+//! Runs tasks compiled as native shared libraries exporting the NAMU C ABI (version 5). Every
 //! buffer the library hands over is owned by it and given back through `namu_task_free`.
 //!
 //! - A task exports `namu_task_call`, and runs exactly once per call.
 //! - A stream task exports `namu_stream_open`, `namu_stream_next` and `namu_stream_close`.
 //! - A batch task exports `namu_batch_open`, `namu_batch_step` and `namu_batch_close`; a step's
-//!   items and results cross as JSON.
+//!   items and results cross as one MessagePack document.
+//!
+//! Values cross as MessagePack; errors as text.
 
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::Arc;
 
 use libloading::Library;
+use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    BatchSession, BatchTask, CallTask, Finished, StreamItem, StreamTask, TaskStream,
+    Args, BatchSession, BatchTask, CallTask, Finished, StreamItem, StreamTask, TaskStream,
 };
-use serde_json::Value;
+use serde_bytes::ByteBuf;
 
 type AbiFn = unsafe extern "C" fn() -> u32;
 type FreeFn = unsafe extern "C" fn(*mut u8, usize);
@@ -26,7 +29,7 @@ type CloseFn = unsafe extern "C" fn(*mut c_void);
 type BatchOpenFn = unsafe extern "C" fn(*mut *mut c_void, *mut *mut u8, *mut usize) -> i32;
 type StepFn = unsafe extern "C" fn(*mut c_void, *const u8, usize, *mut *mut u8, *mut usize) -> i32;
 
-const ABI_VERSION: u32 = 4;
+const ABI_VERSION: u32 = 5;
 
 pub struct NativeTask {
     call: CallFn,
@@ -59,15 +62,19 @@ fn load(path: &Path) -> anyhow::Result<(Library, FreeFn)> {
 }
 
 /// Copies a buffer the library handed over, then gives it back.
-fn take(free: FreeFn, ptr: *mut u8, len: usize) -> String {
+fn take(free: FreeFn, ptr: *mut u8, len: usize) -> Vec<u8> {
     if ptr.is_null() {
-        return String::new();
+        return Vec::new();
     }
     // SAFETY: the library wrote `len` bytes at `ptr`, which we free exactly once.
-    let text =
-        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(ptr, len) }).into_owned();
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
     unsafe { free(ptr, len) };
-    text
+    bytes
+}
+
+/// An error the library handed over, as text.
+fn take_error(free: FreeFn, ptr: *mut u8, len: usize) -> String {
+    String::from_utf8_lossy(&take(free, ptr, len)).into_owned()
 }
 
 impl NativeTask {
@@ -84,13 +91,15 @@ impl NativeTask {
 }
 
 impl CallTask for NativeTask {
-    fn call(&self, input: Value) -> anyhow::Result<Result<Value, String>> {
-        let input = input.to_string();
+    fn call(&self, args: Args) -> anyhow::Result<Result<Value, String>> {
+        let input = encode_args(&args)?;
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the ABI contract: the library writes an owned buffer, which `take` frees.
         let code = unsafe { (self.call)(input.as_ptr(), input.len(), &mut out_ptr, &mut out_len) };
-        let output = take(self.free, out_ptr, out_len);
-        super::output(if code == 0 { Ok(output) } else { Err(output) })
+        Ok(super::output(match code {
+            0 => Ok(take(self.free, out_ptr, out_len)),
+            _ => Err(take_error(self.free, out_ptr, out_len)),
+        }))
     }
 }
 
@@ -113,10 +122,10 @@ impl NativeStreamTask {
 impl StreamTask for NativeStreamTask {
     fn open(
         self: Arc<Self>,
-        input: Value,
+        args: Args,
         _cursor: Option<String>,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        let input = input.to_string();
+        let input = encode_args(&args)?;
         let mut handle = std::ptr::null_mut();
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the ABI contract: a handle on success, an owned error buffer otherwise.
@@ -130,7 +139,7 @@ impl StreamTask for NativeStreamTask {
             )
         };
         if code != 0 {
-            return Ok(Err(take(self.free, out_ptr, out_len)));
+            return Ok(Err(take_error(self.free, out_ptr, out_len)));
         }
         Ok(Ok(Box::new(NativeItems { task: self, handle })))
     }
@@ -151,18 +160,11 @@ impl TaskStream for NativeItems {
         let code = unsafe { (self.task.next)(self.handle, &mut out_ptr, &mut out_len) };
         Ok(match code {
             1 => None,
-            0 => {
-                let item = take(self.task.free, out_ptr, out_len);
-                Some(
-                    serde_json::from_str(&item)
-                        .map_err(|err| format!("bad item: {err}"))
-                        .map(|value| StreamItem {
-                            value,
-                            cursor: None,
-                        }),
-                )
-            }
-            _ => Some(Err(take(self.task.free, out_ptr, out_len))),
+            0 => Some(Ok(StreamItem {
+                value: Value::encoded(take(self.task.free, out_ptr, out_len)),
+                cursor: None,
+            })),
+            _ => Some(Err(take_error(self.task.free, out_ptr, out_len))),
         })
     }
 }
@@ -205,7 +207,7 @@ impl BatchTask for NativeBatchTask {
         // SAFETY: the ABI contract: a handle on success, an owned error buffer otherwise.
         let code = unsafe { (self.open)(&mut handle, &mut out_ptr, &mut out_len) };
         if code != 0 {
-            return Ok(Err(take(self.free, out_ptr, out_len)));
+            return Ok(Err(take_error(self.free, out_ptr, out_len)));
         }
         Ok(Ok(Box::new(NativeSession { task: self, handle })))
     }
@@ -220,12 +222,12 @@ struct NativeSession {
 unsafe impl Send for NativeSession {}
 
 impl BatchSession for NativeSession {
-    fn step(&mut self, admit: Vec<(u64, Value)>) -> anyhow::Result<Finished> {
-        let admit: Vec<(u64, String)> = admit
+    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
+        let admit = admit
             .into_iter()
-            .map(|(id, input)| (id, input.to_string()))
-            .collect();
-        let input = serde_json::to_string(&admit)?;
+            .map(|(id, args)| Ok((id, ByteBuf::from(encode_args(&args)?.to_vec()))))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let input = rmp_serde::to_vec(&admit)?;
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the session is open; the library writes an owned buffer.
         let code = unsafe {
@@ -237,17 +239,14 @@ impl BatchSession for NativeSession {
                 &mut out_len,
             )
         };
+        if code != 0 {
+            anyhow::bail!("{}", take_error(self.task.free, out_ptr, out_len));
+        }
         let output = take(self.task.free, out_ptr, out_len);
-        anyhow::ensure!(code == 0, "{output}");
-        let finished: Vec<(u64, Result<String, String>)> = serde_json::from_str(&output)?;
+        let finished: Vec<(u64, Result<ByteBuf, String>)> = rmp_serde::from_slice(&output)?;
         Ok(finished
             .into_iter()
-            .map(|(id, output)| {
-                let output = output.and_then(|output| {
-                    serde_json::from_str(&output).map_err(|err| format!("bad output: {err}"))
-                });
-                (id, output)
-            })
+            .map(|(id, output)| (id, super::output(output.map(ByteBuf::into_vec))))
             .collect())
     }
 }

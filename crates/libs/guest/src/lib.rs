@@ -64,8 +64,8 @@ pub mod stream_bindings {
 }
 
 /// Version of the native C ABI exported by the task macros. Version 3 added streams, version 4
-/// batch sessions.
-pub const NATIVE_ABI_VERSION: u32 = 4;
+/// batch sessions, version 5 moved values from JSON to MessagePack.
+pub const NATIVE_ABI_VERSION: u32 = 5;
 
 /// A batch task that keeps items across steps (continuous batching). A session is made with
 /// `Default` when the worker opens it.
@@ -82,17 +82,20 @@ pub mod __private {
     use std::any::Any;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    pub use serde_json;
+    pub use rmp_serde;
 
-    /// A stream's items, each JSON or the task's error.
-    pub type Items = Box<dyn Iterator<Item = Result<String, String>>>;
+    /// A value as it crosses the task boundary: MessagePack.
+    pub type Bytes = Vec<u8>;
 
-    /// What a batch step finished: each item's id, and its output as JSON or its own error.
-    pub type Finished = Vec<(u64, Result<String, String>)>;
+    /// A stream's items, each encoded or the task's error.
+    pub type Items = Box<dyn Iterator<Item = Result<Bytes, String>>>;
 
-    /// An open batch session: takes in `(id, input JSON)` and returns what it finished. An error
-    /// fails every item in it.
-    pub type Session = Box<dyn FnMut(Vec<(u64, String)>) -> Result<Finished, String>>;
+    /// What a batch step finished: each item's id, and its output or its own error.
+    pub type Finished = Vec<(u64, Result<Bytes, String>)>;
+
+    /// An open batch session: takes in `(id, input)` and returns what it finished. An error fails
+    /// every item in it.
+    pub type Session = Box<dyn FnMut(Vec<(u64, Bytes)>) -> Result<Finished, String>>;
 
     /// A dynamic batch session over `f`: each step runs it over the items given.
     pub fn dynamic<T, R, E>(f: fn(Vec<T>) -> Vec<Result<R, E>>) -> Session
@@ -105,7 +108,7 @@ pub mod __private {
             let mut finished = Vec::new();
             let (mut ids, mut items) = (Vec::new(), Vec::new());
             for (id, input) in admit {
-                match serde_json::from_str(&input) {
+                match rmp_serde::from_slice(&input) {
                     Ok(item) => {
                         ids.push(id);
                         items.push(item);
@@ -141,7 +144,7 @@ pub mod __private {
             let mut finished = Vec::new();
             let mut items = Vec::new();
             for (id, input) in admit {
-                match serde_json::from_str(&input) {
+                match rmp_serde::from_slice(&input) {
                     Ok(item) => items.push((id, item)),
                     Err(err) => finished.push((id, Err(format!("invalid task input: {err}")))),
                 }
@@ -155,37 +158,36 @@ pub mod __private {
 
     fn encode<R: serde::Serialize, E: std::fmt::Display>(
         output: Result<R, E>,
-    ) -> Result<String, String> {
+    ) -> Result<Bytes, String> {
         output
             .map_err(|err| err.to_string())
-            .and_then(|output| serde_json::to_string(&output).map_err(|err| err.to_string()))
+            .and_then(|output| rmp_serde::to_vec_named(&output).map_err(|err| err.to_string()))
     }
 
-    /// Runs a task body against a JSON input and encodes its result as JSON.
-    pub fn run<T, E, F>(input: &str, body: F) -> Result<String, String>
+    /// Runs a task body against its encoded input and encodes its result.
+    pub fn run<T, E, F>(input: &[u8], body: F) -> Result<Bytes, String>
     where
         T: serde::Serialize,
         E: std::fmt::Display,
-        F: FnOnce(String) -> Result<Result<T, E>, serde_json::Error>,
+        F: FnOnce(Bytes) -> Result<Result<T, E>, rmp_serde::decode::Error>,
     {
-        let output = catch_unwind(AssertUnwindSafe(|| body(input.to_string())))
+        let output = catch_unwind(AssertUnwindSafe(|| body(input.to_vec())))
             .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
         match output {
-            Ok(Ok(value)) => serde_json::to_string(&value).map_err(|err| err.to_string()),
-            Ok(Err(err)) => Err(err.to_string()),
+            Ok(output) => encode(output),
             Err(err) => Err(format!("invalid task input: {err}")),
         }
     }
 
-    /// Opens a stream task against a JSON input; its items are encoded as JSON as they are pulled.
-    pub fn open<T, E, I, F>(input: &str, body: F) -> Result<Items, String>
+    /// Opens a stream task against its encoded input; its items are encoded as they are pulled.
+    pub fn open<T, E, I, F>(input: &[u8], body: F) -> Result<Items, String>
     where
         T: serde::Serialize,
         E: std::fmt::Display,
         I: Iterator<Item = Result<T, E>> + 'static,
-        F: FnOnce(String) -> Result<Result<I, E>, serde_json::Error>,
+        F: FnOnce(Bytes) -> Result<Result<I, E>, rmp_serde::decode::Error>,
     {
-        let items = catch_unwind(AssertUnwindSafe(|| body(input.to_string())))
+        let items = catch_unwind(AssertUnwindSafe(|| body(input.to_vec())))
             .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
         let mut items = match items {
             Ok(Ok(items)) => items,
@@ -196,8 +198,7 @@ pub mod __private {
             let item = catch_unwind(AssertUnwindSafe(|| items.next()));
             Some(match item {
                 Ok(None) => return None,
-                Ok(Some(Ok(value))) => serde_json::to_string(&value).map_err(|err| err.to_string()),
-                Ok(Some(Err(err))) => Err(err.to_string()),
+                Ok(Some(output)) => encode(output),
                 Err(panic) => Err(format!("task panicked: {}", panic_message(&panic))),
             })
         })))
@@ -217,8 +218,8 @@ pub mod __private {
     ///
     /// # Safety
     /// `out_ptr` and `out_len` must be writable.
-    unsafe fn hand_over(payload: String, out_ptr: *mut *mut u8, out_len: *mut usize) {
-        let mut bytes = payload.into_bytes().into_boxed_slice();
+    unsafe fn hand_over(payload: Bytes, out_ptr: *mut *mut u8, out_len: *mut usize) {
+        let mut bytes = payload.into_boxed_slice();
         unsafe {
             *out_len = bytes.len();
             *out_ptr = bytes.as_mut_ptr();
@@ -228,9 +229,8 @@ pub mod __private {
 
     /// # Safety
     /// `in_ptr` must point to `in_len` readable bytes.
-    unsafe fn input<'a>(in_ptr: *const u8, in_len: usize) -> Result<&'a str, String> {
-        let input = unsafe { std::slice::from_raw_parts(in_ptr, in_len) };
-        std::str::from_utf8(input).map_err(|err| format!("input is not UTF-8: {err}"))
+    unsafe fn input<'a>(in_ptr: *const u8, in_len: usize) -> &'a [u8] {
+        unsafe { std::slice::from_raw_parts(in_ptr, in_len) }
     }
 
     /// Native ABI entry point shared by every native task.
@@ -242,11 +242,11 @@ pub mod __private {
         in_len: usize,
         out_ptr: *mut *mut u8,
         out_len: *mut usize,
-        call: fn(&str) -> Result<String, String>,
+        call: fn(&[u8]) -> Result<Bytes, String>,
     ) -> i32 {
-        let (code, payload) = match unsafe { input(in_ptr, in_len) }.and_then(call) {
+        let (code, payload) = match call(unsafe { input(in_ptr, in_len) }) {
             Ok(output) => (0, output),
-            Err(err) => (1, err),
+            Err(err) => (1, err.into_bytes()),
         };
         unsafe { hand_over(payload, out_ptr, out_len) };
         code
@@ -263,15 +263,15 @@ pub mod __private {
         handle: *mut *mut std::ffi::c_void,
         out_ptr: *mut *mut u8,
         out_len: *mut usize,
-        open: fn(&str) -> Result<Items, String>,
+        open: fn(&[u8]) -> Result<Items, String>,
     ) -> i32 {
-        match unsafe { input(in_ptr, in_len) }.and_then(open) {
+        match open(unsafe { input(in_ptr, in_len) }) {
             Ok(items) => {
                 unsafe { *handle = Box::into_raw(Box::new(items)).cast() };
                 0
             }
             Err(err) => {
-                unsafe { hand_over(err, out_ptr, out_len) };
+                unsafe { hand_over(err.into_bytes(), out_ptr, out_len) };
                 1
             }
         }
@@ -292,7 +292,7 @@ pub mod __private {
         let (code, payload) = match items.next() {
             None => return 1,
             Some(Ok(item)) => (0, item),
-            Some(Err(err)) => (2, err),
+            Some(Err(err)) => (2, err.into_bytes()),
         };
         unsafe { hand_over(payload, out_ptr, out_len) };
         code
@@ -322,15 +322,20 @@ pub mod __private {
                 0
             }
             Err(err) => {
-                unsafe { hand_over(err, out_ptr, out_len) };
+                unsafe { hand_over(err.into_bytes(), out_ptr, out_len) };
                 1
             }
         }
     }
 
-    /// Native ABI entry point for a batch step. The input is a JSON array of `[id, input]`, the
-    /// output a JSON array of `[id, {"Ok": output} | {"Err": error}]`; or 1 and the session's
-    /// error.
+    /// An item of a batch step as it crosses the native ABI: its id and its encoded input.
+    type Admitted = (u64, serde_bytes::ByteBuf);
+
+    /// An item a batch step finished: its id and its encoded output, or its error.
+    type Done = (u64, Result<serde_bytes::ByteBuf, String>);
+
+    /// Native ABI entry point for a batch step. The input is a MessagePack array of `[id, input]`,
+    /// the output one of `[id, {"Ok": output} | {"Err": error}]`; or 1 and the session's error.
     ///
     /// # Safety
     /// `handle` must come from [`native_batch_open`] and not be closed; `in_ptr` must point to
@@ -343,13 +348,25 @@ pub mod __private {
         out_len: *mut usize,
     ) -> i32 {
         let session = unsafe { &mut *handle.cast::<Session>() };
-        let step = unsafe { input(in_ptr, in_len) }
-            .and_then(|input| serde_json::from_str(input).map_err(|err| err.to_string()))
+        let step = rmp_serde::from_slice::<Vec<Admitted>>(unsafe { input(in_ptr, in_len) })
+            .map_err(|err| err.to_string())
+            .map(|admit| {
+                admit
+                    .into_iter()
+                    .map(|(id, input)| (id, input.into_vec()))
+                    .collect()
+            })
             .and_then(session)
-            .and_then(|finished| serde_json::to_string(&finished).map_err(|err| err.to_string()));
+            .and_then(|finished| {
+                let finished: Vec<Done> = finished
+                    .into_iter()
+                    .map(|(id, output)| (id, output.map(serde_bytes::ByteBuf::from)))
+                    .collect();
+                rmp_serde::to_vec(&finished).map_err(|err| err.to_string())
+            });
         let (code, payload) = match step {
             Ok(finished) => (0, finished),
-            Err(err) => (1, err),
+            Err(err) => (1, err.into_bytes()),
         };
         unsafe { hand_over(payload, out_ptr, out_len) };
         code
@@ -416,26 +433,32 @@ macro_rules! continuous {
     };
 }
 
-/// Defines `$decoder(input)`: decodes the packed JSON arguments and calls the task. The input is
+/// Defines `$decoder(input)`: decodes the packed arguments and calls the task. The input is
 /// owned, so what the task returns (a stream's iterator) cannot borrow from it.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __decoder {
     ($decoder:ident, $name:ident() -> $ret:ty) => {
-        fn $decoder(input: String) -> ::std::result::Result<$ret, $crate::__private::serde_json::Error> {
-            $crate::__private::serde_json::from_str::<Option<()>>(&input)?;
+        fn $decoder(
+            input: $crate::__private::Bytes,
+        ) -> ::std::result::Result<$ret, $crate::__private::rmp_serde::decode::Error> {
+            $crate::__private::rmp_serde::from_slice::<()>(&input)?;
             Ok($name())
         }
     };
     ($decoder:ident, $name:ident($arg:ident : $ty:ty $(,)?) -> $ret:ty) => {
-        fn $decoder(input: String) -> ::std::result::Result<$ret, $crate::__private::serde_json::Error> {
-            let $arg: $ty = $crate::__private::serde_json::from_str(&input)?;
+        fn $decoder(
+            input: $crate::__private::Bytes,
+        ) -> ::std::result::Result<$ret, $crate::__private::rmp_serde::decode::Error> {
+            let $arg: $ty = $crate::__private::rmp_serde::from_slice(&input)?;
             Ok($name($arg))
         }
     };
     ($decoder:ident, $name:ident($($arg:ident : $ty:ty),+ $(,)?) -> $ret:ty) => {
-        fn $decoder(input: String) -> ::std::result::Result<$ret, $crate::__private::serde_json::Error> {
-            let ($($arg,)+): ($($ty,)+) = $crate::__private::serde_json::from_str(&input)?;
+        fn $decoder(
+            input: $crate::__private::Bytes,
+        ) -> ::std::result::Result<$ret, $crate::__private::rmp_serde::decode::Error> {
+            let ($($arg,)+): ($($ty,)+) = $crate::__private::rmp_serde::from_slice(&input)?;
             Ok($name($($arg),+))
         }
     };
@@ -445,7 +468,7 @@ macro_rules! __decoder {
 #[macro_export]
 macro_rules! __export_task {
     () => {
-        fn __namu_call(input: &str) -> ::std::result::Result<String, String> {
+        fn __namu_call(input: &[u8]) -> ::std::result::Result<$crate::__private::Bytes, String> {
             $crate::__private::run(input, __namu_decode)
         }
 
@@ -453,7 +476,7 @@ macro_rules! __export_task {
         const _: () = {
             struct NamuTask;
             impl $crate::bindings::Guest for NamuTask {
-                fn call(input: String) -> ::std::result::Result<String, String> {
+                fn call(input: Vec<u8>) -> ::std::result::Result<Vec<u8>, String> {
                     __namu_call(&input)
                 }
             }
@@ -479,7 +502,7 @@ macro_rules! __export_task {
 #[macro_export]
 macro_rules! __export_stream {
     () => {
-        fn __namu_open(input: &str) -> ::std::result::Result<$crate::__private::Items, String> {
+        fn __namu_open(input: &[u8]) -> ::std::result::Result<$crate::__private::Items, String> {
             $crate::__private::open(input, __namu_decode)
         }
 
@@ -493,14 +516,14 @@ macro_rules! __export_stream {
             impl Guest for NamuStream {
                 type Items = NamuItems;
 
-                fn open(input: String) -> ::std::result::Result<Items, String> {
+                fn open(input: Vec<u8>) -> ::std::result::Result<Items, String> {
                     let items = __namu_open(&input)?;
                     Ok(Items::new(NamuItems(::std::cell::RefCell::new(items))))
                 }
             }
 
             impl GuestItems for NamuItems {
-                fn next(&self) -> Option<::std::result::Result<String, String>> {
+                fn next(&self) -> Option<::std::result::Result<Vec<u8>, String>> {
                     self.0.borrow_mut().next()
                 }
             }

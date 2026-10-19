@@ -9,13 +9,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use serde_json::Value;
+use namu_core::value::Value;
 use tokio::sync::{Notify, oneshot};
 use tokio::time::Instant;
 
 use super::Inner;
 use super::drive::run_task;
-use crate::tasks::{Batch, BatchPolicy, BatchSession, TaskRef};
+use crate::tasks::{Args, Batch, BatchPolicy, BatchSession, TaskRef};
 
 type Outcome = anyhow::Result<Result<Value, String>>;
 
@@ -27,7 +27,7 @@ pub(super) struct Batcher {
 }
 
 struct Waiting {
-    input: Value,
+    args: Args,
     since: Instant,
     done: oneshot::Sender<Outcome>,
 }
@@ -38,12 +38,12 @@ impl Inner {
         self: &Arc<Self>,
         task: &TaskRef,
         batch: &Batch,
-        input: Value,
+        args: Args,
     ) -> Outcome {
         let batcher = self.batcher(task, batch);
         let (done, result) = oneshot::channel();
         let waiting = Waiting {
-            input,
+            args,
             since: Instant::now(),
             done,
         };
@@ -79,7 +79,7 @@ impl Inner {
             if active.is_empty() {
                 batcher.wait_for_items(&policy).await;
             }
-            let admit: Vec<(u64, Value)> = {
+            let admit: Vec<(u64, Args)> = {
                 let mut queue = batcher.queue.lock().unwrap();
                 let room = policy.size.saturating_sub(active.len()).min(queue.len());
                 queue
@@ -87,7 +87,7 @@ impl Inner {
                     .map(|waiting| {
                         next_id += 1;
                         active.insert(next_id, waiting.done);
-                        (next_id, waiting.input)
+                        (next_id, waiting.args)
                     })
                     .collect()
             };

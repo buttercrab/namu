@@ -6,10 +6,11 @@ use std::sync::Arc;
 use namu_core::OpId;
 use namu_core::ir::Workflow;
 use namu_core::liveness::Liveness;
+use namu_core::value::Value;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId, owner};
+use crate::kernel::Literals;
 use crate::tasks::TaskRef;
 
 /// A run as it is described to the workers that take part in it.
@@ -43,6 +44,7 @@ pub struct RunSpec {
     pub fused: Vec<Option<OpId>>,
     /// What is live where nodes are created, for placing them (design §6.2).
     pub liveness: Liveness,
+    pub literals: Literals,
     /// For each op that calls a task, the task at the run's version.
     tasks: Vec<Option<TaskRef>>,
 }
@@ -52,6 +54,7 @@ impl RunSpec {
         let collect_ops = namu_core::scopes::collect_ops(&info.workflow)?;
         let fused = namu_core::scopes::fused_fan_outs(&info.workflow);
         let liveness = namu_core::liveness::liveness(&info.workflow);
+        let literals = Literals::decode(&info.workflow)?;
         let tasks = info
             .workflow
             .operations
@@ -72,6 +75,7 @@ impl RunSpec {
             collect_ops,
             fused,
             liveness,
+            literals,
             tasks,
         })
     }
@@ -100,7 +104,7 @@ impl RunSpec {
 }
 
 /// What a finished run produced. Results arrive in no particular order.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunOutcome {
     pub results: Vec<Value>,
     pub failures: Vec<String>,

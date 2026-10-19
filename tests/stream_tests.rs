@@ -11,7 +11,7 @@ use namu::prelude::*;
 use namu_engine::{FnTasks, LocalCluster, RunOutcome, Tasks};
 use serde_json::json;
 
-use crate::common::{add, double, sum};
+use crate::common::{add, double, json, sum};
 
 /// `0, 1, .., n - 1`, one item every `delay_ms`.
 #[task(stream)]
@@ -104,7 +104,7 @@ async fn a_stream_fans_out_and_collects_in_order() {
         wf().to_serializable("s".into()),
     )
     .await;
-    assert_eq!(outcome.results, [json!([0, 2, 4, 6, 8, 10])]);
+    assert_eq!(json(&outcome.results), [json!([0, 2, 4, 6, 8, 10])]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -125,7 +125,7 @@ async fn a_stream_used_whole_is_read_into_a_list() {
     )
     .await;
     // (0 + .. + 4) + 5
-    assert_eq!(outcome.results, [json!(15)]);
+    assert_eq!(json(&outcome.results), [json!(15)]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -145,7 +145,7 @@ async fn items_are_processed_before_the_stream_ends() {
         wf().to_serializable("s".into()),
     )
     .await;
-    assert_eq!(outcome.results, [json!(28)]);
+    assert_eq!(json(&outcome.results), [json!(28)]);
     assert!(
         probe.pipelined.load(Ordering::SeqCst),
         "items waited for the end of the stream"
@@ -166,7 +166,7 @@ async fn a_stream_never_has_more_than_its_window_in_flight() {
     let probe = Arc::new(Probe::default());
     let tasks = tasks(probe.clone()).window("numbers", 3);
     let outcome = run_on(&cluster(4, tasks), wf().to_serializable("s".into())).await;
-    assert_eq!(outcome.results, [json!(780)]);
+    assert_eq!(json(&outcome.results), [json!(780)]);
     let max = probe.max_in_flight.load(Ordering::SeqCst);
     assert!((1..=3).contains(&max), "{max} items in flight");
 }
@@ -186,7 +186,7 @@ async fn a_failing_stream_keeps_what_it_yielded() {
         wf().to_serializable("s".into()),
     )
     .await;
-    assert_eq!(outcome.results, [json!(12)]);
+    assert_eq!(json(&outcome.results), [json!(12)]);
     assert_eq!(outcome.failures, ["numbers_then_fail: the source broke"]);
 }
 
@@ -215,7 +215,7 @@ async fn a_stream_resumes_after_its_worker_dies() {
         .expect("the run finished")
         .unwrap()
         .unwrap();
-    assert_eq!(outcome.results, [json!(870)]);
+    assert_eq!(json(&outcome.results), [json!(870)]);
     assert!(outcome.succeeded(), "{:?}", outcome.failures);
 }
 
@@ -243,6 +243,6 @@ async fn a_stream_restarts_where_its_task_is_served() {
         .expect("the run finished")
         .unwrap()
         .unwrap();
-    assert_eq!(outcome.results, [json!(870)]);
+    assert_eq!(json(&outcome.results), [json!(870)]);
     assert!(outcome.succeeded(), "{:?}", outcome.failures);
 }

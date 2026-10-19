@@ -25,8 +25,10 @@ resolver = "3"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+bytes = "1.10"
 darling = "0.24"
 inventory = "0.3"
+rmp-serde = "1.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.49", features = ["full"] }
@@ -47,6 +49,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 namu-engine = { path = "crates/libs/engine", version = "0.1.0" }
+rmp-serde = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use namu_core::value::Value;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId, owner};

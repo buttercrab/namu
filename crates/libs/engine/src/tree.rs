@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use namu_core::ValueId;
+use namu_core::value::Value;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
 
 use crate::ids::NodeId;
 
@@ -234,8 +234,8 @@ mod tests {
     fn nodes_that_arrive_link_to_their_parents() {
         let nodes = Nodes::default();
         let root = nodes.hold(Arc::new(Node::root(1)));
-        let wire = serde_json::to_string(&Node::new(2, root.clone(), Vec::new())).unwrap();
-        let child: Node = serde_json::from_str(&wire).unwrap();
+        let wire = rmp_serde::to_vec_named(&Node::new(2, root.clone(), Vec::new())).unwrap();
+        let child: Node = rmp_serde::from_slice(&wire).unwrap();
         assert!(child.parent().is_none());
         let child = nodes.receive([Arc::new(child)]).remove(0);
         assert!(Arc::ptr_eq(child.parent().unwrap(), &root));

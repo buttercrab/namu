@@ -8,9 +8,33 @@ use std::future::Future;
 
 use anyhow::Context;
 use namu_core::ir::{Next, Operation, Workflow};
+use namu_core::value::Value;
 use namu_core::{OpId, ValueId};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+/// A workflow's literals as values, decoded once per run. The IR keeps them as JSON text, so it
+/// stays readable to people and to tools that write it.
+#[derive(Debug)]
+pub struct Literals(Vec<Vec<Value>>);
+
+impl Literals {
+    pub fn decode(workflow: &Workflow) -> anyhow::Result<Self> {
+        let ops = workflow.operations.iter().map(|op| {
+            op.literals
+                .iter()
+                .map(|literal| {
+                    let mut bytes = Vec::new();
+                    let mut json = serde_json::Deserializer::from_str(&literal.value);
+                    let mut msgpack = rmp_serde::Serializer::new(&mut bytes).with_struct_map();
+                    serde_transcode::transcode(&mut json, &mut msgpack)
+                        .with_context(|| format!("literal {:?} is not JSON", literal.value))?;
+                    Ok(Value::encoded(bytes))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+        });
+        Ok(Self(ops.collect::<anyhow::Result<_>>()?))
+    }
+}
 
 /// The value tree as the kernel sees it.
 pub trait ValueStore: Sync {
@@ -76,6 +100,7 @@ pub enum Plan<C> {
 /// Advances `ctx` from `start` to the next action.
 pub async fn drive<S: ValueStore>(
     workflow: &Workflow,
+    literals: &Literals,
     store: &S,
     mut ctx: S::Ctx,
     start: Start,
@@ -89,7 +114,7 @@ pub async fn drive<S: ValueStore>(
     };
     loop {
         let op = operation(workflow, op_id)?;
-        ctx = enter(store, ctx, op_id, op, pred).await?;
+        ctx = enter(store, ctx, op_id, op, &literals.0[op_id], pred).await?;
         if op.call.is_some() {
             return Ok(Plan::Call { op: op_id, ctx });
         }
@@ -123,13 +148,12 @@ async fn enter<S: ValueStore>(
     ctx: S::Ctx,
     op_id: OpId,
     op: &Operation,
+    literals: &[Value],
     pred: Option<OpId>,
 ) -> anyhow::Result<S::Ctx> {
     let mut values = Vec::with_capacity(op.literals.len() + op.phis.len());
-    for literal in &op.literals {
-        let value = serde_json::from_str(&literal.value)
-            .with_context(|| format!("literal {:?} is not JSON", literal.value))?;
-        values.push((literal.output, value));
+    for (literal, value) in op.literals.iter().zip(literals) {
+        values.push((literal.output, value.clone()));
     }
     if let Some(pred) = pred {
         for phi in &op.phis {
@@ -164,7 +188,7 @@ pub async fn leave<S: ValueStore>(
             let cond = store.get(ctx, *var).await?;
             let cond = cond
                 .as_bool()
-                .with_context(|| format!("branch condition {var} is {cond}, not a bool"))?;
+                .with_context(|| format!("branch condition {var}"))?;
             Some(if cond { *true_next } else { *false_next })
         }
         Next::Return { .. } => None,

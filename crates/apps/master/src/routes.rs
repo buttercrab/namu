@@ -385,8 +385,10 @@ pub async fn record_outcome(
         "partial_failed"
     };
     let mut pipe = redis::pipe();
+    // The API shows results as JSON: this is the one place values become JSON.
     for result in &outcome.results {
-        pipe.rpush(keys::run_results(run), serde_json::to_string(result)?)
+        let json: JsonValue = rmp_serde::from_slice(&result.encode()?)?;
+        pipe.rpush(keys::run_results(run), serde_json::to_string(&json)?)
             .ignore();
     }
     for failure in &outcome.failures {

@@ -1,5 +1,5 @@
 //! The durable log in Redis (design §7). Run Redis with persistence (`appendonly yes`) for the
-//! log to survive Redis restarts too.
+//! log to survive Redis restarts too. Records are MessagePack.
 //!
 //! Appends go through one writer task, so they are applied in order, and are pipelined in batches;
 //! an append is durable once its batch has been applied. Per run, the log is a handful of keys
@@ -25,6 +25,10 @@ const RUNS: &str = "namu:log:runs";
 
 fn key(run: RunId, part: &str) -> String {
     format!("namu:log:{run}:{part}")
+}
+
+fn encode(record: &impl serde::Serialize) -> anyhow::Result<Vec<u8>> {
+    Ok(rmp_serde::to_vec_named(record)?)
 }
 
 fn branch_field(holder: WorkerId, id: BranchId, hop: u64) -> String {
@@ -82,14 +86,14 @@ async fn write(
 fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
     match record {
         Record::Run(info) => {
-            pipe.set(key(info.id, "info"), serde_json::to_string(info)?)
+            pipe.set(key(info.id, "info"), encode(info)?)
                 .ignore()
                 .sadd(RUNS, info.id.to_string())
                 .ignore();
         }
         Record::Nodes { run, nodes } => {
             for node in nodes {
-                pipe.hset(key(*run, "nodes"), node.id(), serde_json::to_string(node)?)
+                pipe.hset(key(*run, "nodes"), node.id(), encode(node)?)
                     .ignore();
             }
         }
@@ -99,7 +103,7 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             branch,
         } => {
             let field = branch_field(*holder, branch.id, branch.hop);
-            pipe.hset(key(*run, "branches"), field, serde_json::to_string(branch)?)
+            pipe.hset(key(*run, "branches"), field, encode(branch)?)
                 .ignore();
         }
         Record::BranchGone {
@@ -118,7 +122,7 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             source,
             count,
         } => {
-            let record = serde_json::to_string(&(continuation, source))?;
+            let record = encode(&(continuation, source))?;
             pipe.hset(key(*run, "scopes"), scope, record).ignore();
             if let Some(count) = count {
                 pipe.hset(key(*run, "counts"), scope, count).ignore();
@@ -129,7 +133,7 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             scope,
             position,
         } => {
-            let position = serde_json::to_string(position)?;
+            let position = encode(position)?;
             pipe.hset(key(*run, "positions"), scope, position).ignore();
         }
         Record::Closed { run, scope, count } => {
@@ -140,12 +144,11 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             pipe.hdel(key(*run, "counts"), scope).ignore();
         }
         Record::End { run, scope, end } => {
-            pipe.rpush(key(*run, "ends"), serde_json::to_string(&(scope, end))?)
+            pipe.rpush(key(*run, "ends"), encode(&(scope, end))?)
                 .ignore();
         }
         Record::Report { run, report } => {
-            pipe.rpush(key(*run, "reports"), serde_json::to_string(report)?)
-                .ignore();
+            pipe.rpush(key(*run, "reports"), encode(report)?).ignore();
         }
         Record::RunGone(run) => {
             let parts = [
@@ -174,14 +177,14 @@ impl Log for RedisLog {
     }
 
     async fn node(&self, run: RunId, id: NodeId) -> anyhow::Result<Option<Arc<Node>>> {
-        let raw: Option<String> = self.redis.clone().hget(key(run, "nodes"), id).await?;
-        raw.map(|raw| serde_json::from_str(&raw).context("bad node in the log"))
+        let raw: Option<Vec<u8>> = self.redis.clone().hget(key(run, "nodes"), id).await?;
+        raw.map(|raw| rmp_serde::from_slice(&raw).context("bad node in the log"))
             .transpose()
     }
 
     async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>> {
-        let raw: Option<String> = self.redis.clone().get(key(run, "info")).await?;
-        raw.map(|raw| serde_json::from_str(&raw).context("bad run in the log"))
+        let raw: Option<Vec<u8>> = self.redis.clone().get(key(run, "info")).await?;
+        raw.map(|raw| rmp_serde::from_slice(&raw).context("bad run in the log"))
             .transpose()
     }
 
@@ -194,25 +197,25 @@ impl Log for RedisLog {
             let Some(info) = self.run(run).await? else {
                 continue;
             };
-            let branches: HashMap<String, String> = redis.hgetall(key(run, "branches")).await?;
+            let branches: HashMap<String, Vec<u8>> = redis.hgetall(key(run, "branches")).await?;
             let held = format!("{worker}:");
             let branches = branches
                 .into_iter()
                 .filter(|(field, _)| field.starts_with(&held))
-                .map(|(_, raw)| serde_json::from_str::<Branch>(&raw))
+                .map(|(_, raw)| rmp_serde::from_slice::<Branch>(&raw))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let scopes: HashMap<u64, String> = redis.hgetall(key(run, "scopes")).await?;
+            let scopes: HashMap<u64, Vec<u8>> = redis.hgetall(key(run, "scopes")).await?;
             let mut owned: HashMap<u64, (Option<Continuation>, Option<Source>)> = scopes
                 .into_iter()
                 .filter(|(scope, _)| owner(*scope) == worker)
-                .map(|(scope, raw)| Ok((scope, serde_json::from_str(&raw)?)))
+                .map(|(scope, raw)| Ok((scope, rmp_serde::from_slice(&raw)?)))
                 .collect::<anyhow::Result<_>>()?;
             if owned.values().any(|(_, source)| source.is_some()) {
-                let positions: HashMap<u64, String> = redis.hgetall(key(run, "positions")).await?;
+                let positions: HashMap<u64, Vec<u8>> = redis.hgetall(key(run, "positions")).await?;
                 for (scope, raw) in positions {
                     if let Some((_, Some(source))) = owned.get_mut(&scope) {
-                        source.position = serde_json::from_str::<Position>(&raw)?;
+                        source.position = rmp_serde::from_slice::<Position>(&raw)?;
                     }
                 }
             }
@@ -222,9 +225,9 @@ impl Log for RedisLog {
             }
             let mut ends: HashMap<u64, Vec<EndRecord>> = HashMap::new();
             if !owned.is_empty() {
-                let raw: Vec<String> = redis.lrange(key(run, "ends"), 0, -1).await?;
+                let raw: Vec<Vec<u8>> = redis.lrange(key(run, "ends"), 0, -1).await?;
                 for raw in raw {
-                    let (scope, end): (u64, EndRecord) = serde_json::from_str(&raw)?;
+                    let (scope, end): (u64, EndRecord) = rmp_serde::from_slice(&raw)?;
                     if owned.contains_key(&scope) {
                         ends.entry(scope).or_default().push(end);
                     }
@@ -243,9 +246,9 @@ impl Log for RedisLog {
 
             let reports = match info.owner() == worker {
                 true => {
-                    let raw: Vec<String> = redis.lrange(key(run, "reports"), 0, -1).await?;
+                    let raw: Vec<Vec<u8>> = redis.lrange(key(run, "reports"), 0, -1).await?;
                     raw.iter()
-                        .map(|raw| serde_json::from_str::<ReportRecord>(raw))
+                        .map(|raw| rmp_serde::from_slice::<ReportRecord>(raw))
                         .collect::<Result<Vec<_>, _>>()?
                 }
                 false => Vec::new(),
