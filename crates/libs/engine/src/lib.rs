@@ -11,6 +11,7 @@ pub mod ids;
 pub mod kernel;
 pub mod log;
 pub mod message;
+mod persistent;
 pub mod routes;
 pub mod run;
 pub mod scope;

@@ -14,6 +14,10 @@ use crate::kernel::{Point, ValueStore};
 use crate::message::Message;
 use crate::tree::Node;
 
+/// How far up a lookup walks before it jumps instead. A lineage costs about as much as walking a
+/// few dozen parents, and is kept for every later lookup from that node.
+const WALK: usize = 32;
+
 pub(super) struct View<'a> {
     pub worker: &'a Arc<Inner>,
     pub run: &'a Run,
@@ -23,7 +27,23 @@ impl ValueStore for View<'_> {
     type Ctx = Arc<Node>;
 
     async fn get(&self, ctx: &Arc<Node>, value: ValueId) -> anyhow::Result<Value> {
+        // Most values are a few parents up: walk. Further up, jump, if the chain is held here;
+        // if it is not, fetch one parent at a time, only as far up as the value.
         let mut node = ctx.clone();
+        for _ in 0..WALK {
+            if let Some(found) = node.get(value) {
+                return Ok(found.clone());
+            }
+            match node.parent() {
+                Some(parent) => node = parent.clone(),
+                None => break,
+            }
+        }
+        if let Some(found) = ctx.find(value) {
+            return found.cloned().with_context(|| {
+                format!("value {value} is not visible from context {}", ctx.id())
+            });
+        }
         loop {
             if let Some(found) = node.get(value) {
                 return Ok(found.clone());
