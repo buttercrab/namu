@@ -162,16 +162,12 @@ impl Inner {
                 Ok(Some(Err(message))) => return Err(format!("{}: {message}", task.id)),
                 Err(err) => return Err(format!("{}: {err:#}", task.id)),
             };
-            self.emit(run, feeding, position.yielded, item.value);
+            let index = position.yielded;
             position.yielded += 1;
             if let Some(cursor) = item.cursor {
                 position.cursor = Some((cursor, position.yielded));
             }
-            self.log.record(vec![Record::Position {
-                run: run.id(),
-                scope: feeding.scope,
-                position: position.clone(),
-            }]);
+            self.emit(run, feeding, index, item.value, position);
         }
     }
 
@@ -211,8 +207,18 @@ impl Inner {
         Ok(Ok(stream))
     }
 
-    /// Makes item `index` a branch of the scope.
-    fn emit(self: &Arc<Self>, run: &Arc<Run>, feeding: &Feeding<'_>, index: u64, value: Value) {
+    /// Makes item `index` a branch of the scope, and hands it off. The item is logged as a
+    /// branch held here in the same append that moves the source to `position`, and that record
+    /// goes once the handoff is acknowledged: if this worker dies first, its successor either
+    /// sends the item again or yields it again under the same index.
+    fn emit(
+        self: &Arc<Self>,
+        run: &Arc<Run>,
+        feeding: &Feeding<'_>,
+        index: u64,
+        value: Value,
+        position: &Position,
+    ) {
         let output = run.spec.workflow().operations[feeding.source.fan_out]
             .fan_out
             .as_ref()
@@ -232,9 +238,27 @@ impl Inner {
             }),
             scopes: feeding.inner.clone(),
         };
+        self.log.record(vec![
+            Record::Nodes {
+                run: run.id(),
+                nodes: vec![node.clone()],
+            },
+            Record::Branch {
+                run: run.id(),
+                holder: self.id,
+                branch: branch.clone(),
+            },
+            Record::Position {
+                run: run.id(),
+                scope: feeding.scope,
+                position: position.clone(),
+            },
+        ]);
+        let release = Release::new(1, self.gone(run, &branch));
         let to = self.routes.any().unwrap_or(self.id);
         let nodes = [node].into_iter().chain(feeding.trail.iter().cloned());
-        self.hand_off(run, to, branch, nodes.collect(), None);
+        let branch = Branch { hop: 1, ..branch };
+        self.hand_off(run, to, branch, nodes.collect(), Some(release));
     }
 
     /// Runs a stream task whose output is not just fanned out, reading it to its end into a list.
