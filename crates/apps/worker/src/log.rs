@@ -88,8 +88,8 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 .ignore();
         }
         Record::Nodes { run, nodes } => {
-            for (id, node) in nodes {
-                pipe.hset(key(*run, "nodes"), id, serde_json::to_string(node)?)
+            for node in nodes {
+                pipe.hset(key(*run, "nodes"), node.id(), serde_json::to_string(node)?)
                     .ignore();
             }
         }

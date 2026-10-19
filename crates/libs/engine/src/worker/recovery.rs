@@ -66,22 +66,27 @@ impl Inner {
         };
         tracing::info!(dead, runs = estates.len(), "taking over from a dead worker");
         for estate in estates {
-            self.adopt_run(dead, estate).await;
+            if let Err(err) = self.adopt_run(dead, estate).await {
+                // Retried on the next tick; what was adopted already is not adopted twice.
+                return tracing::error!(dead, "taking over failed: {err:#}");
+            }
         }
         self.adopted.lock().unwrap().insert(dead);
     }
 
-    async fn adopt_run(self: &Arc<Self>, dead: WorkerId, estate: RunEstate) {
-        let Some(info) = estate.info else { return };
+    async fn adopt_run(self: &Arc<Self>, dead: WorkerId, estate: RunEstate) -> anyhow::Result<()> {
+        let Some(info) = estate.info else {
+            return Ok(());
+        };
         let Some(run) = self.install(info).await else {
-            return;
+            return Ok(());
         };
         for scope in estate.scopes {
             let reports = match scope.continuation {
                 None => estate.reports.as_slice(),
                 Some(_) => &[],
             };
-            self.adopt_scope(&run, scope, reports);
+            self.adopt_scope(&run, scope, reports).await?;
         }
         // A report whose weight may not have reached its scope: return it again. The scope's
         // owner counts it once.
@@ -91,22 +96,26 @@ impl Inner {
         for branch in estate.branches {
             self.adopt_branch(&run, dead, branch);
         }
+        Ok(())
     }
 
-    fn adopt_scope(
+    async fn adopt_scope(
         self: &Arc<Self>,
         run: &Arc<Run>,
         estate: ScopeEstate,
         reports: &[ReportRecord],
-    ) {
+    ) -> anyhow::Result<()> {
         let id = estate.scope;
         if run.scopes.lock().unwrap().contains_key(&id)
             || run.finished.lock().unwrap().contains(&id)
         {
-            return;
+            return Ok(());
         }
         let then = match estate.continuation {
-            Some(continuation) => Then::Continue(continuation),
+            Some(continuation) => {
+                let ctx = self.node(run, continuation.ctx).await?;
+                Then::Continue { continuation, ctx }
+            }
             None => {
                 let mut finish = Finish {
                     outcome: Default::default(),
@@ -128,18 +137,13 @@ impl Inner {
         if let Some(source) = estate.source
             && !source_ended
         {
-            return self.adopt_stream(run, id, scope, source);
+            self.adopt_stream(run, id, scope, source);
+        } else if over {
+            self.scope_over(run, id, scope);
+        } else {
+            run.open_scope(id, scope);
         }
-        match over {
-            true => self.scope_over(run, id, scope),
-            false => {
-                let ctx = match &scope.then {
-                    Then::Continue(continuation) => Some(continuation.ctx),
-                    Then::Finish(_) => None,
-                };
-                run.open_scope(id, scope, ctx);
-            }
-        }
+        Ok(())
     }
 
     /// Runs a branch the dead worker held again, from where it was recorded.
@@ -162,7 +166,7 @@ impl Inner {
             },
             left,
         ]);
-        self.spawn_drive(run.clone(), branch);
+        self.spawn_drive_fetching(run.clone(), branch);
     }
 
     /// Holds a message until membership or adoption decides where it belongs.

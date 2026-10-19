@@ -1,31 +1,80 @@
 //! The value tree.
 //!
-//! Every step that produces values creates a node holding them. Nodes are immutable, parent
-//! included, so any worker may cache any node, and branches share everything written before they
-//! split. A new node attaches under the deepest node of its context's chain that still holds a
-//! live value (design §6.2), so nodes holding only dead values fall out of every chain.
+//! Every step that produces values creates a node holding them. Nodes are immutable, so any
+//! worker may cache any node, and branches share everything written before they split. A new node
+//! attaches under the deepest node of its context's chain that still holds a live value (design
+//! §6.2), so nodes holding only dead values fall out of every chain.
 //!
-//! Each worker keeps the nodes it holds for a run in [`Nodes`], and sweeps away the ones nothing
-//! here can reach any more: everything is reached from pinned contexts (branches being driven,
-//! scopes waiting to continue) through parent links. A swept node that is asked for again is read
-//! from the log, which holds every node a live branch can reach (design §7.2).
+//! A node owns its parent: a context keeps its whole chain alive, and a node nothing reaches is
+//! freed at once. A node that came from another worker knows only its parent's id until the
+//! parent is held here too; from then on it owns it like any other.
+//!
+//! Each worker indexes the nodes it holds for a run in [`Nodes`], without owning them, to serve
+//! them to other workers and to share one copy of each. A node asked for after it was freed is
+//! read from the log, which holds every node a live branch can reach (design §7.2).
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use namu_core::ValueId;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use crate::ids::NodeId;
 
-#[derive(Debug, Serialize, Deserialize)]
 pub struct Node {
-    pub parent: Option<NodeId>,
-    pub values: Vec<(ValueId, Value)>,
+    id: NodeId,
+    parent: Option<Parent>,
+    values: Vec<(ValueId, Value)>,
+}
+
+struct Parent {
+    id: NodeId,
+    /// Set once the parent is held; from then on this node keeps it alive.
+    node: OnceLock<Arc<Node>>,
 }
 
 impl Node {
+    pub fn root(id: NodeId) -> Self {
+        Self {
+            id,
+            parent: None,
+            values: Vec::new(),
+        }
+    }
+
+    /// A node holding `values` under `parent`.
+    pub fn new(id: NodeId, parent: Arc<Node>, values: Vec<(ValueId, Value)>) -> Self {
+        Self {
+            id,
+            parent: Some(Parent {
+                id: parent.id,
+                node: OnceLock::from(parent),
+            }),
+            values,
+        }
+    }
+
+    pub fn id(&self) -> NodeId {
+        self.id
+    }
+
+    pub fn parent_id(&self) -> Option<NodeId> {
+        self.parent.as_ref().map(|parent| parent.id)
+    }
+
+    /// The parent, if it is held here.
+    pub fn parent(&self) -> Option<&Arc<Node>> {
+        self.parent.as_ref()?.node.get()
+    }
+
+    /// Takes hold of the parent, which this node knew only by id.
+    pub fn link(&self, parent: Arc<Node>) {
+        let link = self.parent.as_ref().expect("linking a root");
+        assert_eq!(link.id, parent.id, "linking node {} to a stranger", self.id);
+        let _ = link.node.set(parent);
+    }
+
     pub fn get(&self, id: ValueId) -> Option<&Value> {
         self.values
             .iter()
@@ -40,128 +89,127 @@ impl Node {
     }
 }
 
-/// Nodes are never swept while the map is smaller than this.
-const SWEEP_FLOOR: usize = 1024;
+impl Drop for Node {
+    /// Frees the chain this node was the last owner of one node at a time, not recursively, so
+    /// no chain is too long to drop.
+    fn drop(&mut self) {
+        let mut next = self
+            .parent
+            .take()
+            .and_then(|parent| parent.node.into_inner());
+        while let Some(node) = next {
+            next = Arc::into_inner(node)
+                .and_then(|mut node| node.parent.take())
+                .and_then(|parent| parent.node.into_inner());
+        }
+    }
+}
 
-/// The nodes of one run held by one worker: those it created and those it fetched.
+impl std::fmt::Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node")
+            .field("id", &self.id)
+            .field("parent", &self.parent_id())
+            .field("values", &self.values)
+            .finish()
+    }
+}
+
+/// A node as it crosses the network and sits in the log: its parent by id.
+#[derive(Serialize)]
+struct WireRef<'a> {
+    id: NodeId,
+    parent: Option<NodeId>,
+    values: &'a [(ValueId, Value)],
+}
+
+#[derive(Deserialize)]
+struct Wire {
+    id: NodeId,
+    parent: Option<NodeId>,
+    values: Vec<(ValueId, Value)>,
+}
+
+impl Serialize for Node {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let wire = WireRef {
+            id: self.id,
+            parent: self.parent_id(),
+            values: &self.values,
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Node {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            id: wire.id,
+            parent: wire.parent.map(|id| Parent {
+                id,
+                node: OnceLock::new(),
+            }),
+            values: wire.values,
+        })
+    }
+}
+
+/// The index is never cleaned while it is smaller than this.
+const CLEAN_FLOOR: usize = 64;
+
+/// The nodes of one run that one worker holds, by id. The index does not keep them alive.
 #[derive(Debug, Default)]
 pub struct Nodes {
-    inner: Mutex<Inner>,
+    inner: Mutex<Index>,
 }
 
 #[derive(Debug, Default)]
-struct Inner {
-    /// Each node with the generation it arrived in.
-    nodes: HashMap<NodeId, (Arc<Node>, u64)>,
-    /// Pinned contexts, and how many pins each has.
-    pins: HashMap<NodeId, usize>,
-    /// Bumped by every sweep. A sweep keeps the nodes of the current generation, so a node just
-    /// created is safe until whoever created it has pinned it or a child of it.
-    generation: u64,
-    /// Node count after the last sweep; the next one runs when it has doubled.
-    after_sweep: usize,
-    /// The most nodes held at once.
+struct Index {
+    nodes: HashMap<NodeId, Weak<Node>>,
+    /// Entries left after the last cleaning; the next one runs when that has doubled, so
+    /// cleaning costs O(1) per entry.
+    after_clean: usize,
+    /// The most entries at once.
     peak: usize,
 }
 
 impl Nodes {
     pub fn get(&self, id: NodeId) -> Option<Arc<Node>> {
-        let inner = self.inner.lock().unwrap();
-        inner.nodes.get(&id).map(|(node, _)| node.clone())
+        self.inner.lock().unwrap().nodes.get(&id)?.upgrade()
     }
 
-    pub fn insert(&self, id: NodeId, node: Arc<Node>) {
-        let mut inner = self.inner.lock().unwrap();
-        let generation = inner.generation;
-        inner.nodes.insert(id, (node, generation));
-        inner.peak = inner.peak.max(inner.nodes.len());
-        if inner.nodes.len() >= SWEEP_FLOOR.max(2 * inner.after_sweep) {
-            inner.sweep();
+    /// Indexes `node`, and returns the copy to use: the one already held, if there is one.
+    pub fn hold(&self, node: Arc<Node>) -> Arc<Node> {
+        let mut index = self.inner.lock().unwrap();
+        if let Some(held) = index.nodes.get(&node.id).and_then(Weak::upgrade) {
+            return held;
         }
-    }
-
-    /// Keeps `id`, and everything it reaches, until the pin is dropped.
-    pub fn pin(self: &Arc<Self>, id: NodeId) -> Pin {
-        *self.inner.lock().unwrap().pins.entry(id).or_default() += 1;
-        Pin {
-            nodes: self.clone(),
-            id,
+        index.nodes.insert(node.id, Arc::downgrade(&node));
+        index.peak = index.peak.max(index.nodes.len());
+        if index.nodes.len() >= CLEAN_FLOOR.max(2 * index.after_clean) {
+            index.nodes.retain(|_, node| node.strong_count() > 0);
+            index.after_clean = index.nodes.len();
         }
+        node
     }
 
-    fn unpin(&self, id: NodeId) {
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(count) = inner.pins.get_mut(&id) {
-            *count -= 1;
-            if *count == 0 {
-                inner.pins.remove(&id);
+    /// Indexes nodes that arrived together, and links each to its parent if that is held.
+    pub fn receive(&self, nodes: impl IntoIterator<Item = Arc<Node>>) -> Vec<Arc<Node>> {
+        let nodes: Vec<_> = nodes.into_iter().map(|node| self.hold(node)).collect();
+        for node in &nodes {
+            if node.parent().is_none()
+                && let Some(parent) = node.parent_id().and_then(|id| self.get(id))
+            {
+                node.link(parent);
             }
         }
+        nodes
     }
 
-    /// The most nodes held at once so far.
+    /// The most index entries at once: a bound on the nodes held at once.
     pub fn peak(&self) -> usize {
         self.inner.lock().unwrap().peak
-    }
-
-    pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().nodes.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Drops every node nothing pinned reaches, except those of the current generation.
-    pub fn sweep(&self) {
-        self.inner.lock().unwrap().sweep();
-    }
-}
-
-impl Inner {
-    fn sweep(&mut self) {
-        let mut reached: HashSet<NodeId> = HashSet::new();
-        for &pinned in self.pins.keys() {
-            let mut cursor = Some(pinned);
-            while let Some(id) = cursor {
-                if !reached.insert(id) {
-                    break;
-                }
-                cursor = self.nodes.get(&id).and_then(|(node, _)| node.parent);
-            }
-        }
-        let current = self.generation;
-        self.nodes
-            .retain(|id, (_, generation)| *generation == current || reached.contains(id));
-        self.generation += 1;
-        self.after_sweep = self.nodes.len();
-    }
-}
-
-/// A pinned context: it and its ancestors stay held while the pin lives.
-#[derive(Debug)]
-pub struct Pin {
-    nodes: Arc<Nodes>,
-    id: NodeId,
-}
-
-impl Pin {
-    pub fn id(&self) -> NodeId {
-        self.id
-    }
-
-    /// Moves the pin to `id`.
-    pub fn set(&mut self, id: NodeId) {
-        if id != self.id {
-            let next = self.nodes.pin(id);
-            drop(std::mem::replace(self, next));
-        }
-    }
-}
-
-impl Drop for Pin {
-    fn drop(&mut self) {
-        self.nodes.unpin(self.id);
     }
 }
 
@@ -169,29 +217,36 @@ impl Drop for Pin {
 mod tests {
     use super::*;
 
-    fn node(parent: Option<NodeId>) -> Arc<Node> {
-        Arc::new(Node {
-            parent,
-            values: Vec::new(),
-        })
+    #[test]
+    fn a_context_keeps_its_chain_and_nothing_else() {
+        let nodes = Nodes::default();
+        let root = nodes.hold(Arc::new(Node::root(1)));
+        let kept = nodes.hold(Arc::new(Node::new(2, root.clone(), Vec::new())));
+        let dropped = nodes.hold(Arc::new(Node::new(3, root, Vec::new())));
+        drop(dropped);
+        assert!(nodes.get(3).is_none());
+        assert!(nodes.get(1).is_some() && nodes.get(2).is_some());
+        drop(kept);
+        assert!(nodes.get(1).is_none());
     }
 
     #[test]
-    fn a_sweep_keeps_what_pins_reach_and_what_is_new() {
-        let nodes = Arc::new(Nodes::default());
-        nodes.insert(1, node(None));
-        nodes.insert(2, node(Some(1)));
-        nodes.insert(3, node(Some(1)));
-        let pin = nodes.pin(2);
-        // Everything is of the current generation: nothing goes yet.
-        nodes.sweep();
-        assert_eq!(nodes.len(), 3);
-        // Now 3 is old and unreachable; 1 and 2 are pinned through 2.
-        nodes.sweep();
-        assert!(nodes.get(3).is_none());
-        assert!(nodes.get(1).is_some() && nodes.get(2).is_some());
-        drop(pin);
-        nodes.sweep();
-        assert!(nodes.is_empty());
+    fn nodes_that_arrive_link_to_their_parents() {
+        let nodes = Nodes::default();
+        let root = nodes.hold(Arc::new(Node::root(1)));
+        let wire = serde_json::to_string(&Node::new(2, root.clone(), Vec::new())).unwrap();
+        let child: Node = serde_json::from_str(&wire).unwrap();
+        assert!(child.parent().is_none());
+        let child = nodes.receive([Arc::new(child)]).remove(0);
+        assert!(Arc::ptr_eq(child.parent().unwrap(), &root));
+    }
+
+    #[test]
+    fn a_long_chain_drops_without_recursion() {
+        let mut chain = Arc::new(Node::root(0));
+        for id in 1..1_000_000 {
+            chain = Arc::new(Node::new(id, chain, Vec::new()));
+        }
+        drop(chain);
     }
 }

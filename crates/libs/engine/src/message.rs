@@ -89,7 +89,7 @@ pub enum Message {
     Handoff {
         run: RunId,
         branch: Branch,
-        nodes: Vec<(NodeId, Arc<Node>)>,
+        nodes: Vec<Arc<Node>>,
         delivery: Delivery,
     },
     /// `branch` ended in `scope` and returns its weight, with its item if it reached the collect.

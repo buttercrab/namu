@@ -30,6 +30,10 @@ pub fn is_negative(v: i32) -> Result<bool>;
 #[task]
 pub fn less_than(a: i32, b: i32) -> Result<bool>;
 
+/// `less_than`, taking its time.
+#[task]
+pub fn slowly_less_than(a: i32, b: i32) -> Result<bool>;
+
 #[task]
 pub fn is_even(n: i32) -> Result<bool>;
 
@@ -69,6 +73,10 @@ pub fn tasks() -> FnTasks {
         .with("identity", ok::<i32>)
         .with("is_negative", |v: i32| ok(v < 0))
         .with("less_than", |(a, b): (i32, i32)| ok(a < b))
+        .with("slowly_less_than", |(a, b): (i32, i32)| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            ok(a < b)
+        })
         .with("is_even", |n: i32| ok(n % 2 == 0))
         .with("divide_by_2", |n: i32| ok(n / 2))
         .with("multiply_by_3_and_add_1", |n: i32| ok(n * 3 + 1))

@@ -20,6 +20,7 @@ use tokio::sync::Semaphore;
 use crate::ids::{NodeId, ScopeId};
 use crate::message::BranchId;
 use crate::run::RunOutcome;
+use crate::tree::Node;
 
 pub type Weight = u64;
 
@@ -53,8 +54,12 @@ pub struct Scope {
 pub enum Then {
     /// The run's root scope: the run is over.
     Finish(Box<Finish>),
-    /// A fan-out scope: the branch that fanned out continues.
-    Continue(Continuation),
+    /// A fan-out scope: the branch that fanned out continues from `ctx`, which the scope holds
+    /// until then.
+    Continue {
+        continuation: Continuation,
+        ctx: Arc<Node>,
+    },
 }
 
 /// The run's outcome as its owner collects it.

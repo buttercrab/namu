@@ -102,9 +102,9 @@ How to read these:
   localhost, JSON encoding, log writes behind the critical path, and scheduling. Without the log
   (step 2) a handoff took ~50 µs and `nested_stats` 7 ms.
 - **Long loops stay fast and small.** A node attaches under the deepest node still holding a live
-  value, so a loop's chain stays as short as its live values, and the nodes left behind are swept
-  (design §6.2). A 5,000-iteration loop holds a bounded number of nodes; before this, a long loop
-  paid for walking an ever longer chain on every lookup.
+  value, so a loop's chain stays as short as its live values, and the nodes left behind are freed
+  as soon as nothing owns them (design §6.2). A 5,000-iteration loop holds a few dozen nodes at
+  once; before this, a long loop paid for walking an ever longer chain on every lookup.
 - **No speedup on one machine is expected** for task-bound work. One worker already uses all
   cores; extra processes on the same host only add coordination.
 
@@ -112,7 +112,7 @@ How to read these:
 
 1. **No idempotency keys** for tasks with external side effects.
 2. **The log keeps a run's branch ends, reports and trail nodes until the run ends.** Workers'
-   memory stays flat (nodes are swept), but the log of a run lasting weeks grows; it needs
+   memory stays flat (nodes are freed), but the log of a run lasting weeks grows; it needs
    compaction.
 3. **Values travel as JSON**, inline in messages; there is no binary codec or object-store path
    for large values yet.

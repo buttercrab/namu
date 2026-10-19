@@ -12,24 +12,25 @@ use namu_core::{OpId, ValueId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::NodeId;
-
 /// The value tree as the kernel sees it.
 pub trait ValueStore: Sync {
+    /// A context: a point in the tree, which keeps what it reads from alive.
+    type Ctx: Send + Sync;
+
     /// Reads `value` as visible from `ctx`: defined there or in one of its ancestors.
     fn get(
         &self,
-        ctx: NodeId,
+        ctx: &Self::Ctx,
         value: ValueId,
     ) -> impl Future<Output = anyhow::Result<Value>> + Send;
 
     /// Grows `ctx` by a node holding `values`, created at point `at`, and returns it.
     fn put(
         &self,
-        ctx: NodeId,
+        ctx: &Self::Ctx,
         values: Vec<(ValueId, Value)>,
         at: Point,
-    ) -> impl Future<Output = anyhow::Result<NodeId>> + Send;
+    ) -> impl Future<Output = anyhow::Result<Self::Ctx>> + Send;
 }
 
 /// Where in an op a node is created, which decides what is still live there.
@@ -51,23 +52,23 @@ pub enum Start {
 }
 
 /// The action that stopped the kernel. `ctx` is the context to perform it in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Plan {
+#[derive(Debug)]
+pub enum Plan<C> {
     Call {
         op: OpId,
-        ctx: NodeId,
+        ctx: C,
     },
     FanOut {
         op: OpId,
-        ctx: NodeId,
+        ctx: C,
     },
     Collect {
         op: OpId,
-        ctx: NodeId,
+        ctx: C,
     },
     /// The workflow returned, with `value` if it returns one.
     Return {
-        ctx: NodeId,
+        ctx: C,
         value: Option<ValueId>,
     },
 }
@@ -76,12 +77,12 @@ pub enum Plan {
 pub async fn drive<S: ValueStore>(
     workflow: &Workflow,
     store: &S,
-    mut ctx: NodeId,
+    mut ctx: S::Ctx,
     start: Start,
-) -> anyhow::Result<Plan> {
+) -> anyhow::Result<Plan<S::Ctx>> {
     let (mut op_id, mut pred) = match start {
         Start::At { op, pred } => (op, pred),
-        Start::After { op } => match leave(workflow, store, ctx, op).await? {
+        Start::After { op } => match leave(workflow, store, &ctx, op).await? {
             Some(next) => (next, Some(op)),
             None => return Ok(returned(workflow, ctx, op)),
         },
@@ -98,7 +99,7 @@ pub async fn drive<S: ValueStore>(
         if op.collect.is_some() {
             return Ok(Plan::Collect { op: op_id, ctx });
         }
-        match leave(workflow, store, ctx, op_id).await? {
+        match leave(workflow, store, &ctx, op_id).await? {
             Some(next) => {
                 pred = Some(op_id);
                 op_id = next;
@@ -119,11 +120,11 @@ pub fn operation(workflow: &Workflow, op: OpId) -> anyhow::Result<&Operation> {
 /// read before anything is written, so phis are a parallel assignment (`a, b = b, a` works).
 async fn enter<S: ValueStore>(
     store: &S,
-    ctx: NodeId,
+    ctx: S::Ctx,
     op_id: OpId,
     op: &Operation,
     pred: Option<OpId>,
-) -> anyhow::Result<NodeId> {
+) -> anyhow::Result<S::Ctx> {
     let mut values = Vec::with_capacity(op.literals.len() + op.phis.len());
     for literal in &op.literals {
         let value = serde_json::from_str(&literal.value)
@@ -137,20 +138,20 @@ async fn enter<S: ValueStore>(
                 .iter()
                 .find(|(from, _)| *from == pred)
                 .with_context(|| format!("phi {} has no source for op {pred}", phi.output))?;
-            values.push((phi.output, store.get(ctx, *source).await?));
+            values.push((phi.output, store.get(&ctx, *source).await?));
         }
     }
     if values.is_empty() {
         return Ok(ctx);
     }
-    store.put(ctx, values, Point::Enter(op_id)).await
+    store.put(&ctx, values, Point::Enter(op_id)).await
 }
 
 /// The op that follows `op`, or `None` if it returns.
 pub async fn leave<S: ValueStore>(
     workflow: &Workflow,
     store: &S,
-    ctx: NodeId,
+    ctx: &S::Ctx,
     op: OpId,
 ) -> anyhow::Result<Option<OpId>> {
     Ok(match &operation(workflow, op)?.next {
@@ -170,7 +171,7 @@ pub async fn leave<S: ValueStore>(
     })
 }
 
-fn returned(workflow: &Workflow, ctx: NodeId, op: OpId) -> Plan {
+fn returned<C>(workflow: &Workflow, ctx: C, op: OpId) -> Plan<C> {
     let value = match workflow.operations[op].next {
         Next::Return { var } => var,
         _ => None,
