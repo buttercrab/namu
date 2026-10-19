@@ -414,6 +414,11 @@ asynchronous; the receiver starts on the work immediately.
   result is the same as an uninterrupted run; only work done since the last durable point
   is repeated.
 - If the successor dies too, its successor adopts both estates.
+- Recovery is driven by events, never by timers. A message for a dead worker that arrives before
+  the successor has adopted its estate waits for the adoption. A message sent to a worker that has
+  not yet heard of a death waits for its next membership update. A run's owner waits for every
+  live worker to confirm the end of the run, and stops waiting for a worker when it leaves the
+  membership.
 
 ### 7.5 Checkpoints and side effects
 

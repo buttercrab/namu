@@ -3,8 +3,12 @@
 //! The control plane names one successor for each dead worker. The successor adopts the dead
 //! worker's estate from the log: its runs and scopes, and the branches it held, which run again.
 //! Every worker re-sends what the dead worker had not acknowledged, and reads its nodes from the
-//! log. Messages that arrive for a run or scope this worker is about to take over wait as
-//! orphans until it has.
+//! log.
+//!
+//! A message this worker cannot place (an orphan) is placed as soon as it can be. One for a dead
+//! worker this worker is taking over waits until the takeover is done; one sent here for a
+//! worker this worker still believes alive waits until membership says otherwise. Nothing waits
+//! on a timer.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -12,33 +16,50 @@ use std::time::Duration;
 
 use super::scopes::record_report;
 use super::{Inner, Run};
-use crate::ids::{WorkerId, owner};
+use crate::ids::{RunId, WorkerId, owner};
 use crate::log::{Record, ReportRecord, RunEstate, ScopeEstate};
 use crate::message::{Branch, Message};
+use crate::run::RunInfo;
 use crate::scope::{Finish, Scope, Then};
 
-/// How often orphans are reconsidered even without a membership change.
-const ORPHAN_PATIENCE: Duration = Duration::from_secs(1);
+/// How long to wait before trying a failed log read again.
+const RETRY: Duration = Duration::from_millis(500);
+
+/// Dead workers this worker has taken over, and the messages waiting for a takeover or a
+/// membership change. One lock covers both, so a message cannot start waiting just after what it
+/// waits for has happened.
+#[derive(Default)]
+pub(super) struct Adoption {
+    adopted: HashSet<WorkerId>,
+    waiting: Vec<Message>,
+}
 
 impl Inner {
     pub(super) async fn watch_members(self: Arc<Self>) {
         let mut changes = self.routes.watch();
-        let mut tick = tokio::time::interval(ORPHAN_PATIENCE);
-        loop {
-            tokio::select! {
-                changed = changes.changed() => if changed.is_err() { return },
-                _ = tick.tick() => {}
-            }
+        while changes.changed().await.is_ok() {
             self.resend_moved();
             self.refetch_from_log();
             self.reask_runs();
-            let adopted = self.adopted.lock().unwrap().clone();
+            self.drop_departed();
             for dead in self.routes.adopted_by(self.id) {
-                if !adopted.contains(&dead) {
+                if !self.has_adopted(dead) {
                     self.adopt(dead).await;
                 }
             }
-            self.reconsider_orphans().await;
+            self.release_waiting();
+        }
+    }
+
+    pub(super) fn has_adopted(&self, worker: WorkerId) -> bool {
+        self.adoption.lock().unwrap().adopted.contains(&worker)
+    }
+
+    /// Places every waiting message again.
+    fn release_waiting(self: &Arc<Self>) {
+        let waiting = std::mem::take(&mut self.adoption.lock().unwrap().waiting);
+        for message in waiting {
+            self.orphan(message);
         }
     }
 
@@ -58,20 +79,24 @@ impl Inner {
         }
     }
 
+    /// Takes over `dead`'s estate, trying again until the log can be read.
     async fn adopt(self: &Arc<Self>, dead: WorkerId) {
-        let estates = match self.log.estate(dead).await {
-            Ok(estates) => estates,
-            // Retried on the next tick.
-            Err(err) => return tracing::error!(dead, "reading the estate failed: {err:#}"),
-        };
+        while let Err(err) = self.adopt_estate(dead).await {
+            // What was adopted already is not adopted twice.
+            tracing::error!(dead, "taking over failed, trying again: {err:#}");
+            tokio::time::sleep(RETRY).await;
+        }
+        self.adoption.lock().unwrap().adopted.insert(dead);
+        self.release_waiting();
+    }
+
+    async fn adopt_estate(self: &Arc<Self>, dead: WorkerId) -> anyhow::Result<()> {
+        let estates = self.log.estate(dead).await?;
         tracing::info!(dead, runs = estates.len(), "taking over from a dead worker");
         for estate in estates {
-            if let Err(err) = self.adopt_run(dead, estate).await {
-                // Retried on the next tick; what was adopted already is not adopted twice.
-                return tracing::error!(dead, "taking over failed: {err:#}");
-            }
+            self.adopt_run(dead, estate).await?;
         }
-        self.adopted.lock().unwrap().insert(dead);
+        Ok(())
     }
 
     async fn adopt_run(self: &Arc<Self>, dead: WorkerId, estate: RunEstate) -> anyhow::Result<()> {
@@ -164,20 +189,14 @@ impl Inner {
         self.spawn_drive_fetching(run.clone(), branch);
     }
 
-    /// Holds a message until membership or adoption decides where it belongs.
+    /// Places a message this worker could not handle where it arrived: here, at the worker now
+    /// responsible for it, nowhere if what it was for is over, or waiting.
     pub(super) fn orphan(self: &Arc<Self>, message: Message) {
-        self.orphans.lock().unwrap().push(message);
+        let worker = self.clone();
+        tokio::spawn(async move { worker.place(message).await });
     }
 
-    async fn reconsider_orphans(self: &Arc<Self>) {
-        let orphans = std::mem::take(&mut *self.orphans.lock().unwrap());
-        for message in orphans {
-            self.reconsider(message).await;
-        }
-    }
-
-    /// Delivers an orphan where it now belongs, drops it if what it was for is over, or keeps it.
-    async fn reconsider(self: &Arc<Self>, message: Message) {
+    async fn place(self: &Arc<Self>, message: Message) {
         let (run, addressee) = match &message {
             Message::End { run, branch, .. } => (*run, Some(owner(branch.scope))),
             Message::Report { run, .. } => (*run, None),
@@ -186,10 +205,7 @@ impl Inner {
                 return match self.log.run(run).await {
                     Ok(Some(info)) => self.deliver(reply_to, Message::Run { info }),
                     Ok(None) => self.deliver(reply_to, Message::RunOver { run }),
-                    Err(err) => {
-                        tracing::error!(%run, "reading the run failed: {err:#}");
-                        self.orphan(message);
-                    }
+                    Err(err) => self.retry(message, run, err),
                 };
             }
             _ => return self.receive(message),
@@ -200,22 +216,39 @@ impl Inner {
                 Ok(Some(info)) => info,
                 // The run is over.
                 Ok(None) => return self.drop_late(message),
-                Err(err) => {
-                    tracing::error!(%run, "reading the run failed: {err:#}");
-                    return self.orphan(message);
-                }
+                Err(err) => return self.retry(message, run, err),
             },
         };
         let addressee = addressee.unwrap_or_else(|| info.owner());
+        match self.place_for(addressee, message) {
+            Placed::Here(message) => self.take(info, message).await,
+            Placed::There(target, message) => self.deliver(target, message),
+            Placed::Waiting => {}
+        }
+    }
+
+    /// Where a message for `addressee` goes, as this worker sees membership now. Decided under
+    /// the adoption lock, so a message that waits is released by the next takeover or
+    /// membership change.
+    fn place_for(&self, addressee: WorkerId, message: Message) -> Placed {
+        let mut adoption = self.adoption.lock().unwrap();
         let target = self.routes.resolve(addressee);
-        if target != self.id {
-            return self.deliver(target, message);
+        let responsible = addressee == self.id || adoption.adopted.contains(&addressee);
+        if target == self.id && responsible {
+            return Placed::Here(message);
         }
-        let responsible = addressee == self.id || self.adopted.lock().unwrap().contains(&addressee);
-        if !responsible {
-            // This worker is the successor, but has not taken over yet.
-            return self.orphan(message);
+        if target != self.id && target != addressee {
+            return Placed::There(target, message);
         }
+        // This worker is the successor and has not taken over yet, or the sender knows of a
+        // death this worker has not heard of yet.
+        adoption.waiting.push(message);
+        Placed::Waiting
+    }
+
+    /// Handles a message this worker is responsible for, now that the run is known here.
+    async fn take(self: &Arc<Self>, info: Arc<RunInfo>, message: Message) {
+        let run = info.id;
         if self.run_state(run).is_none() && self.install(info).await.is_none() {
             return self.drop_late(message);
         }
@@ -234,4 +267,20 @@ impl Inner {
             false => self.drop_late(message),
         }
     }
+
+    /// Tries placing `message` again after a failed log read.
+    fn retry(self: &Arc<Self>, message: Message, run: RunId, err: anyhow::Error) {
+        tracing::error!(%run, "reading the run failed, trying again: {err:#}");
+        let worker = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RETRY).await;
+            worker.place(message).await;
+        });
+    }
+}
+
+enum Placed {
+    Here(Message),
+    There(WorkerId, Message),
+    Waiting,
 }

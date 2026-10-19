@@ -55,11 +55,8 @@ struct Inner {
     /// Runs whose description is being fetched, with the messages waiting for it. Lock before
     /// `runs`.
     pending: Mutex<HashMap<RunId, PendingRun>>,
-    /// Messages for runs or scopes this worker is about to take over, or that may belong to a
-    /// worker it has not yet heard is dead. Re-examined whenever membership changes.
-    orphans: Mutex<Vec<Message>>,
-    /// Dead workers whose estate this worker has taken over.
-    adopted: Mutex<HashSet<WorkerId>>,
+    /// Dead workers taken over, and messages waiting for a takeover or a membership change.
+    adoption: Mutex<recovery::Adoption>,
     /// Runs this worker owns that are over, waiting for the other workers to forget them.
     ending: Mutex<HashMap<RunId, Ending>>,
     /// Nodes requested from their holders, with everyone waiting for each.
@@ -112,8 +109,7 @@ impl Worker {
             log,
             runs: Mutex::default(),
             pending: Mutex::default(),
-            orphans: Mutex::default(),
-            adopted: Mutex::default(),
+            adoption: Mutex::default(),
             ending: Mutex::default(),
             fetches: Mutex::default(),
             outbox: Mutex::default(),
