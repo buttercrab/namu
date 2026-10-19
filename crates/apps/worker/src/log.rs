@@ -70,9 +70,11 @@ async fn write(
             }
         }
         // Retry until it lands: an append that never becomes durable keeps its sender's copy, so
-        // giving up would stall recovery rather than lose anything.
+        // giving up would stall recovery rather than lose anything. A batch with nothing to write
+        // (an empty append marks what came before as durable) is durable already.
         let mut backoff = std::time::Duration::from_millis(50);
-        while let Err(err) = pipe.query_async::<()>(&mut redis).await {
+        let empty = pipe.cmd_iter().next().is_none();
+        while !empty && let Err(err) = pipe.query_async::<()>(&mut redis).await {
             tracing::error!("log write failed, retrying: {err}");
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(std::time::Duration::from_secs(2));

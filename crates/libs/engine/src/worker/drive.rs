@@ -16,7 +16,6 @@ use crate::ids::{NodeId, WorkerId, owner};
 use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Message, Report, Resume};
-use crate::routes::Routes;
 use crate::scope::{Continuation, Scope, Then};
 use crate::tasks::{Args, CallTask, Kind, Task, TaskRef, unpack_output};
 use crate::tree::Node;
@@ -114,8 +113,10 @@ impl Inner {
                 Plan::Call { op, call, ctx } => {
                     at.set_ctx(ctx);
                     let task_ref = run.spec.task(op).context("op has no call")?;
-                    let Some(task) = self.tasks.task(task_ref) else {
-                        let to = self.routes.wait_for_server(task_ref).await;
+                    // A draining worker runs nothing more: the branch moves on.
+                    let served = self.tasks.task(task_ref).filter(|_| !self.is_draining());
+                    let Some(task) = served else {
+                        let to = self.routes.wait_for_server(task_ref, self.skip()).await;
                         at.branch.resume = Resume::Call { op };
                         self.move_branch(run, at, to);
                         return Ok(());
@@ -375,7 +376,7 @@ impl Inner {
                 resume: Resume::Kernel(Start::After { op }),
                 scopes: inner.clone(),
             };
-            let to = self.destination(Routes::any);
+            let to = self.destination();
             self.hand_off(run, to, child, nodes, Some(release.clone()));
         }
     }

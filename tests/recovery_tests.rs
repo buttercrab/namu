@@ -154,3 +154,51 @@ async fn a_run_survives_a_crash_at_any_moment() {
         }
     }
 }
+
+/// Like `tasks`, counting every call of `slow`.
+fn counted(calls: Arc<AtomicUsize>) -> Arc<dyn Tasks> {
+    Arc::new(
+        FnTasks::new()
+            .with("range", |(start, end): (i32, i32)| {
+                Ok::<_, String>((start..end).map(|x| x * 10).collect::<Vec<_>>())
+            })
+            .with("slow", move |x: i32| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(30));
+                Ok::<_, String>(x * 2)
+            })
+            .with("sum", |xs: Vec<i32>| {
+                Ok::<_, String>(xs.iter().sum::<i32>())
+            }),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_drained_worker_hands_everything_on_and_nothing_runs_twice() {
+    // An ordinary worker, then the run's owner (which owns the scope and the run).
+    for leaving in [2, 1] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cluster = Arc::new(LocalCluster::new(vec![counted(calls.clone()); 3]));
+        let run = tokio::spawn({
+            let cluster = cluster.clone();
+            async move { cluster.run(workflow()).await }
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        tokio::time::timeout(Duration::from_secs(20), cluster.drain(leaving))
+            .await
+            .expect("the worker drained")
+            .unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .expect("the run finished")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            json(&outcome.results),
+            [json!(DOUBLED_SUM)],
+            "draining {leaving}"
+        );
+        // 24 items, two calls each: a crash would repeat some; a drain repeats none.
+        assert_eq!(calls.load(Ordering::SeqCst), 48, "draining {leaving}");
+    }
+}

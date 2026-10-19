@@ -82,6 +82,7 @@ impl Inner {
         self.routes.report(from, load);
         for seq in seqs {
             let kept = self.outbox.lock().unwrap().remove(&seq);
+            self.idle.notify_waiters();
             if let Some(release) = kept.and_then(|kept| kept.release) {
                 self.release(&release);
             }

@@ -220,6 +220,44 @@ async fn a_stream_resumes_after_its_worker_dies() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_stream_moves_on_when_its_worker_drains() {
+    // Worker 1 owns the first run and feeds its stream; it drains mid-stream, and its successor
+    // resumes the stream where it stopped: every item is processed once.
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let probe = Arc::new(Probe::default());
+    let cluster = Arc::new(cluster(3, tasks(probe.clone())));
+    let run = tokio::spawn({
+        let cluster = cluster.clone();
+        async move {
+            cluster
+                .run(tracked_stream().to_serializable("s".into()))
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    tokio::time::timeout(Duration::from_secs(20), cluster.drain(1))
+        .await
+        .expect("the worker drained")
+        .unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(20), run)
+        .await
+        .expect("the run finished")
+        .unwrap()
+        .unwrap();
+    assert_eq!(json(&outcome.results), [json!(435)]);
+    assert_eq!(probe.processed.load(Ordering::SeqCst), 30);
+}
+
+#[workflow]
+fn tracked_stream() -> i32 {
+    let n = 30;
+    let delay = 10;
+    let xs = numbers(n, delay);
+    let ys = tracked(xs);
+    sum(ys)
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_stream_restarts_where_its_task_is_served() {
     // Worker 2 succeeds worker 1 but cannot run the stream: the stream starts again on worker 3.
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();

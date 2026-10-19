@@ -35,6 +35,8 @@ pub struct LocalCluster {
     waiting: Arc<Mutex<HashMap<RunId, oneshot::Sender<RunOutcome>>>>,
     /// Runs that have not finished: who owns them and how to start them again.
     running: Arc<Mutex<HashMap<RunId, (WorkerId, Workflow)>>>,
+    /// Workers draining: still running, but given no new work.
+    leaving: Mutex<HashSet<WorkerId>>,
     dead: Arc<Dead>,
     successors: Mutex<HashMap<WorkerId, WorkerId>>,
     tasks: Mutex<BTreeSet<TaskRef>>,
@@ -144,15 +146,18 @@ impl LocalCluster {
             running,
             dead,
             successors: Mutex::default(),
+            leaving: Mutex::default(),
             tasks: Mutex::default(),
             next_owner: AtomicUsize::new(0),
         }
     }
 
+    /// The workers that take work: neither dead nor leaving.
     fn live(&self) -> Vec<&Worker> {
+        let leaving = self.leaving.lock().unwrap();
         self.workers
             .iter()
-            .filter(|worker| !self.dead.contains(worker.id()))
+            .filter(|worker| !self.dead.contains(worker.id()) && !leaving.contains(&worker.id()))
             .collect()
     }
 
@@ -217,6 +222,21 @@ impl LocalCluster {
 
     /// Kills a worker, as a crash would: from now on nothing it sends or logs arrives. Its
     /// successor is the lowest-numbered live worker.
+    /// Drains `worker` and lets it leave (design §10.4): work is routed around it, it hands on
+    /// what it holds, and then its successor takes over what it owns, as for a crash but with
+    /// nothing to run again.
+    pub async fn drain(&self, worker: WorkerId) -> anyhow::Result<()> {
+        let draining = self
+            .workers
+            .iter()
+            .find(|w| w.id() == worker)
+            .context("no such worker")?;
+        self.leaving.lock().unwrap().insert(worker);
+        self.reroute()?;
+        draining.drain().await?;
+        self.kill(worker)
+    }
+
     pub fn kill(&self, worker: WorkerId) -> anyhow::Result<()> {
         self.dead.0.write().unwrap().insert(worker);
         let successor = self.live().first().context("no worker left alive")?.id();

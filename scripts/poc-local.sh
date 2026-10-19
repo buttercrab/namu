@@ -22,12 +22,29 @@ POC_DIR=${POC_DIR:-$ROOT_DIR/data/poc}
 BIN="$ROOT_DIR/target/release"
 
 PIDS=()
+
+# Stops workers: SIGTERM drains each one; one still running after 10 seconds is killed.
+stop_workers() {
+  kill "$@" >/dev/null 2>&1 || true
+  for _ in $(seq 20); do
+    local running=0
+    for pid in "$@"; do
+      kill -0 "$pid" 2>/dev/null && running=1
+    done
+    [[ $running == 0 ]] && return 0
+    sleep 0.5
+  done
+  kill -9 "$@" >/dev/null 2>&1 || true
+}
+
 cleanup() {
   if [[ "${KEEP:-0}" == "1" ]]; then
     echo "left running (pids: ${PIDS[*]})"
     return
   fi
-  for pid in "${PIDS[@]}"; do kill "$pid" >/dev/null 2>&1 || true; done
+  # Workers first: they drain and leave while the orchestrator and Redis are still up.
+  stop_workers "${PIDS[@]:2}"
+  for pid in "${PIDS[@]:0:2}"; do kill "$pid" >/dev/null 2>&1 || true; done
   redis-cli -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
