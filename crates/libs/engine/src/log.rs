@@ -77,7 +77,10 @@ pub enum Record {
         report: ReportRecord,
     },
     /// The run is over: everything about it can go.
-    RunGone(RunId),
+    RunGone {
+        run: RunId,
+        root_scope: ScopeId,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,7 +305,7 @@ impl MemoryLog {
                 Record::Report { run, report } => {
                     runs.entry(run).or_default().reports.push(report);
                 }
-                Record::RunGone(run) => {
+                Record::RunGone { run, .. } => {
                     runs.remove(&run);
                 }
             }

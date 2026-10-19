@@ -254,8 +254,8 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
         Record::Report { run, report } => {
             pipe.rpush(key(*run, "reports"), encode(report)?).ignore();
         }
-        Record::RunGone(run) => {
-            // Every scope, the root included, is gone by now, and its ends with it.
+        Record::RunGone { run, root_scope } => {
+            // Every other scope is gone by now, and its ends with it.
             let parts = [
                 "info",
                 "nodes",
@@ -267,7 +267,8 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 "positions",
                 "reports",
             ];
-            let keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
+            let mut keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
+            keys.push(ends_key(*run, *root_scope));
             pipe.del(keys).ignore().srem(RUNS, run.to_string()).ignore();
         }
     }
