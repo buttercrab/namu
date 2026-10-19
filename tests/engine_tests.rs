@@ -366,3 +366,38 @@ async fn return_ends_the_workflow_early() {
         [json!(2)]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn independent_calls_in_a_branch_run_at_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[namu::task]
+    fn probe(x: i32) -> anyhow::Result<i32>;
+
+    #[workflow]
+    fn wf() -> i32 {
+        let a = 1;
+        let b = probe(a);
+        let c = probe(a);
+        add(b, c)
+    }
+
+    // How many probes run at once, and the most at any moment.
+    static RUNNING: AtomicUsize = AtomicUsize::new(0);
+    static MOST: AtomicUsize = AtomicUsize::new(0);
+    let tasks = tasks().with("probe", |x: i32| {
+        let now = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+        MOST.fetch_max(now, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(100));
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
+        Ok::<_, String>(x * 10)
+    });
+    let cluster = LocalCluster::uniform(1, Arc::new(tasks));
+    let outcome = cluster
+        .run(wf().to_serializable("parallel".into()))
+        .await
+        .unwrap();
+    assert_eq!(json(&outcome.results), [json!(20)]);
+    assert_eq!(MOST.load(Ordering::SeqCst), 2, "the two probes ran one after the other");
+}
