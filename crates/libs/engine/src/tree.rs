@@ -6,11 +6,14 @@
 //! §6.2), so nodes holding only dead values fall out of every chain.
 //!
 //! A node owns its parent: a context keeps its whole chain alive, and a node nothing reaches is
-//! freed at once. A lookup takes O(log depth): each node knows the depth of the node defining each
+//! freed at once. A node that came from another worker knows only its parent's id until the parent
+//! is held here too; from then on it owns it like any other.
+//!
+//! A deep lookup takes O(log depth): a node's lineage holds the depth of the node defining each
 //! value it sees (a persistent segment tree, shared with its parent's) and its ancestors 2^i up
-//! (binary lifting), so it jumps straight to the node holding the value (design §6.1). A node that
-//! came from another worker knows only its parent's id until the parent is held here too; from then
-//! on it owns it like any other.
+//! (binary lifting), so it jumps straight to the node holding the value (design §6.1). A lineage
+//! costs a few allocations, and liveness keeps most chains a few nodes deep, so it is built only
+//! for a chain that a lookup has walked far up, and kept.
 //!
 //! Each worker indexes the nodes it holds for a run in [`Nodes`], without owning them, to serve
 //! them to other workers and to share one copy of each. A node asked for after it was freed is
@@ -35,8 +38,7 @@ pub struct Node {
     id: NodeId,
     parent: Option<Parent>,
     values: Vec<(ValueId, Value)>,
-    /// Set once the whole chain is held here: at creation for a node made here, when its chain
-    /// arrives for one that came from elsewhere.
+    /// Built the first time a lookup jumps from here, once the whole chain is held here.
     lineage: OnceLock<Lineage>,
     /// The node as MessagePack, once it has been encoded or arrived encoded.
     encoded: OnceLock<Bytes>,
@@ -109,9 +111,6 @@ impl Node {
     /// A node holding `values` under `parent`.
     pub fn new(id: NodeId, parent: Arc<Node>, values: Vec<(ValueId, Value)>) -> Self {
         let lineage = OnceLock::new();
-        if let Some(above) = parent.lineage() {
-            let _ = lineage.set(Lineage::under(&parent, above, &values));
-        }
         Self {
             id,
             parent: Some(Parent {
