@@ -42,6 +42,8 @@ pub struct RunSpec {
     pub collect_ops: Vec<Option<OpId>>,
     /// For each op that calls a task, the fan-out that is the only use of its output.
     pub fused: Vec<Option<OpId>>,
+    /// For each op that starts a group of independent calls, the group (design §5).
+    pub parallel: Vec<Option<Vec<OpId>>>,
     /// What is live where nodes are created, for placing them (design §6.2).
     pub liveness: Liveness,
     pub literals: Literals,
@@ -53,6 +55,7 @@ impl RunSpec {
     pub fn from_info(info: Arc<RunInfo>) -> anyhow::Result<Self> {
         let collect_ops = namu_core::scopes::collect_ops(&info.workflow)?;
         let fused = namu_core::scopes::fused_fan_outs(&info.workflow);
+        let parallel = namu_core::parallel::parallel_calls(&info.workflow, &fused);
         let liveness = namu_core::liveness::liveness(&info.workflow);
         let literals = Literals::decode(&info.workflow)?;
         let tasks = info
@@ -74,6 +77,7 @@ impl RunSpec {
             info,
             collect_ops,
             fused,
+            parallel,
             liveness,
             literals,
             tasks,

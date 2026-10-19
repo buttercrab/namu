@@ -120,6 +120,20 @@ impl Inner {
                         self.start_stream(run, at, op, fan_out, stream.clone());
                         return Ok(());
                     }
+                    if let Some(group) = &run.spec.parallel[op]
+                        && let Some(calls) = self.servable(run, group)?
+                    {
+                        let last = *group.last().expect("a group has calls");
+                        match self.run_group(&view, calls, &at.ctx).await? {
+                            Ok(next) => at.set_ctx(next),
+                            Err(failure) => {
+                                self.report(run, &at.branch, Report::Failure(failure));
+                                return Ok(());
+                            }
+                        }
+                        at.branch.resume = Resume::Kernel(Start::After { op: last });
+                        continue;
+                    }
                     let next = match self
                         .run_call(&view, task_ref, &task, op, call, &at.ctx)
                         .await?
@@ -173,28 +187,96 @@ impl Inner {
         call: &Call,
         ctx: &Arc<Node>,
     ) -> anyhow::Result<Result<Arc<Node>, String>> {
-        let mut args = Vec::with_capacity(call.inputs.len());
-        for &input in &call.inputs {
-            args.push(view.get(ctx, input).await?);
-        }
-        let output = match &task.kind {
-            Kind::Call(task) => self.call(task, args).await?,
-            // Not feeding a fan-out: the stream is read to its end into a list.
-            Kind::Stream(stream) => self.read_stream(stream, args).await?,
-            Kind::Batch(batch) => self.batch_call(task_ref, batch, args).await?,
-        };
+        let args = gather(view, call, ctx).await?;
+        let output = self.invoke(task_ref, task, args).await?;
         view.run.calls.fetch_add(1, Ordering::Relaxed);
-        let output = match output {
-            Ok(output) => output,
-            Err(message) => return Ok(Err(format!("{}: {message}", task_ref.id))),
-        };
-        let outputs = unpack_output(output, call.outputs.len())
-            .with_context(|| format!("task {}", task_ref.id))?;
-        if outputs.is_empty() {
-            return Ok(Ok(ctx.clone()));
+        match output {
+            Ok(output) => Ok(Ok(store(view, op, call, task_ref, ctx, output).await?)),
+            Err(message) => Ok(Err(format!("{}: {message}", task_ref.id))),
         }
-        let values = call.outputs.iter().copied().zip(outputs).collect();
-        Ok(Ok(view.put(ctx, values, Point::Action(op)).await?))
+    }
+
+    /// The calls of `group` with the tasks that run them, if this worker serves them all and none
+    /// is a checkpoint (whose branch must be recorded right after it). Otherwise the group runs
+    /// one call at a time, as any other.
+    fn servable<'w>(
+        &self,
+        run: &'w Run,
+        group: &[OpId],
+    ) -> anyhow::Result<Option<Vec<Planned<'w>>>> {
+        let mut calls = Vec::with_capacity(group.len());
+        for &op in group {
+            let call = kernel::operation(run.spec.workflow(), op)?
+                .call()
+                .context("a group holds calls")?;
+            let task_ref = run.spec.task(op).context("op has no call")?;
+            match self.tasks.task(task_ref) {
+                Some(task) if !task.checkpoint => calls.push(Planned {
+                    op,
+                    call,
+                    task_ref,
+                    task,
+                }),
+                _ => return Ok(None),
+            }
+        }
+        Ok(Some(calls))
+    }
+
+    /// Runs a group of independent calls at once, and stores their outputs in order.
+    async fn run_group(
+        self: &Arc<Self>,
+        view: &View<'_>,
+        calls: Vec<Planned<'_>>,
+        ctx: &Arc<Node>,
+    ) -> anyhow::Result<Result<Arc<Node>, String>> {
+        // Every call reads only values from before the group.
+        let mut running = Vec::with_capacity(calls.len());
+        for planned in &calls {
+            let args = gather(view, planned.call, ctx).await?;
+            let (worker, task_ref, task) =
+                (self.clone(), planned.task_ref.clone(), planned.task.clone());
+            running.push(tokio::spawn(async move {
+                worker.invoke(&task_ref, &task, args).await
+            }));
+        }
+        let mut ctx = ctx.clone();
+        for (index, planned) in calls.iter().enumerate() {
+            let output = (&mut running[index]).await??;
+            view.run.calls.fetch_add(1, Ordering::Relaxed);
+            let output = match output {
+                Ok(output) => output,
+                Err(message) => {
+                    running[index + 1..].iter().for_each(|call| call.abort());
+                    return Ok(Err(format!("{}: {message}", planned.task_ref.id)));
+                }
+            };
+            ctx = store(
+                view,
+                planned.op,
+                planned.call,
+                planned.task_ref,
+                &ctx,
+                output,
+            )
+            .await?;
+        }
+        Ok(Ok(ctx))
+    }
+
+    /// Runs a task on `args`, whatever its kind.
+    async fn invoke(
+        self: &Arc<Self>,
+        task_ref: &TaskRef,
+        task: &Task,
+        args: Args,
+    ) -> anyhow::Result<Result<Value, String>> {
+        match &task.kind {
+            Kind::Call(task) => self.call(task, args).await,
+            // Not feeding a fan-out: the stream is read to its end into a list.
+            Kind::Stream(stream) => self.read_stream(stream, args).await,
+            Kind::Batch(batch) => self.batch_call(task_ref, batch, args).await,
+        }
     }
 
     async fn call(
@@ -300,6 +382,41 @@ pub(super) fn run_task<T>(f: impl FnOnce() -> T) -> T {
         RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
         _ => f(),
     }
+}
+
+/// A call of a group, with the task that runs it here.
+struct Planned<'w> {
+    op: OpId,
+    call: &'w Call,
+    task_ref: &'w TaskRef,
+    task: Task,
+}
+
+/// A call's arguments, read from `ctx`.
+async fn gather(view: &View<'_>, call: &Call, ctx: &Arc<Node>) -> anyhow::Result<Args> {
+    let mut args = Vec::with_capacity(call.inputs.len());
+    for &input in &call.inputs {
+        args.push(view.get(ctx, input).await?);
+    }
+    Ok(args)
+}
+
+/// Stores a call's outputs in a node under `ctx`, and returns it.
+async fn store(
+    view: &View<'_>,
+    op: OpId,
+    call: &Call,
+    task_ref: &TaskRef,
+    ctx: &Arc<Node>,
+    output: Value,
+) -> anyhow::Result<Arc<Node>> {
+    let outputs = unpack_output(output, call.outputs.len())
+        .with_context(|| format!("task {}", task_ref.id))?;
+    if outputs.is_empty() {
+        return Ok(ctx.clone());
+    }
+    let values = call.outputs.iter().copied().zip(outputs).collect();
+    view.put(ctx, values, Point::Action(op)).await
 }
 
 /// A branch being driven on this worker.

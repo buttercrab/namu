@@ -2,6 +2,7 @@
 
 pub mod ir;
 pub mod liveness;
+pub mod parallel;
 pub mod registry;
 pub mod scopes;
 pub mod value;
