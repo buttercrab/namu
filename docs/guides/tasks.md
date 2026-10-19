@@ -19,8 +19,9 @@ namu_guest::task! {
   every platform.
 - `runtime = "native"`: built as a native library for the platform it is built on.
 
-Inputs and outputs are JSON. With no arguments the input is `null`, with one it is the value
-itself, and with several it is an array. One task per crate. See `examples/distributed/tasks`.
+Inputs and outputs are MessagePack. With no arguments the input is nil, with one it is the value
+itself, and with several it is an array; errors are text. One task per crate. See
+`examples/distributed/tasks`.
 
 The workflow crate declares the task's signature without a body, so it never links task code:
 
@@ -92,11 +93,18 @@ Vec<Result<Embedding>>;` and calls it per item: `embed(text)` (or with a list, w
 The manifest says `"task_kind": "batch"`, with optional `batch_size` (items in a session at once,
 default 32), `max_wait_ms` (wait for a full batch; by default a session steps as soon as it is
 idle) and `batch_slots` (sessions per worker). WASM batch tasks implement the `batch-task` world;
-native ones export `namu_batch_open`, `namu_batch_step` and `namu_batch_close` (C ABI version 4).
+native ones export `namu_batch_open`, `namu_batch_step` and `namu_batch_close` (C ABI version 5).
 
 ## In-process tasks (`FnTasks`)
 In the same process as the engine, a task is a Rust function registered by name. Its input is the
-packed arguments: the argument itself for one, a tuple for several, `()` for none.
+argument itself for one, a tuple for several, `()` for none. Values pass between in-process tasks
+as they are, never encoded, so their types implement `namu::Data`: the standard types do, and your
+own derive it:
+
+```rust
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct Label { text: String, label: String }
+```
 
 ```rust
 let tasks = FnTasks::new()

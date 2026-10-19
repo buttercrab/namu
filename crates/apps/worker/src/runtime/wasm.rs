@@ -4,10 +4,10 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    BatchSession, BatchTask, CallTask, Finished, StreamItem, StreamTask, TaskStream,
+    Args, BatchSession, BatchTask, CallTask, Finished, StreamItem, StreamTask, TaskStream,
 };
-use serde_json::Value;
 use wasmtime::component::{Component, InstancePre, Linker, ResourceAny, ResourceTable, TypedFunc};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
@@ -26,7 +26,7 @@ impl WasiView for Host {
     }
 }
 
-type CallFunc = TypedFunc<(String,), (Result<String, String>,)>;
+type CallFunc = TypedFunc<(Vec<u8>,), (Result<Vec<u8>, String>,)>;
 
 /// A live instance. Instances are reused across calls, so a task keeps its state (e.g. a loaded
 /// model) between calls; an instance that traps is discarded.
@@ -64,25 +64,24 @@ impl WasmTask {
         let mut store = Store::new(&self.engine, host);
         let instance = self.pre.instantiate(&mut store)?;
         let func = instance
-            .get_typed_func::<(String,), (Result<String, String>,)>(&mut store, "call")
+            .get_typed_func::<(Vec<u8>,), (Result<Vec<u8>, String>,)>(&mut store, "call")
             .map_err(|err| anyhow::anyhow!("component does not export `call`: {err:?}"))?;
         Ok(Instance { store, func })
     }
 }
 
 impl CallTask for WasmTask {
-    fn call(&self, input: Value) -> anyhow::Result<Result<Value, String>> {
+    fn call(&self, args: Args) -> anyhow::Result<Result<Value, String>> {
+        let input = encode_args(&args)?;
         let pooled = self.idle.lock().unwrap().pop();
         let mut instance = match pooled {
             Some(instance) => instance,
             None => self.instantiate()?,
         };
         // On a trap the instance is dropped instead of returned to the pool.
-        let (result,) = instance
-            .func
-            .call(&mut instance.store, (input.to_string(),))?;
+        let (result,) = instance.func.call(&mut instance.store, (input.to_vec(),))?;
         self.idle.lock().unwrap().push(instance);
-        super::output(result)
+        Ok(super::output(result))
     }
 }
 
@@ -117,16 +116,16 @@ impl WasmStreamTask {
 impl StreamTask for WasmStreamTask {
     fn open(
         self: Arc<Self>,
-        input: Value,
+        args: Args,
         _cursor: Option<String>,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+        let input = encode_args(&args)?;
         let host = Host {
             wasi: WasiCtx::builder().inherit_stderr().build(),
             table: ResourceTable::new(),
         };
         let mut store = Store::new(&self.engine, host);
         let instance = self.pre.instantiate(&mut store)?;
-        let input = input.to_string();
         let items = match instance.namu_task_source().call_open(&mut store, &input)? {
             Ok(items) => items,
             Err(message) => return Ok(Err(message)),
@@ -155,9 +154,8 @@ impl TaskStream for WasmItems {
             .items()
             .call_next(&mut self.store, items)?;
         Ok(item.map(|item| {
-            let value = serde_json::from_str(&item?).map_err(|err| format!("bad item: {err}"))?;
             Ok(StreamItem {
-                value,
+                value: Value::encoded(item?),
                 cursor: None,
             })
         }))
@@ -228,17 +226,17 @@ struct WasmSession {
 }
 
 impl BatchSession for WasmSession {
-    fn step(&mut self, admit: Vec<(u64, Value)>) -> anyhow::Result<Finished> {
+    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
         use batch::exports::namu::task::batch::Admitted;
 
         let session = self.session.expect("the session is open");
-        let admit: Vec<Admitted> = admit
+        let admit = admit
             .into_iter()
-            .map(|(id, input)| Admitted {
-                id,
-                input: input.to_string(),
+            .map(|(id, args)| {
+                let input = encode_args(&args)?.to_vec();
+                Ok(Admitted { id, input })
             })
-            .collect();
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let finished = self
             .instance
             .namu_task_batch()
@@ -247,7 +245,7 @@ impl BatchSession for WasmSession {
             .map_err(|err| anyhow::anyhow!(err))?;
         Ok(finished
             .into_iter()
-            .map(|item| (item.id, decode(item.output)))
+            .map(|item| (item.id, super::output(item.output)))
             .collect())
     }
 }
@@ -258,9 +256,4 @@ impl Drop for WasmSession {
             let _ = session.resource_drop(&mut self.store);
         }
     }
-}
-
-/// An item's output as JSON, or its error.
-fn decode(output: Result<String, String>) -> Result<Value, String> {
-    serde_json::from_str(&output?).map_err(|err| format!("bad output: {err}"))
 }

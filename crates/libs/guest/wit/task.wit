@@ -1,21 +1,21 @@
 package namu:task@0.1.0;
 
-/// A NAMU task. Inputs and outputs are JSON documents: no arguments is `null`, one argument is
-/// the value itself, and several arguments are a JSON array.
+/// A NAMU task. Inputs and outputs are MessagePack documents: no arguments is nil, one argument
+/// is the value itself, and several arguments are an array. Errors are text.
 world task {
-  export call: func(input: string) -> result<string, string>;
+  export call: func(input: list<u8>) -> result<list<u8>, string>;
 }
 
-/// A stream task yields its outputs one at a time, as JSON documents.
+/// A stream task yields its outputs one at a time, as MessagePack documents.
 interface source {
   /// An open stream.
   resource items {
     /// The next item; `none` once the stream is over. An error ends the stream.
-    next: func() -> option<result<string, string>>;
+    next: func() -> option<result<list<u8>, string>>;
   }
 
-  /// Opens the stream over a JSON input.
-  open: func(input: string) -> result<items, string>;
+  /// Opens the stream over its input.
+  open: func(input: list<u8>) -> result<items, string>;
 }
 
 world stream-task {
@@ -26,16 +26,16 @@ world stream-task {
 /// newly arrived items and gives back the ones it finished, in any order: all of them for dynamic
 /// batching, possibly fewer for continuous batching, where items stay across steps.
 interface batch {
-  /// An item handed to a session: its id, and its input as JSON.
+  /// An item handed to a session: its id, and its input.
   record admitted {
     id: u64,
-    input: string,
+    input: list<u8>,
   }
 
-  /// An item the session finished: its output as JSON, or its own error.
+  /// An item the session finished: its output, or its own error.
   record finished {
     id: u64,
-    output: result<string, string>,
+    output: result<list<u8>, string>,
   }
 
   resource session {

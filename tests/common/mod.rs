@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
+use namu::Value;
 use namu::prelude::*;
 use namu_core::ir::Workflow;
-use namu::Value;
 use namu_engine::{FnTasks, LocalCluster, RunOutcome, Tasks};
 use serde_json::Value as Json;
 

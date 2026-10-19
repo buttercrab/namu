@@ -15,7 +15,7 @@ use namu_engine::tasks::{BatchPolicy, Continuous};
 use namu_engine::{FnTasks, LocalCluster};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Data)]
 pub struct Label {
     text: String,
     label: String,
@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
     let outcome = cluster
         .run(labeling().to_serializable("labeling".into()))
         .await?;
-    let summary = outcome.results[0].as_str().unwrap_or_default();
+    let summary: String = outcome.results[0].to()?;
     println!("{summary} in {:?}", started.elapsed());
 
     let steps = steps.lock().unwrap();

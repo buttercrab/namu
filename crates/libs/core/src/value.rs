@@ -52,13 +52,16 @@ union Payload {
 unsafe impl Send for Value {}
 unsafe impl Sync for Value {}
 
+/// Splits a payload into its elements.
+type ItemsFn = unsafe fn(&Payload) -> anyhow::Result<Vec<Value>>;
+
 struct VTable {
     type_id: TypeId,
     type_name: fn() -> &'static str,
     clone: unsafe fn(&Payload) -> Payload,
     drop: unsafe fn(&mut Payload),
     encode: unsafe fn(&Payload) -> anyhow::Result<Bytes>,
-    items: Option<unsafe fn(&Payload) -> anyhow::Result<Vec<Value>>>,
+    items: Option<ItemsFn>,
 }
 
 const fn is_inline<T>() -> bool {
@@ -186,8 +189,7 @@ impl Encoded {
     /// The elements of an encoded array, each a slice of the same bytes.
     unsafe fn items(payload: &Payload) -> anyhow::Result<Vec<Value>> {
         let bytes = &unsafe { Stored::<Encoded>::get(payload) }.bytes;
-        msgpack::elements(bytes)
-            .map(|elements| elements.into_iter().map(Value::encoded).collect())
+        msgpack::elements(bytes).map(|elements| elements.into_iter().map(Value::encoded).collect())
     }
 }
 
@@ -208,7 +210,12 @@ impl List {
     /// An array of the items, each encoded.
     unsafe fn encode(payload: &Payload) -> anyhow::Result<Bytes> {
         let items = &unsafe { Stored::<List>::get(payload) }.0;
-        Ok(msgpack::array(&items.iter().map(Value::encode).collect::<anyhow::Result<Vec<_>>>()?))
+        Ok(msgpack::array(
+            &items
+                .iter()
+                .map(Value::encode)
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ))
     }
 
     unsafe fn items(payload: &Payload) -> anyhow::Result<Vec<Value>> {
@@ -280,7 +287,11 @@ impl Value {
             return from_list(unsafe { Stored::<List>::get(&self.payload) }.0.clone());
         }
         if !self.is_encoded() {
-            bail!("expected a {}, got a {}", type_name::<T>(), self.type_name());
+            bail!(
+                "expected a {}, got a {}",
+                type_name::<T>(),
+                self.type_name()
+            );
         }
         // SAFETY: the vtable says the payload holds an `Encoded`.
         let encoded = unsafe { Stored::<Encoded>::get(&self.payload) };
@@ -536,7 +547,10 @@ mod msgpack {
 
         fn uint(&mut self, width: usize) -> anyhow::Result<usize> {
             let end = self.at + width;
-            let raw = self.bytes.get(self.at..end).context("truncated MessagePack")?;
+            let raw = self
+                .bytes
+                .get(self.at..end)
+                .context("truncated MessagePack")?;
             self.at = end;
             Ok(raw.iter().fold(0, |n, &byte| (n << 8) | byte as usize))
         }
@@ -699,14 +713,22 @@ mod tests {
         let items = encoded.items().unwrap();
         assert_eq!(items.len(), 40);
         for (item, expected) in items.iter().zip(&nested) {
-            assert_eq!(&item.to::<(String, Vec<i64>, BTreeMap<String, f64>)>().unwrap(), expected);
+            assert_eq!(
+                &item
+                    .to::<(String, Vec<i64>, BTreeMap<String, f64>)>()
+                    .unwrap(),
+                expected
+            );
         }
     }
 
     #[test]
     fn arguments_follow_the_packing_convention() {
         let args = vec![Value::new(2i32), Value::new(String::from("x"))];
-        assert_eq!(from_args::<(i32, String)>(args.clone()).unwrap(), (2, "x".into()));
+        assert_eq!(
+            from_args::<(i32, String)>(args.clone()).unwrap(),
+            (2, "x".into())
+        );
         assert_eq!(from_args::<i32>(vec![Value::new(5i32)]).unwrap(), 5);
         from_args::<()>(vec![]).unwrap();
         let packed = Value::encoded(encode_args(&args).unwrap());

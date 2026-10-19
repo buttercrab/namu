@@ -8,19 +8,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use namu_core::value::Value;
 use namu_engine::tasks::{Batch, BatchPolicy, DEFAULT_WINDOW, Kind, Stream};
 use namu_proto::{TaskKind, TaskManifest, TaskRuntime};
-use serde_json::Value;
 use sha2::Digest;
 
-/// A call's output as the runtimes give it, JSON or the task's own error, decoded.
-fn output(output: Result<String, String>) -> anyhow::Result<Result<Value, String>> {
-    match output {
-        Ok(output) => Ok(Ok(
-            serde_json::from_str(&output).context("the task returned invalid JSON")?
-        )),
-        Err(message) => Ok(Err(message)),
-    }
+/// An output as the runtimes give it, MessagePack or the task's own error. The bytes stay as
+/// they are until something asks for a type.
+fn output(output: Result<Vec<u8>, String>) -> Result<Value, String> {
+    output.map(Value::encoded)
 }
 
 /// Downloads, verifies and loads task artifacts. Artifacts are cached on disk, so a task version

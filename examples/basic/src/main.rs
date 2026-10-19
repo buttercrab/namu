@@ -68,7 +68,11 @@ async fn main() -> anyhow::Result<()> {
         ),
     ] {
         let outcome = cluster.run(workflow).await?;
-        let results: Vec<String> = outcome.results.iter().map(ToString::to_string).collect();
+        let results = outcome
+            .results
+            .into_iter()
+            .map(|result| Ok(result.take::<i32>()?.to_string()))
+            .collect::<anyhow::Result<Vec<_>>>()?;
         println!("{name}: {}", results.join(", "));
     }
     Ok(())

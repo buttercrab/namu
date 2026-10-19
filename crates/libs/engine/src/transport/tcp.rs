@@ -7,9 +7,9 @@
 //! both live; a peer that dies is the business of recovery (design §7), not of the transport.
 //!
 //! A sender opens one connection per peer. It starts with the session's id, then carries frames:
-//! a sequence number, a big-endian `u32` length, and the message as MessagePack. Messages queued while a
-//! frame is written go out in the same flush. The receiver answers on the same connection with
-//! the number of messages of the session it has delivered.
+//! a sequence number, a big-endian `u32` length, and the message as MessagePack. Messages queued
+//! while a frame is written go out in the same flush. The receiver answers on the same connection
+//! with the number of messages of the session it has delivered.
 //!
 //! A worker can hear from a peer before it learns where the peer listens: a worker that just
 //! joined is in the membership the orchestrator gives it, but its peers learn of it only at their

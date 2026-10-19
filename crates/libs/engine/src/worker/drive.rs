@@ -93,7 +93,8 @@ impl Inner {
         loop {
             let plan = match at.branch.resume {
                 Resume::Kernel(start) => {
-                    kernel::drive(workflow, &run.spec.literals, &view, at.ctx.clone(), start).await?
+                    kernel::drive(workflow, &run.spec.literals, &view, at.ctx.clone(), start)
+                        .await?
                 }
                 Resume::Call { op } => Plan::Call {
                     op,

@@ -99,7 +99,7 @@ Workflows in `examples/distributed/workflows`:
 How to read these:
 - **A handoff is one message** between workers, carrying the branch and the nodes it needs, plus
   an asynchronous acknowledgement once the receiver has logged it. What remains is TCP on
-  localhost, JSON encoding, log writes behind the critical path, and scheduling. Without the log
+  localhost, MessagePack encoding, log writes behind the critical path, and scheduling. Without the log
   (step 2) a handoff took ~50 µs and `nested_stats` 7 ms.
 - **Long loops stay fast and small.** A node attaches under the deepest node still holding a live
   value, so a loop's chain stays as short as its live values, and the nodes left behind are freed
@@ -114,8 +114,8 @@ How to read these:
 2. **The log keeps a run's branch ends, reports and trail nodes until the run ends.** Workers'
    memory stays flat (nodes are freed), but the log of a run lasting weeks grows; it needs
    compaction.
-3. **Values travel as JSON**, inline in messages; there is no binary codec or object-store path
-   for large values yet.
+3. **Large values travel inline** in messages; there is no object-store path for them yet, and a
+   live value is encoded again each time its node is sent.
 4. **Routing is round robin** among the workers that serve a task; load and locality are not
    considered yet (stream credits are local to the source; there is no load feedback).
 5. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated

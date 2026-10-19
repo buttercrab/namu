@@ -1644,8 +1644,9 @@ dependencies = [
 name = "namu-guest"
 version = "0.1.0"
 dependencies = [
+ "rmp-serde",
  "serde",
- "serde_json",
+ "serde_bytes",
  "wit-bindgen",
 ]
 
@@ -1672,6 +1673,7 @@ dependencies = [
  "namu-engine",
  "namu-proto",
  "redis",
+ "rmp-serde",
  "serde",
  "serde_json",
  "sha2",
@@ -1700,11 +1702,14 @@ dependencies = [
  "anyhow",
  "async-trait",
  "libloading",
+ "namu-core",
  "namu-engine",
  "namu-proto",
  "redis",
  "reqwest",
- "serde_json",
+ "rmp-serde",
+ "serde",
+ "serde_bytes",
  "sha2",
  "tar",
  "tokio",

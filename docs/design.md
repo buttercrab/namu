@@ -463,12 +463,15 @@ its **shape**:
 
 | Shape | Types | Fan-out | Collect |
 |---|---|---|---|
-| list | `Vec<T>`, and `Encoded` arrays | items, each a `Value` of `T` (a clone of each, shared) | a `Vec<T>` from items of `T`; an `Encoded` array if any item is encoded |
+| list | `Vec<T>`, tuples, encoded arrays, collected lists | items: a clone of each element of a `Vec<T>`; slices of an encoded array; the values of a collected list | a list of the item values, whatever their types; it becomes a `Vec<T>` when something asks for one |
 | bool | `bool` | | |
 | opaque | everything else | | |
 
 - An encoded list is split by reading the MessagePack array header: each item is a slice of the
   same bytes, so nothing is copied or decoded.
+- A collect builds a list of values without knowing their type, so building it never needs a
+  `Vec<Vec<…>>` vtable (which a type-built list would, without end). Asking it for a `Vec<T>`
+  takes each item as a `T`.
 - Rust has no specialization, so a vtable cannot discover on its own that some `T` is a
   `Vec<U>`. The shape therefore comes from a trait, **`Data`**, implemented for the primitives,
   `String`, `Vec<T: Data>`, `Option<T: Data>` and tuples, and derived for user types with
@@ -477,17 +480,20 @@ its **shape**:
 
 ### 8.3 Where values come from and go
 
-- **Literals** are encoded once when the workflow is compiled (MessagePack in the IR) and decoded
-  once per run into `RunSpec`, not on every op entry.
-- **Rust tasks in process** (`FnTasks`, `#[task]`): inputs are taken from the argument values by
-  type (`Data` for each argument), outputs are wrapped as values. No packing into one document.
-- **WASM and native tasks** (guest ABI v5): arguments are a MessagePack array of the encoded
-  arguments, outputs a MessagePack value (an array for several outputs, split without decoding).
-  The WIT types become `list<u8>`; `namu-guest` does the encoding.
-- **Wire and log**: a node's values are encoded when the node first crosses a boundary, and the
-  encoding is kept with the node, so a node shipped to several workers is encoded once.
+- **Literals** stay JSON text in the IR, so the IR stays readable to people and to the tools that
+  will write it. They are decoded once per run (`kernel::Literals`), not on every op entry.
+- **Rust tasks in process** (`FnTasks`): a task takes its input by type (the argument itself, a
+  tuple for several, `()` for none) and its output is wrapped as a value. A task with several
+  outputs returns a tuple, which splits into them.
+- **WASM and native tasks** (task ABI v5): the arguments cross as one MessagePack document (nil,
+  the argument, or an array), outputs as MessagePack, errors as text. The WIT types are
+  `list<u8>`; `namu-guest` does the encoding. Outputs stay encoded until a Rust task asks for a
+  type.
+- **Wire and log**: mesh frames and log records are MessagePack, and a value inside them is its
+  MessagePack bytes. A live value is encoded each time its node is sent; keeping the encoding with
+  the node, so a node shipped to several workers is encoded once, is not done yet.
 - **The service API** (HTTP) shows results as JSON, converted from MessagePack at that edge only.
-  JSON appears nowhere else.
+  Values are JSON nowhere else.
 
 ### 8.4 Storage
 
@@ -617,8 +623,8 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Fan-out / fan-in | ✅ Type-driven via `IntoArg`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine) | Plus reduce and window |
 | `return` in a branch | Not supported | Drops that item (filter) |
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
-| Literals | ✅ JSON-encoded; string literals are `String` | MessagePack in the IR, decoded once per run (§8.3) |
-| Values | `serde_json::Value` everywhere | The user's erased `Value`: typed and shared in process, MessagePack at boundaries (§8) |
+| Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
+| Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | Keep a node's encoding with it, so it is encoded once however often it is sent; an object store for large values |
 | Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
 | Distributed path | ✅ Peer-to-peer TCP mesh with a reliable session per pair of workers (sequence numbers, replay on reconnect); the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
