@@ -26,7 +26,7 @@ pub enum Record {
     /// Nodes that a record next to them refers to.
     Nodes {
         run: RunId,
-        nodes: Vec<(NodeId, Arc<Node>)>,
+        nodes: Vec<Arc<Node>>,
     },
     /// A branch as it stops at `holder`.
     Branch {
@@ -156,7 +156,10 @@ impl MemoryLog {
                     let id = info.id;
                     runs.entry(id).or_default().info = Some(info);
                 }
-                Record::Nodes { run, nodes } => runs.entry(run).or_default().nodes.extend(nodes),
+                Record::Nodes { run, nodes } => {
+                    let held = &mut runs.entry(run).or_default().nodes;
+                    held.extend(nodes.into_iter().map(|node| (node.id(), node)));
+                }
                 Record::Branch {
                     run,
                     holder,

@@ -545,7 +545,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Area | Today | Target |
 |------|-------|--------|
 | Parallelism | One call per op; a context waits on each call. Parallelism comes only from fan-out | Dataflow within a block |
-| Value tree | ✅ Immutable nodes held by their creator and fetched on demand. Each worker sweeps the nodes no pinned context reaches; a swept node asked for again is read from the log | GC of the log during a run (it holds a run's ends and reports until the run ends) |
+| Value tree | ✅ Immutable nodes that own their parent: a context keeps its chain alive and nothing else, so a node is freed when its last child or context goes. Workers index nodes weakly to serve fetches; a freed node asked for again is read from the log | Binary lifting for lookups; GC of the log during a run (it holds a run's ends and reports until the run ends) |
 | Placement | ✅ A node attaches under the deepest node still holding a live value (liveness from the IR; a node's own values shadow older copies, which is what lets loops stay shallow). Chains stay as deep as the values in use | Several nodes per step, ordered longest-lived first |
 | Dedup | ✅ Constants are hoisted into the root context. Every other op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor (§13 q7) |
 | Fan-out / fan-in | ✅ Type-driven via `IntoArg`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine) | Plus reduce and window |

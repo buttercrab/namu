@@ -279,6 +279,32 @@ async fn concurrent_runs_end_exactly_once_with_the_same_result() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_context_outlives_a_long_call_while_others_churn() {
+    // Each loop header's context is a node made for the call that follows. The second loop's
+    // calls are slow, and while one branch waits in one, the other is still creating thousands of
+    // nodes in its first loop. The waiting context must still be there when its call returns.
+    #[workflow]
+    fn wf() -> i32 {
+        let xs = range(1, 3);
+        let n = multiply_by_3_and_add_1(multiply_by_3_and_add_1(multiply_by_3_and_add_1(
+            multiply_by_3_and_add_1(xs),
+        )));
+        let mut i = 0;
+        while less_than(i, n) {
+            i = add(i, 1);
+        }
+        let mut j = 0;
+        while slowly_less_than(j, 2) {
+            j = add(j, i);
+        }
+        j
+    }
+
+    let results = results(wf().to_serializable("churn".into())).await;
+    assert_eq!(ints(&results), [850, 1660]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_long_loop_holds_a_flat_number_of_nodes() {
     #[workflow]
     fn wf() -> i32 {
@@ -298,7 +324,8 @@ async fn a_long_loop_holds_a_flat_number_of_nodes() {
         .unwrap();
     // 1 + 2 + .. + 5000, overflowing nothing in i32.
     assert_eq!(outcome.results, [json!(12502500)]);
-    // 15,000 calls, each creating a node: without placement and sweeping, all would be held.
+    // 15,000 calls, each creating a node: a context owns only the chain of nodes still holding
+    // live values, so a handful are held at once.
     let peak = outcome.workers[&1].peak_nodes;
-    assert!(peak < 2500, "{peak} nodes held at once");
+    assert!(peak <= 64, "{peak} nodes held at once");
 }

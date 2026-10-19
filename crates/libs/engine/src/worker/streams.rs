@@ -17,12 +17,13 @@ use super::delivery::Release;
 use super::drive::{Driving, run_task};
 use super::view::View;
 use super::{Inner, Run};
-use crate::ids::{NodeId, ScopeId};
+use crate::ids::ScopeId;
 use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
 use crate::scope::{Continuation, FULL, Position, SOURCE_INDEX, Scope, Source, Then};
 use crate::tasks::{TaskRef, TaskStream, pack_input};
+use crate::tree::Node;
 
 impl Inner {
     /// Runs the stream task called at `call` as the source of a new scope that feeds `fan_out`.
@@ -50,10 +51,11 @@ impl Inner {
             position: Position::default(),
         };
         let release = Release::new(1, self.gone(run, branch));
+        let trail = self.trail(at);
         let durable = self.log.append(vec![
             Record::Nodes {
                 run: run.id(),
-                nodes: self.trail(run, at),
+                nodes: trail.clone(),
             },
             Record::Scope {
                 run: run.id(),
@@ -63,19 +65,25 @@ impl Inner {
             },
         ]);
         self.release_when(durable, release);
-        self.feed_scope(run, scope, Scope::new(Then::Continue(continuation)), source);
+        let then = Then::Continue {
+            continuation,
+            ctx: at.ctx.clone(),
+        };
+        self.feed_scope(run, scope, Scope::new(then), source, trail);
     }
 
     /// Gives `scope` (which may have ended branches already, after recovery) the credits it has
-    /// left, and runs its source from its position.
+    /// left, and runs its source from its position. Every item is shipped with `trail`: the
+    /// scope's context, and the nodes it hangs from that the receiver is unlikely to hold.
     pub(super) fn feed_scope(
         self: &Arc<Self>,
         run: &Arc<Run>,
         id: ScopeId,
         scope: Scope,
         source: Source,
+        trail: Vec<Arc<Node>>,
     ) {
-        let Then::Continue(continuation) = &scope.then else {
+        let Then::Continue { continuation, .. } = &scope.then else {
             unreachable!("a stream feeds a fan-out scope")
         };
         let task = run
@@ -86,16 +94,15 @@ impl Inner {
         let in_flight = source.position.yielded - scope.ended_items();
         let window = self.tasks.window(&task);
         let credits = Arc::new(Semaphore::new(window.saturating_sub(in_flight as usize)));
-        let (ctx, scopes) = (continuation.ctx, continuation.scopes.clone());
-        let inner: Arc<[ScopeId]> = scopes.iter().copied().chain([id]).collect();
-        run.open_scope(id, scope.with_credits(credits.clone()), Some(ctx));
+        let inner: Arc<[ScopeId]> = continuation.scopes.iter().copied().chain([id]).collect();
+        run.open_scope(id, scope.with_credits(credits.clone()));
 
         let (worker, run) = (self.clone(), run.clone());
         tokio::spawn(async move {
             let mut position = source.position.clone();
             let feeding = Feeding {
                 scope: id,
-                ctx,
+                trail,
                 inner,
                 source: &source,
                 credits: &credits,
@@ -182,7 +189,7 @@ impl Inner {
         let view = View { worker: self, run };
         let mut args = Vec::with_capacity(call.inputs.len());
         for &input in &call.inputs {
-            args.push(view.get(feeding.ctx, input).await?);
+            args.push(view.get(feeding.ctx(), input).await?);
         }
         let (cursor, at_cursor) = match &position.cursor {
             Some((cursor, at)) => (Some(cursor.clone()), *at),
@@ -210,15 +217,14 @@ impl Inner {
             .expect("a stream feeds a fan-out")
             .output;
         let live = run.spec.liveness.after_action(feeding.source.fan_out);
-        let id = self.grow(run, feeding.ctx, live, vec![(output, value)]);
-        let node = run.nodes.get(id).expect("just grown");
+        let node = self.grow(run, feeding.ctx(), live, vec![(output, value)]);
         let branch = Branch {
             id: BranchId {
                 scope: feeding.scope,
                 index,
             },
             hop: 0,
-            ctx: id,
+            ctx: node.id(),
             resume: Resume::Kernel(Start::After {
                 op: feeding.source.fan_out,
             }),
@@ -226,7 +232,8 @@ impl Inner {
             scopes: feeding.inner.clone(),
         };
         let to = self.routes.any().unwrap_or(self.id);
-        self.hand_off(run, to, branch, vec![(id, node)], None);
+        let nodes = [node].into_iter().chain(feeding.trail.iter().cloned());
+        self.hand_off(run, to, branch, nodes.collect(), None);
     }
 
     /// Runs a stream task whose output is not just fanned out, reading it to its end into a list.
@@ -278,10 +285,14 @@ impl Inner {
         if self.tasks.serves(task) {
             let yielded = source.position.yielded;
             tracing::info!(task = task.id, yielded, "resuming a stream");
-            return self.feed_scope(run, id, scope, source);
+            let Then::Continue { ctx, .. } = &scope.then else {
+                unreachable!("a stream feeds a fan-out scope")
+            };
+            let trail = vec![ctx.clone()];
+            return self.feed_scope(run, id, scope, source, trail);
         }
         tracing::info!(task = task.id, "restarting a stream where it is served");
-        let Then::Continue(continuation) = scope.then else {
+        let Then::Continue { continuation, ctx } = scope.then else {
             unreachable!("a stream feeds a fan-out scope")
         };
         run.close_scope(id);
@@ -304,17 +315,24 @@ impl Inner {
                 scope: id,
             },
         ]);
-        self.spawn_drive(run.clone(), branch);
+        self.spawn_drive(run.clone(), branch, ctx);
     }
 }
 
 /// A source and the scope it feeds.
 struct Feeding<'a> {
     scope: ScopeId,
-    /// The context the stream task was called in; items are its children.
-    ctx: NodeId,
+    /// The context the stream task was called in, which items are children of, first; then the
+    /// nodes it hangs from that items are shipped with.
+    trail: Vec<Arc<Node>>,
     /// The scopes items are in, innermost (this one) last.
     inner: Arc<[ScopeId]>,
     source: &'a Source,
     credits: &'a Semaphore,
+}
+
+impl Feeding<'_> {
+    fn ctx(&self) -> &Arc<Node> {
+        &self.trail[0]
+    }
 }

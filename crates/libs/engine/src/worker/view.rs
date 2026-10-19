@@ -20,24 +20,27 @@ pub(super) struct View<'a> {
 }
 
 impl ValueStore for View<'_> {
-    async fn get(&self, ctx: NodeId, value: ValueId) -> anyhow::Result<Value> {
-        let mut cursor = Some(ctx);
-        while let Some(id) = cursor {
-            let node = self.worker.node(self.run, id).await?;
+    type Ctx = Arc<Node>;
+
+    async fn get(&self, ctx: &Arc<Node>, value: ValueId) -> anyhow::Result<Value> {
+        let mut node = ctx.clone();
+        loop {
             if let Some(found) = node.get(value) {
                 return Ok(found.clone());
             }
-            cursor = node.parent;
+            node = match self.worker.parent(self.run, &node).await? {
+                Some(parent) => parent,
+                None => bail!("value {value} is not visible from context {}", ctx.id()),
+            };
         }
-        bail!("value {value} is not visible from context {ctx}")
     }
 
     async fn put(
         &self,
-        ctx: NodeId,
+        ctx: &Arc<Node>,
         values: Vec<(ValueId, Value)>,
         at: Point,
-    ) -> anyhow::Result<NodeId> {
+    ) -> anyhow::Result<Arc<Node>> {
         let live = match at {
             Point::Enter(op) => self.run.spec.liveness.after_enter(op),
             Point::Action(op) => self.run.spec.liveness.after_action(op),
@@ -52,10 +55,10 @@ impl Inner {
     pub(super) fn grow(
         &self,
         run: &Run,
-        ctx: NodeId,
+        ctx: &Arc<Node>,
         live: &[ValueId],
         values: Vec<(ValueId, Value)>,
-    ) -> NodeId {
+    ) -> Arc<Node> {
         // What the new node defines shadows the same values further up: a loop's phi defines
         // the same value every iteration, and the old copies are as dead as the rest.
         let live: Vec<ValueId> = live
@@ -63,40 +66,45 @@ impl Inner {
             .copied()
             .filter(|value| !values.iter().any(|(id, _)| id == value))
             .collect();
-        let id = self.ids.next();
-        let node = Node {
-            parent: Some(anchor(run, ctx, &live)),
-            values,
-        };
-        run.nodes.insert(id, Arc::new(node));
-        id
+        let node = Node::new(self.ids.next(), anchor(ctx, &live).clone(), values);
+        run.nodes.hold(Arc::new(node))
     }
 }
 
 /// The deepest node of `ctx`'s chain that holds one of `live`: what a new node attaches under.
-/// The walk stops at a node not held here (or the root), keeping it.
-pub(super) fn anchor(run: &Run, ctx: NodeId, live: &[ValueId]) -> NodeId {
+/// The walk stops at a node whose parent is not held here (or the root), keeping it.
+fn anchor<'a>(ctx: &'a Arc<Node>, live: &[ValueId]) -> &'a Arc<Node> {
     let mut cursor = ctx;
-    loop {
-        let Some(node) = run.nodes.get(cursor) else {
-            return cursor;
-        };
-        match node.parent {
-            Some(parent) if !node.holds_any(live) => cursor = parent,
-            _ => return cursor,
-        }
+    while !cursor.holds_any(live)
+        && let Some(parent) = cursor.parent()
+    {
+        cursor = parent;
     }
+    cursor
 }
 
 impl Inner {
+    /// The parent of `node`, which `node` holds from now on. `None` for the root.
+    async fn parent(self: &Arc<Self>, run: &Run, node: &Node) -> anyhow::Result<Option<Arc<Node>>> {
+        if let Some(parent) = node.parent() {
+            return Ok(Some(parent.clone()));
+        }
+        let Some(id) = node.parent_id() else {
+            return Ok(None);
+        };
+        let parent = self.node(run, id).await?;
+        node.link(parent.clone());
+        Ok(Some(parent))
+    }
+
     /// A node of `run`: held here, fetched from the worker that created it, or read from the log
     /// if that worker is dead. Concurrent requests for one node share one fetch.
-    async fn node(self: &Arc<Self>, run: &Run, id: NodeId) -> anyhow::Result<Arc<Node>> {
+    pub(super) async fn node(self: &Arc<Self>, run: &Run, id: NodeId) -> anyhow::Result<Arc<Node>> {
         if let Some(node) = run.nodes.get(id) {
             return Ok(node);
         }
         let holder = owner(id);
-        // Nodes held by a dead worker, or swept here, are in the log.
+        // Nodes held by a dead worker, or no longer held by their creator, are in the log.
         let node = if self.routes.resolve(holder) != holder || holder == self.id {
             self.log.node(run.id(), id).await?
         } else {
@@ -119,13 +127,12 @@ impl Inner {
             }
             match reply.await.context("node fetch abandoned")? {
                 Some(node) => Some(node),
-                // Its holder swept it.
+                // Its creator no longer holds it.
                 None => self.log.node(run.id(), id).await?,
             }
         };
         let node = node.with_context(|| format!("node {id} is gone"))?;
-        run.nodes.insert(id, node.clone());
-        Ok(node)
+        Ok(run.nodes.hold(node))
     }
 
     pub(super) fn on_node(&self, run: RunId, id: NodeId, node: Option<Arc<Node>>) {

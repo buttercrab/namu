@@ -15,6 +15,7 @@ use crate::log::{EndRecord, Record, ReportRecord};
 use crate::message::{Branch, BranchId, Message, Report, Resume};
 use crate::run::{RunOutcome, WorkerStats};
 use crate::scope::{Continuation, Ended, Finish, Scope, Then, Weight};
+use crate::tree::Node;
 
 /// How long the owner of a finished run waits for every worker to confirm it forgot the run.
 const FORGET_PATIENCE: Duration = Duration::from_secs(2);
@@ -92,29 +93,29 @@ impl Inner {
                 run.close_scope(id);
                 self.finish(run, *finish);
             }
-            (items, Then::Continue(continuation)) => {
-                // The continuation pins its own context before the scope lets go of its.
-                self.resume(run, id, continuation, items);
+            (items, Then::Continue { continuation, ctx }) => {
                 run.close_scope(id);
+                self.resume(run, id, continuation, ctx, items);
             }
         }
     }
 
-    /// Continues the branch that opened scope `id`, now that the scope is over.
+    /// Continues the branch that opened scope `id` from `ctx`, now that the scope is over.
     fn resume(
         self: &Arc<Self>,
         run: &Arc<Run>,
         id: ScopeId,
         continuation: Continuation,
+        ctx: Arc<Node>,
         items: Vec<Value>,
     ) {
         let Continuation {
             branch,
             hop,
-            ctx,
             weight,
             scopes,
             collect,
+            ..
         } = continuation;
         let Some(op) = collect else {
             // Nothing collects this scope: the branch that opened it is done.
@@ -136,12 +137,11 @@ impl Inner {
             .expect("collect ops are found by scope analysis")
             .output;
         let live = run.spec.liveness.after_action(op);
-        let node_id = self.grow(run, ctx, live, vec![(output, Value::Array(items))]);
-        let node = run.nodes.get(node_id).expect("just grown");
+        let node = self.grow(run, &ctx, live, vec![(output, Value::Array(items))]);
         let branch = Branch {
             id: branch,
             hop: hop + 1,
-            ctx: node_id,
+            ctx: node.id(),
             resume: Resume::Kernel(Start::After { op }),
             weight,
             scopes,
@@ -150,7 +150,7 @@ impl Inner {
         self.log.record(vec![
             Record::Nodes {
                 run: run.id(),
-                nodes: vec![(node_id, node)],
+                nodes: vec![node.clone()],
             },
             Record::Branch {
                 run: run.id(),
@@ -162,7 +162,7 @@ impl Inner {
                 scope: id,
             },
         ]);
-        self.spawn_drive(run.clone(), branch);
+        self.spawn_drive(run.clone(), branch, node);
     }
 
     /// Returns a branch's weight to `scope`.
