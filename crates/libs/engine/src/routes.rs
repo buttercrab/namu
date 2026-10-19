@@ -1,10 +1,15 @@
 //! Which workers exist, which can run which task, and who took over for the dead, as published
-//! by the control plane.
+//! by the control plane; and how busy each worker is, as the workers report it (design §10.3).
+//!
+//! Work goes to the least loaded worker that can take it. A worker's load is what it last
+//! reported (on the acknowledgements it sends anyway) plus what was sent to it since, per task
+//! slot. A worker that has not reported counts as idle, so a new worker draws work at once.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock};
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::ids::WorkerId;
@@ -16,9 +21,33 @@ pub struct Routes {
     servers: RwLock<HashMap<TaskRef, Vec<WorkerId>>>,
     /// Dead worker -> the worker that took over its work (design §7.4).
     successors: RwLock<HashMap<WorkerId, WorkerId>>,
+    /// Where to start looking, so workers equally loaded take turns.
     cursor: AtomicUsize,
+    loads: Mutex<HashMap<WorkerId, Estimate>>,
     /// Bumped on every change.
     version: watch::Sender<u64>,
+}
+
+/// How busy a worker is: branches being driven there, and how many task calls it runs at once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Load {
+    pub pending: u32,
+    pub slots: u32,
+}
+
+/// A worker's last reported load, and the work sent to it since.
+#[derive(Debug, Default)]
+struct Estimate {
+    load: Load,
+    sent: u32,
+}
+
+impl Estimate {
+    /// Pending work per slot, as a fraction to compare exactly.
+    fn busy(&self) -> (u64, u64) {
+        let pending = u64::from(self.load.pending) + u64::from(self.sent);
+        (pending, u64::from(self.load.slots.max(1)))
+    }
 }
 
 impl Default for Routes {
@@ -28,6 +57,7 @@ impl Default for Routes {
             servers: RwLock::default(),
             successors: RwLock::default(),
             cursor: AtomicUsize::new(0),
+            loads: Mutex::default(),
             version: watch::Sender::new(0),
         }
     }
@@ -123,19 +153,89 @@ impl Routes {
         }
     }
 
-    // Round robin. Load-aware placement comes with credits (docs/design.md §10.3).
+    /// `worker` reports its load.
+    pub fn report(&self, worker: WorkerId, load: Load) {
+        let mut loads = self.loads.lock().unwrap();
+        *loads.entry(worker).or_default() = Estimate { load, sent: 0 };
+    }
+
+    /// The least loaded of `workers`, which is then counted as one call busier.
     fn pick(&self, workers: &[WorkerId]) -> Option<WorkerId> {
         if workers.is_empty() {
             return None;
         }
-        let i = self.cursor.fetch_add(1, Ordering::Relaxed);
-        Some(workers[i % workers.len()])
+        let start = self.cursor.fetch_add(1, Ordering::Relaxed);
+        let mut loads = self.loads.lock().unwrap();
+        let busy = |worker: &WorkerId| loads.get(worker).map_or((0, 1), Estimate::busy);
+        let mut best = workers[start % workers.len()];
+        for offset in 1..workers.len() {
+            let worker = workers[(start + offset) % workers.len()];
+            let ((a, a_slots), (b, b_slots)) = (busy(&worker), busy(&best));
+            if a * b_slots < b * a_slots {
+                best = worker;
+            }
+        }
+        loads.entry(best).or_default().sent += 1;
+        Some(best)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_goes_to_the_least_loaded_per_slot() {
+        let routes = Routes::default();
+        routes.set_workers(vec![1, 2, 3]);
+        routes.report(
+            1,
+            Load {
+                pending: 8,
+                slots: 4,
+            },
+        );
+        routes.report(
+            2,
+            Load {
+                pending: 3,
+                slots: 1,
+            },
+        );
+        routes.report(
+            3,
+            Load {
+                pending: 1,
+                slots: 2,
+            },
+        );
+        // 3 is at 0.5 per slot; once sent two calls it is at 1.5, and 1 (at 2) is still busier.
+        let picks: Vec<_> = (0..3).map(|_| routes.any().unwrap()).collect();
+        assert_eq!(picks, [3, 3, 3]);
+        // At 2 per slot each now, they take turns; a report starts the count again.
+        routes.report(
+            3,
+            Load {
+                pending: 0,
+                slots: 2,
+            },
+        );
+        assert_eq!(routes.any(), Some(3));
+    }
+
+    #[test]
+    fn a_worker_that_has_not_reported_draws_work() {
+        let routes = Routes::default();
+        routes.set_workers(vec![1, 2]);
+        routes.report(
+            1,
+            Load {
+                pending: 5,
+                slots: 4,
+            },
+        );
+        assert_eq!(routes.any(), Some(2));
+    }
 
     #[test]
     fn work_follows_successors_to_a_live_worker() {

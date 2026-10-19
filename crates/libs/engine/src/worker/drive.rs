@@ -16,6 +16,7 @@ use crate::ids::{NodeId, WorkerId, owner};
 use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Message, Report, Resume};
+use crate::routes::Routes;
 use crate::scope::{Continuation, Scope, Then};
 use crate::tasks::{Args, CallTask, Kind, Task, TaskRef, unpack_output};
 use crate::tree::Node;
@@ -63,8 +64,13 @@ impl Inner {
             ctx,
             branch,
         };
+        // Counted from now, not when the task starts, so work placed right after sees it.
+        let busy = self.busy();
         let worker = self.clone();
-        tokio::spawn(async move { worker.drive(&run, at).await });
+        tokio::spawn(async move {
+            worker.drive(&run, at).await;
+            drop(busy);
+        });
     }
 
     /// Drives `branch` once its context is fetched: one that is durable, or held elsewhere.
@@ -369,7 +375,7 @@ impl Inner {
                 resume: Resume::Kernel(Start::After { op }),
                 scopes: inner.clone(),
             };
-            let to = self.routes.any().unwrap_or(self.id);
+            let to = self.destination(Routes::any);
             self.hand_off(run, to, child, nodes, Some(release.clone()));
         }
     }

@@ -339,10 +339,10 @@ task boundary, and it works the same in WASM, native code and in-process.
 - **Across runs**: sessions belong to a worker and a task version, not to a run. Items from
   different scopes and different runs of the same task version share steps. This is how one
   inference worker serves many concurrent labeling runs.
-- A worker runs one session per batch task (`batch_slots` for more, e.g. one per GPU). Routing is
-  round robin among the workers that serve the task for now; under dynamic batching each one's
-  batches fill under load. Filling one worker's batch before the next needs load information
-  (§10.3).
+- A worker runs one session per batch task (`batch_slots` for more, e.g. one per GPU). Items go to
+  the least loaded worker that serves the task (§10.3); under dynamic batching each one's batches
+  fill under load. Filling one worker's batch before the next also needs to know how full each
+  worker's batch is, which load alone does not say.
 - A failed step fails every item in it; an item's own error fails only its branch. A worker that
   dies mid-step loses nothing durable: its waiting and in-flight branches run again from their
   records (§7), like any task call.
@@ -633,7 +633,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Errors in DSL | A failed branch is dropped and recorded in run failures | Results the DSL can inspect |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
 | Distributed path | ✅ Peer-to-peer TCP mesh with a reliable session per pair of workers (sequence numbers, replay on reconnect); the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
-| Routing | Round robin among the workers that serve a task; a branch waits for a server to join | Load-aware, locality-aware placement; credits for sources (§10.3) |
+| Routing | ✅ To the least loaded worker that can take it, per task slot: each worker reports the branches it drives on the acknowledgements it sends, and a sender counts what it sent since. A worker that has not reported counts as idle; a branch waits for a server to join | Locality (holders of a context's nodes); packing batch items into one worker's batch; work stealing (§10.3) |
 | Streams | ✅ Fused with their fan-out, per-item credits at the source, resumable by position (§6.5). Guest streams yield no cursors yet; a resumed stream is reopened and skipped forward | Cursors from guest streams; windows for unbounded streams |
 | Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |

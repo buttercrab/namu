@@ -22,6 +22,7 @@ use crate::ids::ScopeId;
 use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
+use crate::routes::Routes;
 use crate::scope::{Continuation, Position, Scope, Source, Then};
 use crate::tasks::{Args, Kind, Stream, StreamTask, Task, TaskStream};
 use crate::tree::Node;
@@ -251,7 +252,7 @@ impl Inner {
             },
         ]);
         let release = Release::new(1, self.gone(run, &branch));
-        let to = self.routes.any().unwrap_or(self.id);
+        let to = self.destination(Routes::any);
         let nodes = [node].into_iter().chain(feeding.trail.iter().cloned());
         let branch = Branch { hop: 1, ..branch };
         self.hand_off(run, to, branch, nodes.collect(), Some(release));
