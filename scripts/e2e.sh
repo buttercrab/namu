@@ -47,7 +47,18 @@ KEEP=1 POC_DIR="$crash_dir" NAMU_TASK_SLOTS=2 WORKFLOW=doc_stats_slow \
   ./scripts/poc-local.sh >"$crash_dir.log" 2>&1
 read -r -a pids <<<"$(sed -n 's/^left running (pids: \(.*\))$/\1/p' "$crash_dir.log")"
 teardown() {
-  kill "${pids[@]}" >/dev/null 2>&1 || true
+  # Workers first, so they can drain while the orchestrator and Redis are up; then the rest.
+  kill "${pids[@]:2}" >/dev/null 2>&1 || true
+  for _ in $(seq 20); do
+    running=0
+    for pid in "${pids[@]:2}"; do
+      kill -0 "$pid" 2>/dev/null && running=1
+    done
+    [[ $running == 0 ]] && break
+    sleep 0.5
+  done
+  kill -9 "${pids[@]:2}" >/dev/null 2>&1 || true
+  kill "${pids[@]:0:2}" >/dev/null 2>&1 || true
   redis-cli -p "${REDIS_PORT:-6390}" shutdown nosave >/dev/null 2>&1 || true
 }
 trap teardown EXIT
@@ -69,5 +80,36 @@ assert crashed["status"] == "succeeded", crashed
 assert not crashed["failures"], crashed["failures"]
 assert crashed["results"] == baseline["results"], (crashed["results"], baseline["results"])
 print(f"   ok: same result as the uninterrupted run ({crashed['elapsed_ms']} ms vs {baseline['elapsed_ms']} ms)")
+PY
+
+# Drain: SIGTERM a worker in the middle of a run. It hands on what it holds and leaves, and the
+# run gives the same result. (That nothing runs twice is checked by the engine's drain tests,
+# which count every call; a worker that left takes its run statistics with it.)
+echo "== doc_stats_slow with a worker drained mid-run"
+NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+  run doc_stats_slow 0.1.0 --wait >"$crash_dir/drained.json" &
+run_pid=$!
+sleep 2
+kill -TERM "${pids[4]}"
+echo "   draining worker-3"
+wait "$run_pid"
+for _ in $(seq 60); do
+  kill -0 "${pids[4]}" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "${pids[4]}" 2>/dev/null; then
+  echo "worker-3 did not leave after draining" >&2
+  exit 1
+fi
+python3 - "$crash_dir/run-1.json" "$crash_dir/drained.json" <<'PY'
+import json, sys
+def load(path):
+    text = open(path).read()
+    return json.loads(text[text.index("{"):])
+baseline, drained = load(sys.argv[1]), load(sys.argv[2])
+assert drained["status"] == "succeeded", drained
+assert not drained["failures"], drained["failures"]
+assert drained["results"] == baseline["results"], (drained["results"], baseline["results"])
+print(f"   ok: same result as the uninterrupted run, and worker-3 left")
 PY
 echo "e2e passed"

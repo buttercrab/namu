@@ -4,6 +4,10 @@
 //! The orchestrator gives the worker its id and the membership; heartbeats keep it current.
 //! Everything else, from starting a run to its last branch, happens between workers. Redis holds
 //! the durable log that lets another worker take over if this one dies.
+//!
+//! On SIGTERM or Ctrl-C the worker drains (design §10.4): the orchestrator stops giving it work,
+//! it hands on what it holds, and once everything it did is durable it leaves, its successor
+//! taking over what it owns. A second signal stops it at once, as a crash would.
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -100,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
         routes.clone(),
     ));
     apply(&mesh, &routes, &tasks, registration.membership);
-    let _worker = Worker::spawn(
+    let worker = Worker::spawn(
         id,
         tasks.clone(),
         routes.clone(),
@@ -111,15 +115,63 @@ async fn main() -> anyhow::Result<()> {
     );
     info!(id, name, addr, ?runtime_keys, "worker ready");
 
-    let heartbeat = format!("{orchestrator_url}/workers/{id}/heartbeat");
+    let lease = Lease {
+        http,
+        url: format!("{orchestrator_url}/workers/{id}"),
+        mesh,
+        routes,
+        tasks,
+    };
     let mut interval = tokio::time::interval(Duration::from_millis(HEARTBEAT_INTERVAL_MS));
+    let stop = stop_signal();
+    tokio::pin!(stop);
     loop {
-        interval.tick().await;
-        let response = match http.post(&heartbeat).send().await {
+        tokio::select! {
+            _ = interval.tick() => lease.post("heartbeat").await?,
+            _ = &mut stop => break,
+        }
+    }
+
+    info!(id, "draining; signal again to stop at once");
+    lease.post("drain").await?;
+    let drained = worker.drain();
+    tokio::pin!(drained);
+    let stop = stop_signal();
+    tokio::pin!(stop);
+    // Still a member while draining: keep the membership alive.
+    loop {
+        tokio::select! {
+            _ = interval.tick() => lease.post("heartbeat").await?,
+            drained = &mut drained => break drained?,
+            // Stopping now is a crash: the successor recovers what this worker held.
+            _ = &mut stop => anyhow::bail!("stopped before draining finished"),
+        }
+    }
+    let left = lease.http.post(format!("{}/leave", lease.url)).send().await;
+    left.and_then(|response| response.error_for_status())
+        .context("leaving the membership")?;
+    info!(id, "drained and left");
+    Ok(())
+}
+
+/// This worker's membership lease with the orchestrator.
+struct Lease {
+    http: reqwest::Client,
+    url: String,
+    mesh: Arc<TcpTransport>,
+    routes: Arc<Routes>,
+    tasks: Arc<tasks::RuntimeTasks>,
+}
+
+impl Lease {
+    /// Posts `what` (a heartbeat, or the start of draining) and applies the membership it
+    /// returns. A transient failure is logged and retried at the next beat.
+    async fn post(&self, what: &str) -> anyhow::Result<()> {
+        let response = match self.http.post(format!("{}/{what}", self.url)).send().await {
             Ok(response) => response,
             Err(err) => {
-                error!("heartbeat failed: {err}");
-                continue;
+                error!("{what} failed: {err}");
+                return Ok(());
             }
         };
         if response.status() == reqwest::StatusCode::GONE {
@@ -129,11 +181,22 @@ async fn main() -> anyhow::Result<()> {
         }
         match response.error_for_status() {
             Ok(response) => match response.json::<Membership>().await {
-                Ok(membership) => apply(&mesh, &routes, &tasks, membership),
-                Err(err) => error!("bad heartbeat response: {err}"),
+                Ok(membership) => apply(&self.mesh, &self.routes, &self.tasks, membership),
+                Err(err) => error!("bad {what} response: {err}"),
             },
-            Err(err) => error!("heartbeat failed: {err}"),
+            Err(err) => error!("{what} failed: {err}"),
         }
+        Ok(())
+    }
+}
+
+/// Resolves on SIGTERM or Ctrl-C.
+async fn stop_signal() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("installing the SIGTERM handler");
+    tokio::select! {
+        _ = terminate.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
     }
 }
 

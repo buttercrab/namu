@@ -119,26 +119,26 @@ impl Routes {
             .collect()
     }
 
-    /// A worker for work that any worker can do (a new branch).
-    pub fn any(&self) -> Option<WorkerId> {
-        self.pick(&self.workers.read().unwrap())
+    /// A worker for work that any worker can do (a new branch), other than `skip`.
+    pub fn any(&self, skip: Option<WorkerId>) -> Option<WorkerId> {
+        self.pick(&self.workers.read().unwrap(), skip)
     }
 
-    /// A worker that can run `task`.
-    pub fn server(&self, task: &TaskRef) -> Option<WorkerId> {
+    /// A worker that can run `task`, other than `skip`.
+    pub fn server(&self, task: &TaskRef, skip: Option<WorkerId>) -> Option<WorkerId> {
         self.servers
             .read()
             .unwrap()
             .get(task)
-            .and_then(|workers| self.pick(workers))
+            .and_then(|workers| self.pick(workers, skip))
     }
 
-    /// A worker that can run `task`, waiting for one to join if there is none.
-    pub async fn wait_for_server(&self, task: &TaskRef) -> WorkerId {
+    /// A worker other than `skip` that can run `task`, waiting for one to join if there is none.
+    pub async fn wait_for_server(&self, task: &TaskRef, skip: Option<WorkerId>) -> WorkerId {
         let mut changes = self.watch();
         loop {
             changes.borrow_and_update();
-            if let Some(worker) = self.server(task) {
+            if let Some(worker) = self.server(task, skip) {
                 return worker;
             }
             tracing::info!(
@@ -159,8 +159,13 @@ impl Routes {
         *loads.entry(worker).or_default() = Estimate { load, sent: 0 };
     }
 
-    /// The least loaded of `workers`, which is then counted as one call busier.
-    fn pick(&self, workers: &[WorkerId]) -> Option<WorkerId> {
+    /// The least loaded of `workers` but `skip`, which is then counted as one call busier.
+    fn pick(&self, workers: &[WorkerId], skip: Option<WorkerId>) -> Option<WorkerId> {
+        let workers: Vec<WorkerId> = workers
+            .iter()
+            .copied()
+            .filter(|&worker| Some(worker) != skip)
+            .collect();
         if workers.is_empty() {
             return None;
         }
@@ -210,7 +215,7 @@ mod tests {
             },
         );
         // 3 is at 0.5 per slot; once sent two calls it is at 1.5, and 1 (at 2) is still busier.
-        let picks: Vec<_> = (0..3).map(|_| routes.any().unwrap()).collect();
+        let picks: Vec<_> = (0..3).map(|_| routes.any(None).unwrap()).collect();
         assert_eq!(picks, [3, 3, 3]);
         // At 2 per slot each now, they take turns; a report starts the count again.
         routes.report(
@@ -220,7 +225,7 @@ mod tests {
                 slots: 2,
             },
         );
-        assert_eq!(routes.any(), Some(3));
+        assert_eq!(routes.any(None), Some(3));
     }
 
     #[test]
@@ -234,7 +239,7 @@ mod tests {
                 slots: 4,
             },
         );
-        assert_eq!(routes.any(), Some(2));
+        assert_eq!(routes.any(None), Some(2));
     }
 
     #[test]

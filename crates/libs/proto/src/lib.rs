@@ -189,6 +189,9 @@ pub struct Member {
     pub addr: String,
     pub runtimes: Vec<String>,
     pub platform: String,
+    /// Draining (design §10.4): still a member, but given no new work.
+    #[serde(default)]
+    pub draining: bool,
 }
 
 /// The mesh as the control plane sees it. Registered workers renew their membership with a

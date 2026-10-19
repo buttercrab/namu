@@ -27,10 +27,12 @@ pub(super) struct Release {
     record: Record,
 }
 
-impl Release {
-    /// Releases `record` after `parts` acknowledgements or durable writes.
-    pub fn new(parts: usize, record: Record) -> Arc<Self> {
-        Arc::new(Self {
+impl Inner {
+    /// A release of `record` after `parts` acknowledgements or durable writes. It counts as work
+    /// held here until it fires: a worker that drains waits for it.
+    pub(super) fn release_after(&self, parts: usize, record: Record) -> Arc<Release> {
+        self.releasing.fetch_add(1, Ordering::Relaxed);
+        Arc::new(Release {
             remaining: AtomicUsize::new(parts),
             record,
         })
@@ -47,14 +49,20 @@ impl Inner {
     ) {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let message = build(Delivery { from: self.id, seq });
-        let target = self.routes.resolve(to);
-        let kept = Outgoing {
-            to,
-            sent_to: target,
-            message: message.clone(),
-            release,
+        // Resolved under the outbox lock, which `resend_moved` takes too: a membership change
+        // either comes first, so `to` resolves past it, or finds the message kept and re-sends it.
+        let target = {
+            let mut outbox = self.outbox.lock().unwrap();
+            let target = self.routes.resolve(to);
+            let kept = Outgoing {
+                to,
+                sent_to: target,
+                message: message.clone(),
+                release,
+            };
+            outbox.insert(seq, kept);
+            target
         };
-        self.outbox.lock().unwrap().insert(seq, kept);
         self.deliver(target, message);
     }
 
@@ -82,6 +90,7 @@ impl Inner {
         self.routes.report(from, load);
         for seq in seqs {
             let kept = self.outbox.lock().unwrap().remove(&seq);
+            self.idle.notify_waiters();
             if let Some(release) = kept.and_then(|kept| kept.release) {
                 self.release(&release);
             }
@@ -92,6 +101,8 @@ impl Inner {
     pub(super) fn release(&self, release: &Release) {
         if release.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.log.record(vec![release.record.clone()]);
+            self.releasing.fetch_sub(1, Ordering::Relaxed);
+            self.idle.notify_waiters();
         }
     }
 

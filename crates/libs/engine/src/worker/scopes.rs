@@ -139,7 +139,7 @@ impl Inner {
         } = continuation;
         let Some(op) = collect else {
             // Nothing collects this scope: the branch that opened it is done.
-            let release = Release::new(
+            let release = self.release_after(
                 1,
                 Record::ScopeGone {
                     run: run.id(),
@@ -344,6 +344,7 @@ impl Inner {
             let outcome = ending.outcome;
             self.deliver(reply_to, Message::Finished { run, outcome });
         }
+        self.idle.notify_waiters();
     }
 }
 

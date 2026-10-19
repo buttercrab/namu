@@ -18,11 +18,12 @@ mod streams;
 mod view;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use anyhow::Context;
 use namu_core::ir::Workflow;
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{Notify, Semaphore, mpsc, oneshot, watch};
 
 use self::delivery::Outgoing;
 use self::scopes::Ending;
@@ -67,8 +68,15 @@ struct Inner {
     /// Bounds concurrent task calls; driving the IR between them is cheap and unbounded.
     task_slots: Semaphore,
     slots: u32,
-    /// Branches being driven here: the load this worker reports.
+    /// Branches being driven here, and stream sources fed here: the load this worker reports.
     driving: AtomicU32,
+    /// Set when the worker drains (design §10.4): it takes no new work and hands on what it holds.
+    draining: watch::Sender<bool>,
+    /// Releases not yet fired: records of this worker that are still to go from the log.
+    releasing: AtomicUsize,
+    /// Notified when a branch or source stops here, a message is acknowledged, a release fires,
+    /// or a run ending here is complete: what draining waits for.
+    idle: Notify,
     /// Batch tasks' queues and sessions, per task version.
     batchers: Mutex<HashMap<TaskRef, Arc<batches::Batcher>>>,
 }
@@ -120,6 +128,9 @@ impl Worker {
             task_slots: Semaphore::new(task_slots),
             slots: u32::try_from(task_slots).unwrap_or(u32::MAX),
             driving: AtomicU32::new(0),
+            draining: watch::Sender::new(false),
+            releasing: AtomicUsize::new(0),
+            idle: Notify::new(),
             batchers: Mutex::default(),
         });
         let worker = inner.clone();
@@ -139,6 +150,34 @@ impl Worker {
     /// One task call per CPU.
     pub fn default_task_slots() -> usize {
         std::thread::available_parallelism().map_or(4, |n| n.get())
+    }
+
+    /// Drains the worker (design §10.4): it takes no new work, and each branch it drives moves to
+    /// another worker at its next task call; a stream source it feeds stops, with its position
+    /// logged. Resolves once nothing is in flight here and everything it did is durable. The
+    /// worker can then leave: its successor takes over the scopes and runs it owns from the log,
+    /// with nothing to run again.
+    pub async fn drain(&self) -> anyhow::Result<()> {
+        let inner = &self.inner;
+        inner.draining.send_replace(true);
+        loop {
+            let idle = inner.idle.notified();
+            tokio::pin!(idle);
+            idle.as_mut().enable();
+            let quiet = inner.driving.load(Ordering::Relaxed) == 0
+                && inner.releasing.load(Ordering::Relaxed) == 0
+                && inner.outbox.lock().unwrap().is_empty()
+                && inner.ending.lock().unwrap().is_empty();
+            if quiet {
+                break;
+            }
+            idle.await;
+        }
+        inner
+            .log
+            .append(Vec::new())
+            .await
+            .context("the log did not take the last records")
     }
 
     pub fn serves(&self, task: &TaskRef) -> bool {
@@ -161,10 +200,19 @@ impl Inner {
         Busy(self.clone())
     }
 
-    /// Where new work goes: the least loaded worker that can take it, this one included.
-    fn destination(&self, pick: impl FnOnce(&Routes) -> Option<WorkerId>) -> WorkerId {
+    /// Where a new branch goes: the least loaded worker, this one included unless it is draining.
+    fn destination(&self) -> WorkerId {
         self.routes.report(self.id, self.load());
-        pick(&self.routes).unwrap_or(self.id)
+        self.routes.any(self.skip()).unwrap_or(self.id)
+    }
+
+    /// This worker, while it drains: what placing work skips.
+    fn skip(&self) -> Option<WorkerId> {
+        self.is_draining().then_some(self.id)
+    }
+
+    fn is_draining(&self) -> bool {
+        *self.draining.borrow()
     }
 
     fn run_state(&self, id: RunId) -> Option<Arc<Run>> {
@@ -422,5 +470,6 @@ struct Busy(Arc<Inner>);
 impl Drop for Busy {
     fn drop(&mut self) {
         self.0.driving.fetch_sub(1, Ordering::Relaxed);
+        self.0.idle.notify_waiters();
     }
 }

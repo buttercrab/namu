@@ -16,7 +16,6 @@ use crate::ids::{NodeId, WorkerId, owner};
 use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Message, Report, Resume};
-use crate::routes::Routes;
 use crate::scope::{Continuation, Scope, Then};
 use crate::tasks::{Args, CallTask, Kind, Task, TaskRef, unpack_output};
 use crate::tree::Node;
@@ -114,8 +113,10 @@ impl Inner {
                 Plan::Call { op, call, ctx } => {
                     at.set_ctx(ctx);
                     let task_ref = run.spec.task(op).context("op has no call")?;
-                    let Some(task) = self.tasks.task(task_ref) else {
-                        let to = self.routes.wait_for_server(task_ref).await;
+                    // A draining worker runs nothing more: the branch moves on.
+                    let served = self.tasks.task(task_ref).filter(|_| !self.is_draining());
+                    let Some(task) = served else {
+                        let to = self.routes.wait_for_server(task_ref, self.skip()).await;
                         at.branch.resume = Resume::Call { op };
                         self.move_branch(run, at, to);
                         return Ok(());
@@ -342,7 +343,7 @@ impl Inner {
             ctx: at.ctx.clone(),
         };
         // The opening branch's record goes once the scope and every child are durable elsewhere.
-        let release = Release::new(items.len() + 1, self.gone(run, branch));
+        let release = self.release_after(items.len() + 1, self.gone(run, branch));
         let durable = self.log.append(vec![
             Record::Nodes {
                 run: run.id(),
@@ -375,7 +376,7 @@ impl Inner {
                 resume: Resume::Kernel(Start::After { op }),
                 scopes: inner.clone(),
             };
-            let to = self.destination(Routes::any);
+            let to = self.destination();
             self.hand_off(run, to, child, nodes, Some(release.clone()));
         }
     }
@@ -469,7 +470,7 @@ impl Inner {
 
     /// Moves the branch at `at` to worker `to`, with the nodes it created here.
     fn move_branch(self: &Arc<Self>, run: &Arc<Run>, at: &Driving, to: WorkerId) {
-        let release = Release::new(1, self.gone(run, &at.branch));
+        let release = self.release_after(1, self.gone(run, &at.branch));
         let branch = Branch {
             hop: at.branch.hop + 1,
             ..at.branch.clone()
@@ -500,14 +501,14 @@ impl Inner {
 
     /// The branch ends in its innermost scope.
     pub(super) fn end_branch(self: &Arc<Self>, run: &Run, branch: &Branch, item: Option<Value>) {
-        let release = Release::new(1, self.gone(run, branch));
+        let release = self.release_after(1, self.gone(run, branch));
         self.send_end(run, branch.id, item, Some(release));
     }
 
     /// The branch reports to the run's owner, which ends it in its scope once the report is
     /// recorded.
     pub(super) fn report(self: &Arc<Self>, run: &Run, branch: &Branch, report: Report) {
-        let release = Release::new(1, self.gone(run, branch));
+        let release = self.release_after(1, self.gone(run, branch));
         self.send_report(run, branch.id, report, Some(release));
     }
 

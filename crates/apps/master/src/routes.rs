@@ -480,6 +480,7 @@ pub async fn register_worker(
         addr: req.addr,
         runtimes: req.runtimes,
         platform: req.platform,
+        draining: false,
     };
     let _: () = redis::pipe()
         .set_ex(
@@ -505,6 +506,43 @@ pub async fn register_worker(
 }
 
 /// Renews a worker's membership and returns the current membership.
+/// Marks a worker as draining: every member stops giving it work (design §10.4).
+pub async fn drain_worker(
+    State(state): State<AppState>,
+    Path(worker_id): Path<u64>,
+) -> ApiResult<Json<Membership>> {
+    let mut redis = state.redis.clone();
+    let record: Option<String> = redis.get(keys::member(worker_id)).await.map_err(internal)?;
+    let Some(record) = record else {
+        return Err((
+            StatusCode::GONE,
+            format!("worker {worker_id} is no longer a member"),
+        ));
+    };
+    let mut member: Member = serde_json::from_str(&record).map_err(internal)?;
+    member.draining = true;
+    let record = serde_json::to_string(&member).map_err(internal)?;
+    let _: () = redis
+        .set_ex(keys::member(worker_id), record, MEMBERSHIP_TTL_MS / 1000)
+        .await
+        .map_err(internal)?;
+    tracing::info!(worker_id, "worker draining");
+    Ok(Json(membership(&state).await.map_err(internal)?))
+}
+
+/// A drained worker leaves: it is no longer a member, and its successor takes over what it owns
+/// from the log, as for a crash, with nothing to run again.
+pub async fn leave(
+    State(state): State<AppState>,
+    Path(worker_id): Path<u64>,
+) -> ApiResult<StatusCode> {
+    let mut redis = state.redis.clone();
+    let _: () = redis.del(keys::member(worker_id)).await.map_err(internal)?;
+    tracing::info!(worker_id, "worker left");
+    sweep(&state).await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn heartbeat(
     State(state): State<AppState>,
     Path(worker_id): Path<u64>,
@@ -545,6 +583,7 @@ async fn membership(state: &AppState) -> anyhow::Result<Membership> {
         addr: state.mesh_addr.clone(),
         runtimes: Vec::new(),
         platform: String::new(),
+        draining: false,
     }];
     for record in records.into_iter().flatten() {
         members.push(serde_json::from_str(&record)?);

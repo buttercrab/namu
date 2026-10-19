@@ -14,7 +14,6 @@ use namu_core::OpId;
 use namu_core::value::Value;
 use tokio::sync::Semaphore;
 
-use super::delivery::Release;
 use super::drive::{Driving, run_task};
 use super::view::View;
 use super::{Inner, Run};
@@ -22,7 +21,6 @@ use crate::ids::ScopeId;
 use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
-use crate::routes::Routes;
 use crate::scope::{Continuation, Position, Scope, Source, Then};
 use crate::tasks::{Args, Kind, Stream, StreamTask, Task, TaskStream};
 use crate::tree::Node;
@@ -52,7 +50,7 @@ impl Inner {
             fan_out,
             position: Position::default(),
         };
-        let release = Release::new(1, self.gone(run, branch));
+        let release = self.release_after(1, self.gone(run, branch));
         let trail = self.trail(at);
         let durable = self.log.append(vec![
             Record::Nodes {
@@ -97,7 +95,9 @@ impl Inner {
         run.open_scope(id, scope.with_credits(credits.clone()));
 
         let (worker, run) = (self.clone(), run.clone());
+        let busy = self.busy();
         tokio::spawn(async move {
+            let _busy = busy;
             let mut position = source.position.clone();
             let feeding = Feeding {
                 scope: id,
@@ -107,12 +107,14 @@ impl Inner {
                 stream: stream.task,
                 credits: &credits,
             };
-            let failure = worker.feed(&run, &feeding, &mut position).await.err();
             // The source ends, and with it the scope's count. A failure takes the next index, as
             // a branch that failed.
-            let count = match failure {
-                None => position.yielded,
-                Some(failure) => {
+            let count = match worker.feed(&run, &feeding, &mut position).await {
+                Ok(Fed::Ended) => position.yielded,
+                // The scope stays as it is, its source at its logged position, for the successor
+                // that takes over from this worker.
+                Ok(Fed::Drained) => return,
+                Err(failure) => {
                     let branch = BranchId {
                         scope: id,
                         index: position.yielded,
@@ -125,13 +127,14 @@ impl Inner {
         });
     }
 
-    /// Pulls items from the stream into the scope until it ends. An error ends it early.
+    /// Pulls items from the stream into the scope until it ends, or the worker drains. An error
+    /// ends it early.
     async fn feed(
         self: &Arc<Self>,
         run: &Arc<Run>,
         feeding: &Feeding<'_>,
         position: &mut Position,
-    ) -> Result<(), String> {
+    ) -> Result<Fed, String> {
         let task = run
             .spec
             .task(feeding.source.call)
@@ -140,12 +143,12 @@ impl Inner {
             .open(run, feeding, position)
             .await
             .map_err(|err| format!("{}: {err:#}", task.id))??;
+        let mut draining = self.draining.subscribe();
         loop {
-            let credit = feeding
-                .credits
-                .acquire()
-                .await
-                .map_err(|err| err.to_string())?;
+            let credit = tokio::select! {
+                credit = feeding.credits.acquire() => credit.map_err(|err| err.to_string())?,
+                _ = draining.wait_for(|draining| *draining) => return Ok(Fed::Drained),
+            };
             credit.forget();
             let item = {
                 let _slot = self
@@ -157,7 +160,7 @@ impl Inner {
             };
             let item = match item {
                 Ok(Some(Ok(item))) => item,
-                Ok(None) => return Ok(()),
+                Ok(None) => return Ok(Fed::Ended),
                 Ok(Some(Err(message))) => return Err(format!("{}: {message}", task.id)),
                 Err(err) => return Err(format!("{}: {err:#}", task.id)),
             };
@@ -251,8 +254,8 @@ impl Inner {
                 position: position.clone(),
             },
         ]);
-        let release = Release::new(1, self.gone(run, &branch));
-        let to = self.destination(Routes::any);
+        let release = self.release_after(1, self.gone(run, &branch));
+        let to = self.destination();
         let nodes = [node].into_iter().chain(feeding.trail.iter().cloned());
         let branch = Branch { hop: 1, ..branch };
         self.hand_off(run, to, branch, nodes.collect(), Some(release));
@@ -340,6 +343,14 @@ impl Inner {
         ]);
         self.spawn_drive(run.clone(), branch, ctx);
     }
+}
+
+/// How feeding a scope stopped.
+enum Fed {
+    /// The stream ended.
+    Ended,
+    /// The worker drains; the source resumes on its successor.
+    Drained,
 }
 
 /// A source and the scope it feeds.

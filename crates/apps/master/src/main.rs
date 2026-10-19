@@ -94,6 +94,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/workers", get(routes::list_workers))
         .route("/workers/register", post(routes::register_worker))
         .route("/workers/{worker_id}/heartbeat", post(routes::heartbeat))
+        .route("/workers/{worker_id}/drain", post(routes::drain_worker))
+        .route("/workers/{worker_id}/leave", post(routes::leave))
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());

@@ -56,10 +56,11 @@ impl RuntimeTasks {
 
     /// Takes the current members and reroutes every known task.
     pub fn set_members(&self, members: Vec<Member>) {
+        // The orchestrator (id 0) and draining workers take no work.
         let workers = members
             .iter()
+            .filter(|member| member.id != 0 && !member.draining)
             .map(|member| member.id)
-            .filter(|&id| id != 0)
             .collect();
         self.routes.set_workers(workers);
         *self.members.write().unwrap() = members;
@@ -74,6 +75,7 @@ impl RuntimeTasks {
             .read()
             .unwrap()
             .iter()
+            .filter(|member| !member.draining)
             .filter(|member| member.runtimes.iter().any(|key| key == runtime_key))
             .map(|member| member.id)
             .collect();

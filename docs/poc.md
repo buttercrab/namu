@@ -56,6 +56,10 @@ Design §7, in short:
   log. Everyone else re-sends what it had not acknowledged, and reads its nodes from the log.
 - **Checkpoint tasks** (`"checkpoint": true`) are recorded past before the branch continues, so
   they are never repeated.
+- **Draining.** SIGTERM (or Ctrl-C) drains a worker: the orchestrator stops giving it work, its
+  branches move on at their next task call, and once nothing is in flight and everything is
+  durable it leaves. Its successor takes over the scopes it owned from the log; nothing runs
+  twice (the engine's drain tests count every call; `scripts/e2e.sh` drains a worker mid-run).
 
 Not covered yet: idempotency keys passed to tasks, Redis failure (run Redis with persistence), and
 runs whose only server for a task never comes back (they wait).
