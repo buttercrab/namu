@@ -19,8 +19,8 @@ A worker drives branches with the kernel. It runs the tasks it serves itself and
 another worker only when the next task is served elsewhere (a handoff). It also:
 - holds the value-tree nodes it creates and serves them to other workers on request (a node id
   names its creator);
-- owns the fan-out scopes it opens. Branches return their weight to the owner when they end; the
-  scope is over when all weight is back, and the branch that fanned out continues with the
+- owns the fan-out scopes it opens. It created every branch of such a scope, so it knows how many
+  there are; the scope is over when all have ended, and the branch that fanned out continues with the
   collected list (see `value-tree.md` and `design.md` §6.3);
 - for runs it started, records results and failures and finishes the run.
 

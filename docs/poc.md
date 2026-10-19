@@ -14,7 +14,7 @@ liveness-based placement, streams, batching, Python and GPU are not implemented 
 | One engine, any transport | Every workflow in the test suite gives the same outcome on one worker, on three in-process workers, and on three workers over TCP. `scripts/e2e.sh` and `scripts/poc-cross.sh` run the same engine across processes and machines, with the same checksum as the first proof of concept. |
 | Values move correctly through the value tree | Per-item branches read the shared `cfg` produced in the parent context, wherever they run. Each worker fetches a shared node once (`remote_node_fetches_by_worker`); a handoff carries the nodes the receiver needs. |
 | Per-task runtimes mix | `summarize` is a native library; it is only ever routed to a worker on the platform it was built for. Every other task is WASM. |
-| Fan-out / fan-in semantics | Nested fan-out with inner and outer collects; failed branches are dropped from the collect; an empty or fully dropped scope collects `[]`. Scopes end by weight throwing; 64 concurrent runs on four workers end exactly once with the right result. |
+| Fan-out / fan-in semantics | Nested fan-out with inner and outer collects; failed branches are dropped from the collect; an empty or fully dropped scope collects `[]`. Scopes end by counting their branches; 64 concurrent runs on four workers end exactly once with the right result. |
 | Streams | `stream_stats` streams the same 48 documents `doc_stats` gets as a list, through a WASM stream task, and gives the same checksum; each document is analyzed as it arrives. In-process tests check pipelining, the window (backpressure), failures, and resuming a stream after its worker dies. |
 | Batching | `label_stats` labels documents with a dynamic batch task (`classify`) and a continuous one (`refine`), both WASM components. In-process tests check that batches form and respect `batch_size`, that a lone item runs at once (or waits for `max_wait`), that item and step failures stay where they belong, that short items overtake a long one in continuous batching, that two runs share steps, and that a batch survives its worker dying. |
 | Elastic routing | A branch whose next task no member serves waits until one joins, instead of failing. |
@@ -37,7 +37,7 @@ namu CLI ──publish/run──▶ orchestrator ─ registry, members, run stat
   that receives work for it asks the owner for its description.
 - **Membership** comes from the orchestrator: workers register, heartbeat every second, and get
   the member list back. A worker whose heartbeats stop for 5 seconds is no longer a member.
-- **Run end**: when the root scope has all its weight back, the owner has every worker forget the
+- **Run end**: when the root branch has ended, the owner has every worker forget the
   run, collects their stats, and sends the outcome to the orchestrator.
 - **Durability**: workers write what a successor would need to a log in Redis, behind the
   critical path (design §7). Redis is on the data path only as that log.

@@ -116,9 +116,13 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             scope,
             continuation,
             source,
+            count,
         } => {
             let record = serde_json::to_string(&(continuation, source))?;
             pipe.hset(key(*run, "scopes"), scope, record).ignore();
+            if let Some(count) = count {
+                pipe.hset(key(*run, "counts"), scope, count).ignore();
+            }
         }
         Record::Position {
             run,
@@ -128,8 +132,12 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             let position = serde_json::to_string(position)?;
             pipe.hset(key(*run, "positions"), scope, position).ignore();
         }
+        Record::Closed { run, scope, count } => {
+            pipe.hset(key(*run, "counts"), scope, count).ignore();
+        }
         Record::ScopeGone { run, scope } => {
             pipe.hdel(key(*run, "scopes"), scope).ignore();
+            pipe.hdel(key(*run, "counts"), scope).ignore();
         }
         Record::End { run, scope, end } => {
             pipe.rpush(key(*run, "ends"), serde_json::to_string(&(scope, end))?)
@@ -145,6 +153,7 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 "nodes",
                 "branches",
                 "scopes",
+                "counts",
                 "positions",
                 "ends",
                 "reports",
@@ -207,6 +216,10 @@ impl Log for RedisLog {
                     }
                 }
             }
+            let mut counts: HashMap<u64, u64> = HashMap::new();
+            if !owned.is_empty() {
+                counts = redis.hgetall(key(run, "counts")).await?;
+            }
             let mut ends: HashMap<u64, Vec<EndRecord>> = HashMap::new();
             if !owned.is_empty() {
                 let raw: Vec<String> = redis.lrange(key(run, "ends"), 0, -1).await?;
@@ -223,6 +236,7 @@ impl Log for RedisLog {
                     scope,
                     continuation,
                     source,
+                    count: counts.get(&scope).copied(),
                     ends: ends.remove(&scope).unwrap_or_default(),
                 })
                 .collect();

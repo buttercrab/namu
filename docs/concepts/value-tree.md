@@ -21,16 +21,16 @@ parallel branches share what they have in common, without copying it and without
   and scope sees them.
 
 ## In the engine
-- Each worker keeps the nodes it holds for a run, and sweeps away the ones no pinned context
-  reaches any more: the contexts of branches being driven, of scopes waiting to continue, of
-  streams and of branches waiting for a batch. A sweep runs when the node count has doubled since
-  the last one, and spares nodes created since then. A node swept here and asked for again (by
-  another worker, say) is read from the log, which holds every node a live branch can reach.
-- A node lives on the worker that created it; its id names that worker. Other workers fetch it
-  from there once and cache it, which is always safe because it never changes. A handoff carries
-  the branch's own context node, so the receiver usually needs no fetch at all.
+- A node owns its parent. The contexts in use (branches being driven, scopes waiting to
+  continue, streams, branches waiting for a batch) keep their chains alive, and a node nothing
+  reaches is freed at once. A freed node asked for again (by another worker, say) is read from the
+  log, which holds every node a live branch can reach.
+- A node's id names the worker that created it, which serves it to other workers while it is
+  alive. A worker that fetches a node shares it among its own branches, which is always safe
+  because it never changes. A handoff carries the branch's own context and the nodes it hangs
+  from, so the receiver usually needs no fetch at all.
 - Which scopes a branch is in is part of the branch, not of the tree. Each fan-out scope is owned
-  by the worker that opened it, and ends by weight throwing: branches return their share of the
-  scope's weight when they end, and the scope is over when all of it is back.
+  by the worker that opened it, which created all of its branches: it counts them as they end,
+  and the scope is over when all have.
 - Which collect closes which fan-out is found from the IR before the run, so a scope with no
   items, or whose items were all dropped, collects `[]`.

@@ -237,11 +237,11 @@ all live values" decides where the path continues.
 ```
             ctx F  (opens scope S, owned by the worker that fanned out)
            /  |  \
-         C1   C2   C3     one child per item, each carrying a share of S's weight
+         C0   C1   C2     one child per item, numbered 0..n
          |    |
-        ...  (C2 fans out again: a new scope, nested in S)
+        ...  (C1 fans out again: a new scope, nested in S)
          |
-      reaches S's collect -> returns its weight and item to S's owner
+      reaches S's collect -> sends its index and item to S's owner
 ```
 
 - Which collect closes which fan-out is fixed by the control-flow graph, so it is found from the
@@ -251,20 +251,21 @@ all live values" decides where the path continues.
   that fanned out continues from there. Downstream code sees everything from before the fan-out
   plus the collected value, but not per-item values. A scope without a collect simply ends the
   branch that opened it.
-- Knowing when a scope is over across machines is distributed termination detection, done by
-  **weight throwing**. Each scope has an **owner** (the worker that opened it, encoded in the
-  scope's id). A scope has a fixed total weight, and its branches start with shares of it. Weight
-  moves with the work: a handoff carries the branch's share, and a branch that ends sends its
-  share back to the owner, with its collect item if it has one. Creating branches never sends a
-  message to the owner, so no message ordering between workers can end a scope early, and no
-  global lock is needed.
-- A branch that reports a result or a failure to the run's owner sends its weight with the report,
-  and the owner returns it to the scope once the report is recorded. So a run cannot finish while
-  a report is still in flight.
-- Weights are integers from a pool of 2^62 per scope, so accounting is exact. A source that could
-  exhaust its share (a stream running for weeks) borrows more from the owner.
-- Weight returns can be batched per worker. For reduce, each worker folds locally and sends one
-  partial result with the summed weight.
+- Knowing when a scope is over across machines is done by **counting**. Each scope has an
+  **owner** (the worker that opened it, encoded in the scope's id), and every branch of the scope
+  is created by its owner: one per item when it fans out, or one per item its stream source
+  yields. So the owner knows the scope's **count**: at once for a fan-out, and when the source
+  ends for a stream. Branches are numbered 0..count, a branch that ends sends its index to the
+  owner (with its collect item if it has one), and the scope is over once every index has ended.
+  No other worker creates branches of the scope, so no message ordering between workers can end
+  it early, and no global lock is needed.
+- The owner keeps the ended indices as a low watermark plus those that ended ahead of an earlier
+  one, so its memory is the out-of-order window, not the number of branches. The same set drops a
+  branch that ends twice after recovery.
+- A branch that reports a result or a failure to the run's owner ends in its scope only once the
+  owner has recorded the report. So a run cannot finish while a report is still in flight.
+- Ends can be batched per worker. For reduce, each worker folds locally and sends one partial
+  result with the indices it covers.
 
 ### 6.4 Hybrid execution
 
@@ -293,8 +294,8 @@ engine finds in the IR, the two are fused: each item becomes a child context of 
 is at stage 1. A stream used any other way is read to its end into a list.
 
 - **The source owns the scope.** The worker that runs the stream task opens the scope and keeps
-  the source going. Each item takes one unit of the scope's weight; the source returns the rest
-  when the stream ends.
+  the source going. Item k is branch k of the scope; when the stream ends, its count is known. A
+  stream that fails reports the failure as one more branch.
 - **Backpressure, with credits.** The source yields an item only while fewer than `window` of the
   scope's branches are open, and a branch that ends frees its credit. Since the source and the
   scope live on the same worker, credits never cross the network: a slow GPU downstream slows the
@@ -376,9 +377,9 @@ except the acknowledgement that releases the sender's copy.
 | Record | Written by | When |
 |---|---|---|
 | Run description | the run's owner | when the run starts |
-| Branch (context, resume point, weight, scopes) | the worker holding it | when the branch arrives there |
-| Scope (the branch that opened it, its collect) | the scope's owner | when it fans out |
-| End (branch id, weight, collected item) | the scope's owner | when a branch ends in the scope |
+| Branch (context, resume point, scopes) | the worker holding it | when the branch arrives there |
+| Scope (the branch that opened it, its collect, its count if known) | the scope's owner | when it fans out; a stream's count when the stream ends |
+| End (branch index, collected item) | the scope's owner | when a branch ends in the scope |
 | Report (branch id, result or failure) | the run's owner | when a branch reports |
 | Nodes | whoever writes a record that refers to them | with that record |
 
@@ -401,7 +402,7 @@ asynchronous; the receiver starts on the work immediately.
 
 - When a worker's membership expires (§10.4), the orchestrator names **one successor** for it,
   and every member learns this from its next heartbeat. Exactly one worker adopts, because a scope
-  must have a single owner to add up its weight.
+  must have a single owner to count its branches.
 - Messages addressed to the dead worker go to its successor from then on, and senders re-send
   everything the dead worker had not acknowledged. Nodes it held are read from the log.
 - The successor **adopts the dead worker's estate** from the log:
@@ -468,7 +469,7 @@ asynchronous; the receiver starts on the work immediately.
 A handoff is the only message on the per-step path:
 
 ```
-Handoff { id, run, resume_at: op, parent: node ref, values: inline live values, weight }
+Handoff { id, run, resume_at: op, parent: node ref, values: inline live values }
 ```
 
 The receiver creates a node under `parent` holding `values`, and continues the kernel at
@@ -562,5 +563,5 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v2; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |
 | Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks (§7) | Idempotency keys for tasks; GC of the log for long runs |
-| Fan-in termination | ✅ Weight throwing with scope owners | |
+| Fan-in termination | ✅ Counting at scope owners: every branch of a scope is created by its owner, so it knows the count; ended indices are a watermark plus the out-of-order window | |
 | Membership | ✅ Join (register + heartbeats); a worker whose heartbeats stop is replaced by a successor (§7.4) | Drain (§10.4) |

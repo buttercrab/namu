@@ -15,7 +15,7 @@ use super::{Inner, Run};
 use crate::ids::{WorkerId, owner};
 use crate::log::{Record, ReportRecord, RunEstate, ScopeEstate};
 use crate::message::{Branch, Message};
-use crate::scope::{Ended, Finish, SOURCE_INDEX, Scope, Then};
+use crate::scope::{Finish, Scope, Then};
 
 /// How often orphans are reconsidered even without a membership change.
 const ORPHAN_PATIENCE: Duration = Duration::from_secs(1);
@@ -88,10 +88,10 @@ impl Inner {
             };
             self.adopt_scope(&run, scope, reports).await?;
         }
-        // A report whose weight may not have reached its scope: return it again. The scope's
+        // A reported branch whose end may not have reached its scope: end it again. The scope's
         // owner counts it once.
         for report in estate.reports {
-            self.return_weight(&run, report.scope, report.branch, report.weight, None);
+            self.send_end(&run, report.branch, None, None);
         }
         for branch in estate.branches {
             self.adopt_branch(&run, dead, branch);
@@ -106,9 +106,7 @@ impl Inner {
         reports: &[ReportRecord],
     ) -> anyhow::Result<()> {
         let id = estate.scope;
-        if run.scopes.lock().unwrap().contains_key(&id)
-            || run.finished.lock().unwrap().contains(&id)
-        {
+        if run.scopes.lock().unwrap().contains_key(&id) {
             return Ok(());
         }
         let then = match estate.continuation {
@@ -127,18 +125,15 @@ impl Inner {
                 Then::Finish(Box::new(finish))
             }
         };
-        let mut scope = Scope::new(then);
-        let mut over = false;
-        let mut source_ended = false;
+        let mut scope = Scope::new(then, estate.count);
         for end in estate.ends {
-            source_ended |= end.branch.index == SOURCE_INDEX;
-            over |= scope.end(end.branch, end.weight, end.item) == Ended::Over;
+            scope.end(end.index, end.item);
         }
         if let Some(source) = estate.source
-            && !source_ended
+            && estate.count.is_none()
         {
             self.adopt_stream(run, id, scope, source);
-        } else if over {
+        } else if scope.is_over() {
             self.scope_over(run, id, scope);
         } else {
             run.open_scope(id, scope);
@@ -184,7 +179,7 @@ impl Inner {
     /// Delivers an orphan where it now belongs, drops it if what it was for is over, or keeps it.
     async fn reconsider(self: &Arc<Self>, message: Message) {
         let (run, addressee) = match &message {
-            Message::End { run, scope, .. } => (*run, Some(owner(*scope))),
+            Message::End { run, branch, .. } => (*run, Some(owner(branch.scope))),
             Message::Report { run, .. } => (*run, None),
             Message::FetchRun { run, reply_to } => {
                 let (run, reply_to) = (*run, *reply_to);
@@ -225,7 +220,7 @@ impl Inner {
             return self.drop_late(message);
         }
         let held = self.run_state(run).is_some_and(|state| match &message {
-            Message::End { scope, .. } => state.scopes.lock().unwrap().contains_key(scope),
+            Message::End { branch, .. } => state.scopes.lock().unwrap().contains_key(&branch.scope),
             _ => state
                 .scopes
                 .lock()
