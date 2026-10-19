@@ -329,3 +329,40 @@ async fn a_long_loop_holds_a_flat_number_of_nodes() {
     let peak = outcome.workers[&1].peak_nodes;
     assert!(peak <= 64, "{peak} nodes held at once");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn return_in_a_branch_drops_its_item() {
+    #[workflow]
+    fn wf() -> i32 {
+        let xs = range(1, 5);
+        let x = identity(xs);
+        if less_than(x, 25) {
+            return;
+        }
+        let y = double(x);
+        sum(y)
+    }
+
+    // 10 and 20 return early, so only 30 and 40 reach the collect: (30 + 40) * 2.
+    assert_eq!(
+        results(wf().to_serializable("filter".into())).await,
+        [json!(140)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn return_ends_the_workflow_early() {
+    #[workflow]
+    fn wf() -> i32 {
+        let a = 1;
+        if is_positive(a) {
+            return double(a);
+        }
+        identity(a)
+    }
+
+    assert_eq!(
+        results(wf().to_serializable("early".into())).await,
+        [json!(2)]
+    );
+}

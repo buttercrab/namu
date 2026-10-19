@@ -42,10 +42,19 @@ summarize(stats)                 // summarize(stats: Vec<Stats>): collect every 
 ## Supported control flow
 - `if` / `if-else`
 - `while` loops
+- early `return`. Inside a fanned-out branch, a `return` before the collect drops that item: a
+  filter.
+
+```rust
+let x = identity(xs);           // one branch per item
+if less_than(x, 25) { return; } // drops the small ones
+let y = double(x);
+sum(y)                          // collects the rest
+```
 
 Not yet supported:
 - `match`
-- `break` / `continue` / early `return`
+- `break` / `continue`
 
 ## Outputs
 Each `return` reached adds to the run's results. The run is `succeeded`, or `partial_failed` if any
