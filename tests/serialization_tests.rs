@@ -28,10 +28,8 @@ fn serializable_conditional_workflow() {
     {
       "literals": [ { "output": 0, "value": "10" } ],
       "phis": [],
-      "call": {
-        "task_id": "is_positive",
-        "inputs": [0],
-        "outputs": [1]
+      "action": {
+        "Call": { "task_id": "is_positive", "inputs": [0], "outputs": [1] }
       },
       "next": {
         "Branch": { "var": 1, "true_next": 2, "false_next": 3 }
@@ -40,26 +38,21 @@ fn serializable_conditional_workflow() {
     {
       "literals": [],
       "phis": [ { "output": 4, "from": [[2, 2], [3, 3]] } ],
-      "call": null,
       "next": { "Return": { "var": 4 } }
     },
     {
       "literals": [],
       "phis": [],
-      "call": {
-        "task_id": "double",
-        "inputs": [0],
-        "outputs": [2]
+      "action": {
+        "Call": { "task_id": "double", "inputs": [0], "outputs": [2] }
       },
       "next": { "Jump": { "next": 1 } }
     },
     {
       "literals": [],
       "phis": [],
-      "call": {
-        "task_id": "identity",
-        "inputs": [0],
-        "outputs": [3]
+      "action": {
+        "Call": { "task_id": "identity", "inputs": [0], "outputs": [3] }
       },
       "next": { "Jump": { "next": 1 } }
     }
@@ -94,33 +87,27 @@ fn serializable_while_loop_workflow() {
         { "output": 4, "value": "1" }
       ],
       "phis": [],
-      "call": null,
       "next": { "Jump": { "next": 1 } }
     },
     {
       "literals": [],
       "phis": [ { "output": 1, "from": [[0,0],[2,5]] } ],
-      "call": {
-        "task_id": "less_than",
-        "inputs": [1,2],
-        "outputs": [3]
+      "action": {
+        "Call": { "task_id": "less_than", "inputs": [1,2], "outputs": [3] }
       },
       "next": { "Branch": { "var": 3, "true_next": 2, "false_next": 3 } }
     },
     {
       "literals": [],
       "phis": [],
-      "call": {
-        "task_id": "add",
-        "inputs": [1,4],
-        "outputs": [5]
+      "action": {
+        "Call": { "task_id": "add", "inputs": [1,4], "outputs": [5] }
       },
       "next": { "Jump": { "next": 1 } }
     },
     {
       "literals": [],
       "phis": [],
-      "call": null,
       "next": { "Return": { "var": 1 } }
     }
   ]

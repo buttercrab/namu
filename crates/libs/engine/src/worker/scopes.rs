@@ -149,8 +149,7 @@ impl Inner {
             return self.send_end(run, branch, None, Some(release));
         };
         let output = run.spec.workflow().operations[op]
-            .collect
-            .as_ref()
+            .collect()
             .expect("collect ops are found by scope analysis")
             .output;
         let live = run.spec.liveness.after_action(op);

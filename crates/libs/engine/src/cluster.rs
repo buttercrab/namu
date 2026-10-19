@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Context;
 use async_trait::async_trait;
-use namu_core::ir::Workflow;
+use namu_core::ir::{Operation, Workflow};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::ids::{NodeId, RunId, WorkerId};
@@ -183,7 +183,7 @@ impl LocalCluster {
         let tasks = workflow
             .operations
             .iter()
-            .filter_map(|op| op.call.as_ref())
+            .filter_map(Operation::call)
             .map(|call| TaskRef {
                 id: call.task_id.clone(),
                 version: String::new(),

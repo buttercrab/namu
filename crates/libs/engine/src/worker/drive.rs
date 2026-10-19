@@ -98,11 +98,14 @@ impl Inner {
                 }
                 Resume::Call { op } => Plan::Call {
                     op,
+                    call: kernel::operation(workflow, op)?
+                        .call()
+                        .context("resuming at a call without one")?,
                     ctx: at.ctx.clone(),
                 },
             };
             match plan {
-                Plan::Call { op, ctx } => {
+                Plan::Call { op, call, ctx } => {
                     at.set_ctx(ctx);
                     let task_ref = run.spec.task(op).context("op has no call")?;
                     let Some(task) = self.tasks.task(task_ref) else {
@@ -117,10 +120,6 @@ impl Inner {
                         self.start_stream(run, at, op, fan_out, stream.clone());
                         return Ok(());
                     }
-                    let call = kernel::operation(workflow, op)?
-                        .call
-                        .as_ref()
-                        .context("op has no call")?;
                     let next = match self
                         .run_call(&view, task_ref, &task, op, call, &at.ctx)
                         .await?
@@ -137,22 +136,14 @@ impl Inner {
                         self.checkpoint(run, at).await?;
                     }
                 }
-                Plan::FanOut { op, ctx } => {
+                Plan::FanOut { op, fan_out, ctx } => {
                     at.set_ctx(ctx);
-                    let fan_out = kernel::operation(workflow, op)?
-                        .fan_out
-                        .as_ref()
-                        .context("op has no fan-out")?;
                     let list = view.get(&at.ctx, fan_out.input).await?;
                     let items = list.items().context("fan-out")?;
                     self.fan_out(run, at, op, fan_out.output, items);
                     return Ok(());
                 }
-                Plan::Collect { op, ctx } => {
-                    let collect = kernel::operation(workflow, op)?
-                        .collect
-                        .as_ref()
-                        .context("op has no collect")?;
+                Plan::Collect { collect, ctx, .. } => {
                     let item = view.get(&ctx, collect.input).await?;
                     self.end_branch(run, &at.branch, Some(item));
                     return Ok(());

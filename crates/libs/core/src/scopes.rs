@@ -31,10 +31,10 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
     while let Some(op_id) = work.pop() {
         let op = &ops[op_id];
         let mut scopes = entry[op_id].clone().unwrap_or_default();
-        if op.fan_out.is_some() {
+        if op.fan_out().is_some() {
             scopes.push(op_id);
         }
-        if op.collect.is_some() {
+        if op.collect().is_some() {
             let Some(fan_out) = scopes.pop() else {
                 bail!("op {op_id} collects outside of any fan-out");
             };
@@ -47,7 +47,7 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
                 _ => collect_of[fan_out] = Some(op_id),
             }
         }
-        for next in successors(&op.next) {
+        for next in op.next.successors() {
             ensure!(next < ops.len(), "op {op_id} jumps to missing op {next}");
             match &entry[next] {
                 None => {
@@ -76,14 +76,8 @@ pub fn fused_fan_outs(workflow: &Workflow) -> Vec<Option<OpId>> {
             .iter()
             .flat_map(|phi| &phi.from)
             .for_each(|(_, value)| used(*value));
-        if let Some(call) = &op.call {
-            call.inputs.iter().for_each(|&value| used(value));
-        }
-        if let Some(fan_out) = &op.fan_out {
-            used(fan_out.input);
-        }
-        if let Some(collect) = &op.collect {
-            used(collect.input);
+        if let Some(action) = &op.action {
+            action.inputs().iter().for_each(|&value| used(value));
         }
         match op.next {
             Next::Branch { var, .. } | Next::Return { var: Some(var) } => used(var),
@@ -92,59 +86,43 @@ pub fn fused_fan_outs(workflow: &Workflow) -> Vec<Option<OpId>> {
     }
     ops.iter()
         .map(|op| {
-            let [output] = op.call.as_ref()?.outputs[..] else {
+            let [output] = op.call()?.outputs[..] else {
                 return None;
             };
             let Next::Jump { next } = op.next else {
                 return None;
             };
             let target = ops.get(next)?;
-            let fans_out = target.fan_out.as_ref().is_some_and(|f| f.input == output);
+            let fans_out = target.fan_out().is_some_and(|f| f.input == output);
             let entered_directly = target.literals.is_empty() && target.phis.is_empty();
             (fans_out && entered_directly && uses.get(&output) == Some(&1)).then_some(next)
         })
         .collect()
 }
 
-fn successors(next: &Next) -> Vec<OpId> {
-    match next {
-        Next::Jump { next } => vec![*next],
-        Next::Branch {
-            true_next,
-            false_next,
-            ..
-        } => vec![*true_next, *false_next],
-        Next::Return { .. } => Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Collect, FanOut, Operation};
+    use crate::ir::{Action, Collect, FanOut, Operation};
 
     fn op(next: Next) -> Operation {
         Operation::new(Vec::new(), Vec::new(), None, next)
     }
 
     fn fan_out(next: Next) -> Operation {
-        Operation {
-            fan_out: Some(FanOut {
-                input: 0,
-                output: 1,
-            }),
-            ..op(next)
-        }
+        let fan_out = FanOut {
+            input: 0,
+            output: 1,
+        };
+        Operation::new(Vec::new(), Vec::new(), Some(Action::FanOut(fan_out)), next)
     }
 
     fn collect(next: Next) -> Operation {
-        Operation {
-            collect: Some(Collect {
-                input: 1,
-                output: 2,
-            }),
-            ..op(next)
-        }
+        let collect = Collect {
+            input: 1,
+            output: 2,
+        };
+        Operation::new(Vec::new(), Vec::new(), Some(Action::Collect(collect)), next)
     }
 
     fn workflow(operations: Vec<Operation>) -> Workflow {
@@ -196,11 +174,11 @@ mod tests {
         Operation::new(
             Vec::new(),
             Vec::new(),
-            Some(crate::ir::Call {
+            Some(Action::Call(crate::ir::Call {
                 task_id: "t".to_string(),
                 inputs: Vec::new(),
                 outputs: vec![output],
-            }),
+            })),
             next,
         )
     }

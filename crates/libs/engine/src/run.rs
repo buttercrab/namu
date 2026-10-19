@@ -60,7 +60,7 @@ impl RunSpec {
             .operations
             .iter()
             .map(|op| {
-                op.call.as_ref().map(|call| TaskRef {
+                op.call().map(|call| TaskRef {
                     version: info
                         .task_versions
                         .get(&call.task_id)

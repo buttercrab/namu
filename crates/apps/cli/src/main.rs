@@ -412,7 +412,7 @@ fn task_versions_for_workflow(
 ) -> anyhow::Result<std::collections::HashMap<String, String>> {
     let mut task_ids = std::collections::BTreeSet::new();
     for op in &workflow.operations {
-        if let Some(call) = &op.call {
+        if let Some(call) = op.call() {
             task_ids.insert(call.task_id.clone());
         }
     }

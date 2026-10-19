@@ -178,8 +178,7 @@ impl Inner {
         position: &Position,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
         let call = kernel::operation(run.spec.workflow(), feeding.source.call)?
-            .call
-            .as_ref()
+            .call()
             .context("not a call")?;
         let view = View { worker: self, run };
         let mut args = Vec::with_capacity(call.inputs.len());
@@ -218,8 +217,7 @@ impl Inner {
         position: &Position,
     ) {
         let output = run.spec.workflow().operations[feeding.source.fan_out]
-            .fan_out
-            .as_ref()
+            .fan_out()
             .expect("a stream feeds a fan-out")
             .output;
         let live = run.spec.liveness.after_action(feeding.source.fan_out);
