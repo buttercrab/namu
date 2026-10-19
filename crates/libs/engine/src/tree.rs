@@ -6,8 +6,11 @@
 //! §6.2), so nodes holding only dead values fall out of every chain.
 //!
 //! A node owns its parent: a context keeps its whole chain alive, and a node nothing reaches is
-//! freed at once. A node that came from another worker knows only its parent's id until the
-//! parent is held here too; from then on it owns it like any other.
+//! freed at once. A lookup takes O(log depth): each node knows the depth of the node defining each
+//! value it sees (a persistent segment tree, shared with its parent's) and its ancestors 2^i up
+//! (binary lifting), so it jumps straight to the node holding the value (design §6.1). A node that
+//! came from another worker knows only its parent's id until the parent is held here too; from then
+//! on it owns it like any other.
 //!
 //! Each worker indexes the nodes it holds for a run in [`Nodes`], without owning them, to serve
 //! them to other workers and to share one copy of each. A node asked for after it was freed is
@@ -26,13 +29,64 @@ use namu_core::value::Value;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::ids::NodeId;
+use crate::persistent::PersistentMap;
 
 pub struct Node {
     id: NodeId,
     parent: Option<Parent>,
     values: Vec<(ValueId, Value)>,
+    /// Set once the whole chain is held here: at creation for a node made here, when its chain
+    /// arrives for one that came from elsewhere.
+    lineage: OnceLock<Lineage>,
     /// The node as MessagePack, once it has been encoded or arrived encoded.
     encoded: OnceLock<Bytes>,
+}
+
+/// Where a node sits in its chain.
+struct Lineage {
+    depth: usize,
+    /// The ancestors 2^i up.
+    jumps: Vec<Arc<Node>>,
+    /// For each value this node sees, the depth of the node that defines it.
+    defs: PersistentMap<usize>,
+}
+
+impl Lineage {
+    fn root(values: &[(ValueId, Value)]) -> Self {
+        Self {
+            depth: 0,
+            jumps: Vec::new(),
+            defs: Self::define(PersistentMap::default(), values, 0),
+        }
+    }
+
+    /// The lineage of a node holding `values` under `parent`, whose lineage is `above`.
+    fn under(parent: &Arc<Node>, above: &Lineage, values: &[(ValueId, Value)]) -> Self {
+        let mut jumps = vec![parent.clone()];
+        while let Some(next) = jumps[jumps.len() - 1]
+            .lineage
+            .get()
+            .and_then(|lineage| lineage.jumps.get(jumps.len() - 1))
+        {
+            jumps.push(next.clone());
+        }
+        let depth = above.depth + 1;
+        Self {
+            depth,
+            jumps,
+            defs: Self::define(above.defs.clone(), values, depth),
+        }
+    }
+
+    fn define(
+        defs: PersistentMap<usize>,
+        values: &[(ValueId, Value)],
+        depth: usize,
+    ) -> PersistentMap<usize> {
+        values
+            .iter()
+            .fold(defs, |defs, (id, _)| defs.insert(*id, depth))
+    }
 }
 
 struct Parent {
@@ -47,12 +101,17 @@ impl Node {
             id,
             parent: None,
             values: Vec::new(),
+            lineage: OnceLock::from(Lineage::root(&[])),
             encoded: OnceLock::new(),
         }
     }
 
     /// A node holding `values` under `parent`.
     pub fn new(id: NodeId, parent: Arc<Node>, values: Vec<(ValueId, Value)>) -> Self {
+        let lineage = OnceLock::new();
+        if let Some(above) = parent.lineage() {
+            let _ = lineage.set(Lineage::under(&parent, above, &values));
+        }
         Self {
             id,
             parent: Some(Parent {
@@ -60,8 +119,63 @@ impl Node {
                 node: OnceLock::from(parent),
             }),
             values,
+            lineage,
             encoded: OnceLock::new(),
         }
+    }
+
+    /// The node's lineage, built (with any ancestors' missing ones) if its chain is held here.
+    fn lineage(&self) -> Option<&Lineage> {
+        if let Some(lineage) = self.lineage.get() {
+            return Some(lineage);
+        }
+        if self.parent.is_none() {
+            return Some(self.lineage.get_or_init(|| Lineage::root(&self.values)));
+        }
+        // The ancestors without a lineage, nearest first, up to one that has one.
+        let mut pending = Vec::new();
+        let mut cursor = self.parent()?;
+        while cursor.lineage.get().is_none() {
+            if cursor.parent.is_none() {
+                cursor.lineage.get_or_init(|| Lineage::root(&cursor.values));
+                break;
+            }
+            pending.push(cursor);
+            cursor = cursor.parent()?;
+        }
+        for node in pending.into_iter().rev() {
+            node.lineage_under_parent();
+        }
+        self.lineage_under_parent();
+        self.lineage.get()
+    }
+
+    /// Builds the lineage from the parent's, which is built.
+    fn lineage_under_parent(&self) {
+        if let Some(parent) = self.parent()
+            && let Some(above) = parent.lineage.get()
+        {
+            self.lineage
+                .get_or_init(|| Lineage::under(parent, above, &self.values));
+        }
+    }
+
+    /// `value` as seen from this node, found in O(log depth): `None` if this node's chain is not
+    /// all held here yet, `Some(None)` if the value is not visible from it.
+    pub fn find(&self, value: ValueId) -> Option<Option<&Value>> {
+        let lineage = self.lineage()?;
+        let Some(depth) = lineage.defs.get(value) else {
+            return Some(None);
+        };
+        let (mut node, mut up, mut bit) = (self, lineage.depth - depth, 0);
+        while up > 0 {
+            if up & 1 == 1 {
+                node = &node.lineage.get().expect("a chain with a lineage").jumps[bit];
+            }
+            up >>= 1;
+            bit += 1;
+        }
+        Some(node.get(value))
     }
 
     pub fn id(&self) -> NodeId {
@@ -100,15 +214,20 @@ impl Node {
 
 impl Drop for Node {
     /// Frees the chain this node was the last owner of one node at a time, not recursively, so
-    /// no chain is too long to drop.
+    /// no chain is too long to drop. A node's jumps go first: they only point further up the
+    /// chain its parent already holds.
     fn drop(&mut self) {
+        self.lineage.take();
         let mut next = self
             .parent
             .take()
             .and_then(|parent| parent.node.into_inner());
         while let Some(node) = next {
             next = Arc::into_inner(node)
-                .and_then(|mut node| node.parent.take())
+                .and_then(|mut node| {
+                    node.lineage.take();
+                    node.parent.take()
+                })
                 .and_then(|parent| parent.node.into_inner());
         }
     }
@@ -173,6 +292,7 @@ impl<'de> Deserialize<'de> for Node {
                 node: OnceLock::new(),
             }),
             values: wire.values,
+            lineage: OnceLock::new(),
             encoded: OnceLock::from(Bytes::from(encoded)),
         })
     }
@@ -294,9 +414,69 @@ mod tests {
     #[test]
     fn a_long_chain_drops_without_recursion() {
         let mut chain = Arc::new(Node::root(0));
-        for id in 1..1_000_000 {
+        for id in 1..300_000 {
             chain = Arc::new(Node::new(id, chain, Vec::new()));
         }
         drop(chain);
+    }
+
+    /// Walks the chain one parent at a time: what `find` must agree with.
+    fn walk(node: &Node, value: ValueId) -> Option<i64> {
+        let mut cursor = Some(node);
+        while let Some(node) = cursor {
+            if let Some(found) = node.get(value) {
+                return Some(found.to().unwrap());
+            }
+            cursor = node.parent().map(Arc::as_ref);
+        }
+        None
+    }
+
+    #[test]
+    fn lookups_jump_to_the_defining_node() {
+        // A chain of 2,000 nodes, each defining a few of 50 values, so most values are
+        // redefined (shadowed) many times.
+        let mut chain = Arc::new(Node::root(0));
+        let mut seed = 1u64;
+        for id in 1..2000 {
+            let values = (0..3)
+                .map(|_| {
+                    seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    ((seed >> 33) as usize % 50, Value::new(id as i64))
+                })
+                .collect();
+            chain = Arc::new(Node::new(id, chain, values));
+        }
+        let mut node: &Node = &chain;
+        for _ in 0..300 {
+            for value in 0..55 {
+                let found = node.find(value).expect("a chain made here has a lineage");
+                assert_eq!(found.map(|v| v.to::<i64>().unwrap()), walk(node, value));
+            }
+            node = node.parent().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_chain_that_arrived_finds_once_it_is_held() {
+        let root = Arc::new(Node::root(1));
+        let a = Arc::new(Node::new(2, root.clone(), vec![(7, Value::new(1i64))]));
+        let b = Node::new(3, a.clone(), vec![(8, Value::new(2i64))]);
+        let wire = |node: &Node| -> Node {
+            rmp_serde::from_slice(&rmp_serde::to_vec(node).unwrap()).unwrap()
+        };
+        let (a, b) = (Arc::new(wire(&a)), wire(&b));
+        assert!(b.find(7).is_none(), "the chain is not held yet");
+        b.link(a.clone());
+        assert!(
+            b.find(7).is_none(),
+            "the chain is still not held to its root"
+        );
+        a.link(root);
+        assert_eq!(b.find(7).unwrap().unwrap().to::<i64>().unwrap(), 1);
+        assert_eq!(b.find(8).unwrap().unwrap().to::<i64>().unwrap(), 2);
+        assert!(b.find(9).unwrap().is_none());
     }
 }

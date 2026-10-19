@@ -23,6 +23,13 @@ impl ValueStore for View<'_> {
     type Ctx = Arc<Node>;
 
     async fn get(&self, ctx: &Arc<Node>, value: ValueId) -> anyhow::Result<Value> {
+        // In O(log depth) once the context's chain is held here; until then, one parent at a
+        // time, fetching only as far up as the value.
+        if let Some(found) = ctx.find(value) {
+            return found.cloned().with_context(|| {
+                format!("value {value} is not visible from context {}", ctx.id())
+            });
+        }
         let mut node = ctx.clone();
         loop {
             if let Some(found) = node.get(value) {
