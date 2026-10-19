@@ -11,7 +11,7 @@ use namu_core::ir::Workflow;
 use namu_engine::{FnTasks, LocalCluster, Tasks};
 use serde_json::json;
 
-use crate::common::{range, sum};
+use crate::common::{json, range, sum};
 
 #[task]
 fn slow(x: i32) -> Result<i32>;
@@ -83,7 +83,7 @@ async fn run_with_crashes(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_survives_a_worker_crash() {
     let outcome = run_with_crashes(4, &[3], workflow()).await;
-    assert_eq!(outcome.results, [json!(DOUBLED_SUM)]);
+    assert_eq!(json(&outcome.results), [json!(DOUBLED_SUM)]);
     assert!(outcome.succeeded(), "{:?}", outcome.failures);
 }
 
@@ -91,7 +91,7 @@ async fn a_run_survives_a_worker_crash() {
 async fn a_run_survives_its_owner_crashing() {
     // The first run on a fresh cluster is owned by worker 1.
     let outcome = run_with_crashes(4, &[1], workflow()).await;
-    assert_eq!(outcome.results, [json!(DOUBLED_SUM)]);
+    assert_eq!(json(&outcome.results), [json!(DOUBLED_SUM)]);
     assert!(outcome.succeeded(), "{:?}", outcome.failures);
 }
 
@@ -99,7 +99,7 @@ async fn a_run_survives_its_owner_crashing() {
 async fn a_run_survives_a_successor_crashing_too() {
     // Worker 1 takes over from 2, then dies itself: worker 3 takes over both.
     let outcome = run_with_crashes(5, &[2, 1], workflow()).await;
-    assert_eq!(outcome.results, [json!(DOUBLED_SUM)]);
+    assert_eq!(json(&outcome.results), [json!(DOUBLED_SUM)]);
     assert!(outcome.succeeded(), "{:?}", outcome.failures);
 }
 
@@ -124,7 +124,7 @@ async fn checkpoint_tasks_are_not_repeated() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     cluster.kill(2).unwrap();
     let outcome = run.await.unwrap().unwrap();
-    assert_eq!(outcome.results, [json!(360 * 4)]);
+    assert_eq!(json(&outcome.results), [json!(360 * 4)]);
     assert_eq!(marks.load(Ordering::SeqCst), 8);
 }
 
@@ -147,7 +147,7 @@ async fn a_run_survives_a_crash_at_any_moment() {
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                outcome.results,
+                json(&outcome.results),
                 [json!(DOUBLED_SUM)],
                 "killing {victim} at {delay} ms"
             );

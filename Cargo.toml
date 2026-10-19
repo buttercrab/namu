@@ -49,6 +49,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 namu-engine = { path = "crates/libs/engine", version = "0.1.0" }
+rmp-serde = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

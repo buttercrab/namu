@@ -3,7 +3,7 @@
 pub mod prelude {
     pub use anyhow::Result;
 
-    pub use crate::{task, workflow};
+    pub use crate::{Data, task, workflow};
 }
 
 pub mod export {
@@ -39,4 +39,5 @@ pub mod __macro_exports {
     };
 }
 
-pub use namu_macros::{task, workflow};
+pub use namu_core::value::{Data, Value};
+pub use namu_macros::{Data, task, workflow};

@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 
 use anyhow::{Context, bail};
 use namu_core::ValueId;
-use serde_json::Value;
+use namu_core::value::Value;
 use tokio::sync::oneshot;
 
 use super::{Inner, Run};

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::Value;
+use namu_core::value::Value;
 
 use super::delivery::Release;
 use super::{Inner, Run};
@@ -159,7 +159,7 @@ impl Inner {
             .expect("collect ops are found by scope analysis")
             .output;
         let live = run.spec.liveness.after_action(op);
-        let node = self.grow(run, &ctx, live, vec![(output, Value::Array(items))]);
+        let node = self.grow(run, &ctx, live, vec![(output, Value::list(items))]);
         let branch = Branch {
             id: branch,
             hop: hop + 1,

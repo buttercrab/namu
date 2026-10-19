@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use namu::prelude::*;
 use namu_core::ir::Workflow;
+use namu::Value;
 use namu_engine::{FnTasks, LocalCluster, RunOutcome, Tasks};
-use serde_json::Value;
+use serde_json::Value as Json;
 
 #[task]
 pub fn add(a: i32, b: i32) -> Result<i32>;
@@ -99,9 +100,22 @@ fn ok<T>(value: T) -> Result<T, String> {
     Ok(value)
 }
 
+/// A run's outcome as tests compare it: results as JSON, results and failures sorted.
+#[derive(Debug, PartialEq)]
+pub struct Outcome {
+    pub results: Vec<Json>,
+    pub failures: Vec<String>,
+}
+
+impl Outcome {
+    pub fn succeeded(&self) -> bool {
+        self.failures.is_empty()
+    }
+}
+
 /// Runs `workflow` on one worker, on three, and on three talking over TCP, checks that all give
-/// the same outcome, and returns it with results sorted.
-pub async fn run(workflow: Workflow) -> RunOutcome {
+/// the same outcome, and returns it.
+pub async fn run(workflow: Workflow) -> Outcome {
     let tasks: Arc<dyn Tasks> = Arc::new(tasks());
     let one = LocalCluster::uniform(1, tasks.clone());
     let three = LocalCluster::uniform(3, tasks.clone());
@@ -122,25 +136,31 @@ pub async fn run(workflow: Workflow) -> RunOutcome {
 }
 
 /// The results of a run that must succeed.
-pub async fn results(workflow: Workflow) -> Vec<Value> {
+pub async fn results(workflow: Workflow) -> Vec<Json> {
     let outcome = run(workflow).await;
     assert!(outcome.succeeded(), "failures: {:?}", outcome.failures);
     outcome.results
 }
 
 /// What a run produced, regardless of which workers did the work.
-fn sorted(outcome: RunOutcome) -> RunOutcome {
-    let mut outcome = RunOutcome {
-        workers: Default::default(),
-        ..outcome
-    };
-    outcome.results.sort_by_key(ToString::to_string);
-    outcome.failures.sort();
-    outcome
+pub fn sorted(outcome: RunOutcome) -> Outcome {
+    let mut results = json(&outcome.results);
+    results.sort_by_key(ToString::to_string);
+    let mut failures = outcome.failures;
+    failures.sort();
+    Outcome { results, failures }
+}
+
+/// Values as JSON, to compare with `json!`.
+pub fn json(values: &[Value]) -> Vec<Json> {
+    values
+        .iter()
+        .map(|value| rmp_serde::from_slice(&value.encode().unwrap()).unwrap())
+        .collect()
 }
 
 /// Integer results, in ascending order.
-pub fn ints(values: &[Value]) -> Vec<i64> {
+pub fn ints(values: &[Json]) -> Vec<i64> {
     let mut ints: Vec<i64> = values
         .iter()
         .map(|v| v.as_i64().expect("an integer result"))

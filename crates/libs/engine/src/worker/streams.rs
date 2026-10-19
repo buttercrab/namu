@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use namu_core::OpId;
-use serde_json::Value;
+use namu_core::value::Value;
 use tokio::sync::Semaphore;
 
 use super::delivery::Release;
@@ -23,7 +23,7 @@ use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
 use crate::scope::{Continuation, Position, Scope, Source, Then};
-use crate::tasks::{Kind, Stream, StreamTask, Task, TaskStream, pack_input};
+use crate::tasks::{Args, Kind, Stream, StreamTask, Task, TaskStream};
 use crate::tree::Node;
 
 impl Inner {
@@ -191,7 +191,7 @@ impl Inner {
             None => (None, 0),
         };
         let task = feeding.stream.clone();
-        let mut stream = match run_task(|| task.open(pack_input(args), cursor))? {
+        let mut stream = match run_task(|| task.open(args, cursor))? {
             Ok(stream) => stream,
             Err(message) => return Ok(Err(message)),
         };
@@ -263,12 +263,12 @@ impl Inner {
     pub(super) async fn read_stream(
         &self,
         stream: &Stream,
-        input: Value,
+        args: Args,
     ) -> anyhow::Result<Result<Value, String>> {
         let _slot = self.task_slots.acquire().await?;
         let task = stream.task.clone();
         run_task(|| {
-            let mut stream = match task.open(input, None)? {
+            let mut stream = match task.open(args, None)? {
                 Ok(stream) => stream,
                 Err(message) => return Ok(Err(message)),
             };
@@ -279,7 +279,7 @@ impl Inner {
                     Err(message) => return Ok(Err(message)),
                 }
             }
-            Ok(Ok(Value::Array(items)))
+            Ok(Ok(Value::list(items)))
         })
     }
 

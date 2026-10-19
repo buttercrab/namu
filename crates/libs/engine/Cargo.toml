@@ -9,7 +9,9 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 namu-core = { path = "../core", version = "0.1.0" }
 serde = { workspace = true, features = ["rc"] }
+rmp-serde = { workspace = true }
 serde_json = { workspace = true }
+serde-transcode = "1.1"
 tokio = { workspace = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 uuid = { version = "1.17", features = ["v4", "serde"] }

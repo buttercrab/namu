@@ -3,10 +3,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use namu_core::OpId;
 use namu_core::ir::Call;
-use serde_json::Value;
+use namu_core::value::Value;
 use tokio::runtime::{Handle, RuntimeFlavor};
 
 use super::delivery::Release;
@@ -17,7 +17,7 @@ use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Message, Report, Resume};
 use crate::scope::{Continuation, Scope, Then};
-use crate::tasks::{CallTask, Kind, Task, TaskRef, pack_input, unpack_output};
+use crate::tasks::{Args, CallTask, Kind, Task, TaskRef, unpack_output};
 use crate::tree::Node;
 
 impl Inner {
@@ -93,7 +93,7 @@ impl Inner {
         loop {
             let plan = match at.branch.resume {
                 Resume::Kernel(start) => {
-                    kernel::drive(workflow, &view, at.ctx.clone(), start).await?
+                    kernel::drive(workflow, &run.spec.literals, &view, at.ctx.clone(), start).await?
                 }
                 Resume::Call { op } => Plan::Call {
                     op,
@@ -143,9 +143,7 @@ impl Inner {
                         .as_ref()
                         .context("op has no fan-out")?;
                     let list = view.get(&at.ctx, fan_out.input).await?;
-                    let Value::Array(items) = list else {
-                        bail!("fan-out over {list}, which is not a list");
-                    };
+                    let items = list.items().context("fan-out")?;
                     self.fan_out(run, at, op, fan_out.output, items);
                     return Ok(());
                 }
@@ -187,12 +185,11 @@ impl Inner {
         for &input in &call.inputs {
             args.push(view.get(ctx, input).await?);
         }
-        let input = pack_input(args);
         let output = match &task.kind {
-            Kind::Call(task) => self.call(task, input).await?,
+            Kind::Call(task) => self.call(task, args).await?,
             // Not feeding a fan-out: the stream is read to its end into a list.
-            Kind::Stream(stream) => self.read_stream(stream, input).await?,
-            Kind::Batch(batch) => self.batch_call(task_ref, batch, input).await?,
+            Kind::Stream(stream) => self.read_stream(stream, args).await?,
+            Kind::Batch(batch) => self.batch_call(task_ref, batch, args).await?,
         };
         view.run.calls.fetch_add(1, Ordering::Relaxed);
         let output = match output {
@@ -211,10 +208,10 @@ impl Inner {
     async fn call(
         &self,
         task: &Arc<dyn CallTask>,
-        input: Value,
+        args: Args,
     ) -> anyhow::Result<Result<Value, String>> {
         let _slot = self.task_slots.acquire().await?;
-        run_task(|| task.call(input))
+        run_task(|| task.call(args))
     }
 
     /// Records the branch past a checkpoint task, and waits until that is durable, so recovery

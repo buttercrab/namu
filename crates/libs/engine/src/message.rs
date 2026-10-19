@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use namu_core::OpId;
 use namu_core::ir::Workflow;
+use namu_core::value::Value;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;

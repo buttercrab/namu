@@ -232,7 +232,7 @@ async fn branches_move_to_the_worker_that_serves_their_task() {
         .await
         .unwrap();
     // (10 + .. + 80) * 2 + 8
-    assert_eq!(outcome.results, [json!(728)]);
+    assert_eq!(json(&outcome.results), [json!(728)]);
     assert!(outcome.succeeded(), "{:?}", outcome.failures);
     // Worker 1 ran range, the 8 adds and sum; worker 2 the 8 doubles.
     assert_eq!(outcome.workers[&1].calls, 10);
@@ -268,7 +268,7 @@ async fn concurrent_runs_end_exactly_once_with_the_same_result() {
         // x = 1..=20 is item 10x, split into 10x..10x+4: each contributes 50x + 10. The part 20
         // (of x = 2) fails and is left out.
         assert_eq!(
-            outcome.results,
+            json(&outcome.results),
             [json!((1..=20).map(|x| 50 * x + 10).sum::<i32>() - 20)]
         );
         assert_eq!(outcome.failures.len(), 1);
@@ -323,7 +323,7 @@ async fn a_long_loop_holds_a_flat_number_of_nodes() {
         .await
         .unwrap();
     // 1 + 2 + .. + 5000, overflowing nothing in i32.
-    assert_eq!(outcome.results, [json!(12502500)]);
+    assert_eq!(json(&outcome.results), [json!(12502500)]);
     // 15,000 calls, each creating a node: a context owns only the chain of nodes still holding
     // live values, so a handful are held at once.
     let peak = outcome.workers[&1].peak_nodes;

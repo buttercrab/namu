@@ -1,10 +1,9 @@
 //! The tasks a worker can run.
 //!
-//! A task takes one JSON input and returns one JSON output; a stream task yields its outputs one
-//! at a time; a batch task runs as a session that takes items in and gives results back in steps.
-//! Arguments and results are packed by a fixed convention, shared with every task runtime: no
-//! arguments is `null`, one is the value itself, several are an array; a task with several outputs
-//! returns an array.
+//! A task takes its arguments as values and returns one value; a stream task yields its outputs
+//! one at a time; a batch task runs as a session that takes items in and gives results back in
+//! steps. A task with several outputs returns a tuple. Runtimes outside this process see the
+//! arguments packed by the task ABI's convention ([`encode_args`](namu_core::value::encode_args)).
 
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -13,9 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::de::DeserializeOwned;
+use namu_core::value::{Data, Value, from_args};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+/// A task call's arguments, in order.
+pub type Args = Vec<Value>;
 
 use crate::run::RunSpec;
 
@@ -83,7 +84,7 @@ impl Task {
 /// Errors, for every kind of task: `Ok(Err(message))` is the task's own failure, which fails its
 /// branch; `Err` is a failure of the machinery around it.
 pub trait CallTask: Send + Sync {
-    fn call(&self, input: Value) -> anyhow::Result<Result<Value, String>>;
+    fn call(&self, args: Args) -> anyhow::Result<Result<Value, String>>;
 }
 
 pub trait StreamTask: Send + Sync {
@@ -91,7 +92,7 @@ pub trait StreamTask: Send + Sync {
     /// task alive.
     fn open(
         self: Arc<Self>,
-        input: Value,
+        args: Args,
         cursor: Option<String>,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>>;
 }
@@ -123,7 +124,7 @@ pub trait BatchSession: Send {
     /// Hands the session `admit` and returns the items it finished, in any order: all of them for
     /// a dynamic batch, possibly fewer (and possibly earlier ones) for a continuous one. `Err` is a
     /// failure of the whole session, which fails every item in it.
-    fn step(&mut self, admit: Vec<(u64, Value)>) -> anyhow::Result<Finished>;
+    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished>;
 }
 
 /// The items a batch step finished: each item's id, and its output or its own error.
@@ -153,34 +154,32 @@ impl Default for BatchPolicy {
 
 /// A batch task that keeps items across steps (continuous batching), written in Rust.
 pub trait Continuous: Send + 'static {
-    type In: DeserializeOwned;
-    type Out: Serialize;
+    type In: Data;
+    type Out: Data;
 
     /// Takes in `admit` and returns what finished in this step.
     fn step(&mut self, admit: Vec<(u64, Self::In)>) -> Vec<(u64, Result<Self::Out, String>)>;
 }
 
-/// Packs call arguments into one task input.
-pub fn pack_input(mut args: Vec<Value>) -> Value {
-    match args.len() {
-        0 => Value::Null,
-        1 => args.pop().expect("one argument"),
-        _ => Value::Array(args),
-    }
-}
-
-/// Unpacks a task output into `arity` values.
+/// Unpacks a task's output into its `arity` outputs: a task with several returns a tuple.
 pub fn unpack_output(output: Value, arity: usize) -> anyhow::Result<Vec<Value>> {
-    match (arity, output) {
-        (0, _) => Ok(Vec::new()),
-        (1, output) => Ok(vec![output]),
-        (n, Value::Array(parts)) if parts.len() == n => Ok(parts),
-        (n, output) => anyhow::bail!("expected {n} outputs, got {output}"),
+    match arity {
+        0 => Ok(Vec::new()),
+        1 => Ok(vec![output]),
+        n => {
+            let parts = output.items()?;
+            anyhow::ensure!(
+                parts.len() == n,
+                "expected {n} outputs, got {}",
+                parts.len()
+            );
+            Ok(parts)
+        }
     }
 }
 
 /// Tasks implemented as Rust functions in this process: the fastest runtime, with no
-/// serialization boundary beyond JSON values. They are not versioned.
+/// encoding at all: values pass between them as they are. They are not versioned.
 #[derive(Default)]
 pub struct FnTasks {
     tasks: HashMap<String, Task>,
@@ -202,22 +201,21 @@ impl FnTasks {
             .unwrap_or_else(|| panic!("task {task} is not registered"))
     }
 
-    /// Registers `task`. `I` is the packed input: `()` for no arguments, the argument itself for
-    /// one, a tuple for several.
+    /// Registers `task`. `I` is the input: `()` for no arguments, the argument itself for one, a
+    /// tuple for several.
     pub fn with<I, O, E>(
         self,
         task: &str,
         f: impl Fn(I) -> Result<O, E> + Send + Sync + 'static,
     ) -> Self
     where
-        I: DeserializeOwned,
-        O: Serialize,
+        I: Data,
+        O: Data,
         E: Display,
     {
-        let call = move |input: Value| {
-            let input = serde_json::from_value(input).map_err(|err| format!("bad input: {err}"))?;
-            let output = f(input).map_err(|err| err.to_string())?;
-            serde_json::to_value(output).map_err(|err| format!("bad output: {err}"))
+        let call = move |args: Args| {
+            let input = from_args(args).map_err(|err| format!("bad input: {err:#}"))?;
+            f(input).map(Value::new).map_err(|err| err.to_string())
         };
         self.register(task, Kind::Call(Arc::new(FnCall(call))))
     }
@@ -230,17 +228,16 @@ impl FnTasks {
         f: impl Fn(I) -> Result<S, E> + Send + Sync + 'static,
     ) -> Self
     where
-        I: DeserializeOwned,
-        O: Serialize,
+        I: Data,
+        O: Data,
         E: Display,
         S: Iterator<Item = Result<O, E>> + Send + 'static,
     {
-        let open = move |input: Value| -> Result<Items, String> {
-            let input = serde_json::from_value(input).map_err(|err| format!("bad input: {err}"))?;
+        let open = move |args: Args| -> Result<Items, String> {
+            let input = from_args(args).map_err(|err| format!("bad input: {err:#}"))?;
             let items = f(input).map_err(|err| err.to_string())?;
             Ok(Box::new(items.map(|item| {
-                let item = item.map_err(|err| err.to_string())?;
-                serde_json::to_value(item).map_err(|err| format!("bad output: {err}"))
+                item.map(Value::new).map_err(|err| err.to_string())
             })))
         };
         let kind = Kind::Stream(Stream {
@@ -257,8 +254,8 @@ impl FnTasks {
         f: impl Fn(Vec<I>) -> Result<Vec<Result<O, E>>, E> + Send + Sync + 'static,
     ) -> Self
     where
-        I: DeserializeOwned + 'static,
-        O: Serialize + 'static,
+        I: Data,
+        O: Data,
         E: Display + 'static,
     {
         let f = Arc::new(f);
@@ -331,21 +328,21 @@ type Items = Box<dyn Iterator<Item = Result<Value, String>> + Send>;
 
 struct FnCall<F>(F);
 
-impl<F: Fn(Value) -> Result<Value, String> + Send + Sync> CallTask for FnCall<F> {
-    fn call(&self, input: Value) -> anyhow::Result<Result<Value, String>> {
-        Ok((self.0)(input))
+impl<F: Fn(Args) -> Result<Value, String> + Send + Sync> CallTask for FnCall<F> {
+    fn call(&self, args: Args) -> anyhow::Result<Result<Value, String>> {
+        Ok((self.0)(args))
     }
 }
 
 struct FnStreamTask<F>(F);
 
-impl<F: Fn(Value) -> Result<Items, String> + Send + Sync> StreamTask for FnStreamTask<F> {
+impl<F: Fn(Args) -> Result<Items, String> + Send + Sync> StreamTask for FnStreamTask<F> {
     fn open(
         self: Arc<Self>,
-        input: Value,
+        args: Args,
         _cursor: Option<String>,
     ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
-        Ok((self.0)(input).map(|items| Box::new(FnStream(items)) as Box<dyn TaskStream>))
+        Ok((self.0)(args).map(|items| Box::new(FnStream(items)) as Box<dyn TaskStream>))
     }
 }
 
@@ -365,23 +362,23 @@ struct Dynamic<I, O, E, F> {
 
 impl<I, O, E, F> BatchSession for Dynamic<I, O, E, F>
 where
-    I: DeserializeOwned,
-    O: Serialize,
+    I: Data,
+    O: Data,
     E: Display,
     F: Fn(Vec<I>) -> Result<Vec<Result<O, E>>, E> + Send,
 {
-    fn step(&mut self, admit: Vec<(u64, Value)>) -> anyhow::Result<Finished> {
-        // An item whose input does not decode fails alone; the rest run.
+    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
+        // An item whose input does not fit fails alone; the rest run.
         let mut finished = Vec::new();
         let mut ids = Vec::new();
         let mut items = Vec::new();
-        for (id, input) in admit {
-            match serde_json::from_value(input) {
+        for (id, args) in admit {
+            match from_args(args) {
                 Ok(item) => {
                     ids.push(id);
                     items.push(item);
                 }
-                Err(err) => finished.push((id, Err(format!("bad input: {err}")))),
+                Err(err) => finished.push((id, Err(format!("bad input: {err:#}")))),
             }
         }
         if items.is_empty() {
@@ -401,12 +398,11 @@ where
             ids.len(),
             outputs.len()
         );
-        finished.extend(ids.into_iter().zip(outputs).map(|(id, output)| {
-            let output = output.map_err(|err| err.to_string()).and_then(|output| {
-                serde_json::to_value(output).map_err(|err| format!("bad output: {err}"))
-            });
-            (id, output)
-        }));
+        finished.extend(
+            ids.into_iter()
+                .zip(outputs)
+                .map(|(id, output)| (id, output.map(Value::new).map_err(|err| err.to_string()))),
+        );
         Ok(finished)
     }
 }
@@ -414,21 +410,21 @@ where
 struct ContinuousSession<C>(C);
 
 impl<C: Continuous> BatchSession for ContinuousSession<C> {
-    fn step(&mut self, admit: Vec<(u64, Value)>) -> anyhow::Result<Finished> {
+    fn step(&mut self, admit: Vec<(u64, Args)>) -> anyhow::Result<Finished> {
         let mut finished = Vec::new();
         let mut items = Vec::new();
-        for (id, input) in admit {
-            match serde_json::from_value(input) {
+        for (id, args) in admit {
+            match from_args(args) {
                 Ok(item) => items.push((id, item)),
-                Err(err) => finished.push((id, Err(format!("bad input: {err}")))),
+                Err(err) => finished.push((id, Err(format!("bad input: {err:#}")))),
             }
         }
-        finished.extend(self.0.step(items).into_iter().map(|(id, output)| {
-            let output = output.and_then(|output| {
-                serde_json::to_value(output).map_err(|err| format!("bad output: {err}"))
-            });
-            (id, output)
-        }));
+        finished.extend(
+            self.0
+                .step(items)
+                .into_iter()
+                .map(|(id, output)| (id, output.map(Value::new))),
+        );
         Ok(finished)
     }
 }
@@ -448,8 +444,6 @@ impl TaskStream for FnStream {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
 
     fn task(id: &str) -> TaskRef {
@@ -460,33 +454,26 @@ mod tests {
     }
 
     #[test]
-    fn arguments_follow_the_packing_convention() {
-        assert_eq!(pack_input(vec![]), Value::Null);
-        assert_eq!(pack_input(vec![json!(3)]), json!(3));
-        assert_eq!(pack_input(vec![json!(1), json!("a")]), json!([1, "a"]));
-        assert_eq!(
-            unpack_output(json!([1, 2]), 1).unwrap(),
-            vec![json!([1, 2])]
-        );
-        assert_eq!(
-            unpack_output(json!([1, 2]), 2).unwrap(),
-            vec![json!(1), json!(2)]
-        );
-        assert!(unpack_output(json!(1), 2).is_err());
+    fn several_outputs_are_a_tuple() {
+        let parts = unpack_output(Value::new((1, String::from("a"))), 2).unwrap();
+        assert_eq!(parts[1].to::<String>().unwrap(), "a");
+        assert_eq!(unpack_output(Value::new(vec![1, 2]), 1).unwrap().len(), 1);
+        assert!(unpack_output(Value::new(1), 2).is_err());
     }
 
     #[test]
-    fn fn_tasks_decode_packed_inputs() {
+    fn fn_tasks_take_their_arguments_by_type() {
         let tasks = FnTasks::new()
             .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
             .with("fail", |_: ()| Err::<i32, _>("no"));
-        let call = |id: &str, input: Value| match tasks.task(&task(id)).map(|task| task.kind) {
-            Some(Kind::Call(task)) => task.call(input).unwrap(),
+        let call = |id: &str, args: Args| match tasks.task(&task(id)).map(|task| task.kind) {
+            Some(Kind::Call(task)) => task.call(args).unwrap(),
             _ => panic!("{id} is not a call task"),
         };
         assert!(tasks.task(&task("mul")).is_none());
-        assert_eq!(call("add", json!([2, 3])), Ok(json!(5)));
-        assert_eq!(call("fail", Value::Null), Err("no".into()));
-        assert!(call("add", json!("x")).is_err());
+        let sum = call("add", vec![Value::new(2), Value::new(3)]).unwrap();
+        assert_eq!(sum.to::<i32>().unwrap(), 5);
+        assert_eq!(call("fail", vec![]).unwrap_err(), "no");
+        assert!(call("add", vec![Value::new("x".to_string())]).is_err());
     }
 }

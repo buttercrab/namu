@@ -1540,6 +1540,7 @@ dependencies = [
  "namu-engine",
  "namu-flow",
  "namu-macros",
+ "rmp-serde",
  "serde",
  "serde_json",
  "tokio",
@@ -1620,7 +1621,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "namu-core",
+ "rmp-serde",
  "serde",
+ "serde-transcode",
  "serde_json",
  "tokio",
  "tracing",
@@ -2288,6 +2291,15 @@ checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde-transcode"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "590c0e25c2a5bb6e85bf5c1bce768ceb86b316e7a01bdf07d2cb4ec2271990e2"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

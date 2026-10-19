@@ -225,9 +225,9 @@ impl Value {
     }
 
     /// A value from MessagePack bytes.
-    pub fn encoded(bytes: Bytes) -> Self {
+    pub fn encoded(bytes: impl Into<Bytes>) -> Self {
         let encoded = Encoded {
-            bytes,
+            bytes: bytes.into(),
             decoded: OnceLock::new(),
         };
         Self {
@@ -361,7 +361,7 @@ impl Serialize for Value {
 impl<'de> Deserialize<'de> for Value {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes: serde_bytes::ByteBuf = Deserialize::deserialize(deserializer)?;
-        Ok(Value::encoded(Bytes::from(bytes.into_vec())))
+        Ok(Value::encoded(bytes.into_vec()))
     }
 }
 

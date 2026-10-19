@@ -13,8 +13,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use namu_core::OpId;
+use namu_core::value::Value;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::Semaphore;
 
 use crate::ids::{NodeId, ScopeId};
@@ -195,13 +195,14 @@ mod tests {
     fn a_scope_is_over_when_every_branch_has_ended() {
         let mut scope = Scope::new(finish(), Some(3));
         let ends = [
-            scope.end(2, Some(Value::from(3))),
+            scope.end(2, Some(Value::new(3))),
             scope.end(1, None),
-            scope.end(0, Some(Value::from(1))),
+            scope.end(0, Some(Value::new(1))),
         ];
         assert_eq!(ends, [Ended::Open, Ended::Open, Ended::Over]);
         let (items, _) = scope.into_parts();
-        assert_eq!(items, vec![Value::from(1), Value::from(3)]);
+        let items: Vec<i32> = items.into_iter().map(|item| item.take().unwrap()).collect();
+        assert_eq!(items, [1, 3]);
     }
 
     #[test]
