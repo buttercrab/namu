@@ -15,29 +15,23 @@ use super::{Inner, Run};
 use crate::ids::{NodeId, WorkerId, owner};
 use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
-use crate::message::{Branch, BranchId, Message, Report, Resume};
+use crate::message::{Branch, BranchId, Handoff, Report, Reported, Resume};
 use crate::scope::{Continuation, Scope, Then};
 use crate::tasks::{Args, CallTask, Kind, Task, TaskRef, unpack_output};
 use crate::tree::Node;
 
 impl Inner {
-    pub(super) fn on_handoff(self: &Arc<Self>, message: Message) {
-        let Message::Handoff { run, branch, .. } = &message else {
-            unreachable!()
-        };
-        let (run, owner) = (*run, owner(branch.scopes[0]));
-        let Some((state, message)) = self.known_or_wait(run, owner, message) else {
+    pub(super) fn on_handoff(self: &Arc<Self>, handoff: Handoff) {
+        let (run, owner) = (handoff.run, owner(handoff.branch.scopes[0]));
+        let Some((state, handoff)) = self.known_or_wait(run, owner, handoff) else {
             return;
         };
-        let Message::Handoff {
+        let Handoff {
             branch,
             nodes,
             delivery,
             ..
-        } = message
-        else {
-            unreachable!()
-        };
+        } = handoff;
         let nodes = state.nodes.receive(nodes);
         let ctx = nodes.iter().find(|node| node.id() == branch.ctx).cloned();
         let durable = self.log.append(vec![
@@ -489,11 +483,14 @@ impl Inner {
         let run = run.id();
         self.send_kept(
             to,
-            |delivery| Message::Handoff {
-                run,
-                branch,
-                nodes,
-                delivery,
+            |delivery| {
+                Handoff {
+                    run,
+                    branch,
+                    nodes,
+                    delivery,
+                }
+                .into()
             },
             release,
         );
@@ -526,11 +523,14 @@ impl Inner {
         let run_id = run.id();
         self.send_kept(
             run.spec.owner(),
-            |delivery| Message::Report {
-                run: run_id,
-                branch,
-                report,
-                delivery,
+            |delivery| {
+                Reported {
+                    run: run_id,
+                    branch,
+                    report,
+                    delivery,
+                }
+                .into()
             },
             release,
         );
