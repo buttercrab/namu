@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use namu_core::ValueId;
-use namu_core::ir::{Call, Collect, FanOut, Literal, Next, Operation, Phi, Workflow};
+use namu_core::ir::{Action, Call, Collect, FanOut, Literal, Next, Operation, Phi, Workflow};
 
 use crate::ir::{BasicBlock, NodeId};
 use crate::{Node, NodeKind, Terminator};
@@ -123,23 +123,23 @@ impl<T> Graph<T> {
                         });
                     }
                     NodeKind::Call { task_id, inputs } => {
-                        pending.call = Some(Call {
+                        pending.action = Some(Action::Call(Call {
                             task_id: task_id.clone(),
                             inputs: inputs.clone(),
                             outputs: node.outputs.clone(),
-                        });
+                        }));
                     }
                     NodeKind::FanOut { input } => {
-                        pending.fan_out = Some(FanOut {
+                        pending.action = Some(Action::FanOut(FanOut {
                             input: *input,
                             output: node.outputs[0],
-                        });
+                        }));
                     }
                     NodeKind::Collect { input } => {
-                        pending.collect = Some(Collect {
+                        pending.action = Some(Action::Collect(Collect {
                             input: *input,
                             output: node.outputs[0],
-                        });
+                        }));
                     }
                 }
             }
@@ -285,14 +285,12 @@ impl<T> Graph<T> {
 #[derive(Default)]
 struct PendingOp {
     phis: Vec<Phi>,
-    call: Option<Call>,
-    fan_out: Option<FanOut>,
-    collect: Option<Collect>,
+    action: Option<Action>,
 }
 
 impl PendingOp {
     fn has_action(&self) -> bool {
-        self.call.is_some() || self.fan_out.is_some() || self.collect.is_some()
+        self.action.is_some()
     }
 
     fn is_empty(&self) -> bool {
@@ -301,14 +299,13 @@ impl PendingOp {
 
     fn flush(&mut self, ops: &mut Vec<Operation>) -> usize {
         let taken = std::mem::take(self);
-        ops.push(Operation {
-            literals: Vec::new(),
-            phis: taken.phis,
-            call: taken.call,
-            fan_out: taken.fan_out,
-            collect: taken.collect,
-            next: Next::Return { var: None }, // placeholder
-        });
+        // The terminator is linked in later.
+        ops.push(Operation::new(
+            Vec::new(),
+            taken.phis,
+            taken.action,
+            Next::return_unit(),
+        ));
         ops.len() - 1
     }
 }

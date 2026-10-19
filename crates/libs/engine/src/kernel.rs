@@ -7,7 +7,7 @@
 use std::future::Future;
 
 use anyhow::Context;
-use namu_core::ir::{Next, Operation, Workflow};
+use namu_core::ir::{Action, Call, Collect, FanOut, Next, Operation, Workflow};
 use namu_core::value::Value;
 use namu_core::{OpId, ValueId};
 use serde::{Deserialize, Serialize};
@@ -75,19 +75,22 @@ pub enum Start {
     After { op: OpId },
 }
 
-/// The action that stopped the kernel. `ctx` is the context to perform it in.
+/// The action that stopped the kernel, at op `op`. `ctx` is the context to perform it in.
 #[derive(Debug)]
-pub enum Plan<C> {
+pub enum Plan<'w, C> {
     Call {
         op: OpId,
+        call: &'w Call,
         ctx: C,
     },
     FanOut {
         op: OpId,
+        fan_out: &'w FanOut,
         ctx: C,
     },
     Collect {
         op: OpId,
+        collect: &'w Collect,
         ctx: C,
     },
     /// The workflow returned, with `value` if it returns one.
@@ -98,13 +101,13 @@ pub enum Plan<C> {
 }
 
 /// Advances `ctx` from `start` to the next action.
-pub async fn drive<S: ValueStore>(
-    workflow: &Workflow,
+pub async fn drive<'w, S: ValueStore>(
+    workflow: &'w Workflow,
     literals: &Literals,
     store: &S,
     mut ctx: S::Ctx,
     start: Start,
-) -> anyhow::Result<Plan<S::Ctx>> {
+) -> anyhow::Result<Plan<'w, S::Ctx>> {
     let (mut op_id, mut pred) = match start {
         Start::At { op, pred } => (op, pred),
         Start::After { op } => match leave(workflow, store, &ctx, op).await? {
@@ -115,14 +118,29 @@ pub async fn drive<S: ValueStore>(
     loop {
         let op = operation(workflow, op_id)?;
         ctx = enter(store, ctx, op_id, op, &literals.0[op_id], pred).await?;
-        if op.call.is_some() {
-            return Ok(Plan::Call { op: op_id, ctx });
-        }
-        if op.fan_out.is_some() {
-            return Ok(Plan::FanOut { op: op_id, ctx });
-        }
-        if op.collect.is_some() {
-            return Ok(Plan::Collect { op: op_id, ctx });
+        match &op.action {
+            Some(Action::Call(call)) => {
+                return Ok(Plan::Call {
+                    op: op_id,
+                    call,
+                    ctx,
+                });
+            }
+            Some(Action::FanOut(fan_out)) => {
+                return Ok(Plan::FanOut {
+                    op: op_id,
+                    fan_out,
+                    ctx,
+                });
+            }
+            Some(Action::Collect(collect)) => {
+                return Ok(Plan::Collect {
+                    op: op_id,
+                    collect,
+                    ctx,
+                });
+            }
+            None => {}
         }
         match leave(workflow, store, &ctx, op_id).await? {
             Some(next) => {
@@ -195,7 +213,7 @@ pub async fn leave<S: ValueStore>(
     })
 }
 
-fn returned<C>(workflow: &Workflow, ctx: C, op: OpId) -> Plan<C> {
+fn returned<C>(workflow: &Workflow, ctx: C, op: OpId) -> Plan<'_, C> {
     let value = match workflow.operations[op].next {
         Next::Return { var } => var,
         _ => None,

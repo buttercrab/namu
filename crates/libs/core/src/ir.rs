@@ -14,18 +14,17 @@ impl Workflow {
     }
 }
 
-// --- New grouped IR representation -----------------------------------------
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Literal {
     pub output: ValueId,
+    /// The value as JSON text, so the IR stays readable to people and to the tools that write it.
     pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Phi {
     pub output: ValueId,
-    /// Pairs of (predecessor Operation id, ValueId coming from that op)
+    /// Pairs of (predecessor operation, the value coming from it).
     pub from: Vec<(OpId, ValueId)>,
 }
 
@@ -53,44 +52,74 @@ pub struct Collect {
     pub output: ValueId,
 }
 
+/// What an operation does after its literals and phis.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Operation {
-    /// Zero or more literal constants produced *before* any phi or call.
-    pub literals: Vec<Literal>,
-
-    /// Zero or more phi nodes evaluated after literals and before call.
-    pub phis: Vec<Phi>,
-
-    /// Optional task invocation.  When `None`, this operation represents a
-    /// basic-block that ends with only literals/phis.
-    pub call: Option<Call>,
-
-    /// Optional fan-out. At most one of `call`, `fan_out` and `collect` is set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fan_out: Option<FanOut>,
-
-    /// Optional fan-in. At most one of `call`, `fan_out` and `collect` is set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collect: Option<Collect>,
-
-    /// Control-flow successor metadata.
-    pub next: Next,
+pub enum Action {
+    Call(Call),
+    FanOut(FanOut),
+    Collect(Collect),
 }
 
-impl Operation {
-    pub fn new(literals: Vec<Literal>, phis: Vec<Phi>, call: Option<Call>, next: Next) -> Self {
-        Self {
-            literals,
-            phis,
-            call,
-            fan_out: None,
-            collect: None,
-            next,
+impl Action {
+    pub fn inputs(&self) -> &[ValueId] {
+        match self {
+            Action::Call(call) => &call.inputs,
+            Action::FanOut(fan_out) => std::slice::from_ref(&fan_out.input),
+            Action::Collect(collect) => std::slice::from_ref(&collect.input),
+        }
+    }
+
+    pub fn outputs(&self) -> &[ValueId] {
+        match self {
+            Action::Call(call) => &call.outputs,
+            Action::FanOut(fan_out) => std::slice::from_ref(&fan_out.output),
+            Action::Collect(collect) => std::slice::from_ref(&collect.output),
         }
     }
 }
 
-// ---------------------------------------------------------------------------
+/// One step of a workflow: literals, then phis (applied together), then at most one action, then
+/// a jump, a branch or a return.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Operation {
+    pub literals: Vec<Literal>,
+    pub phis: Vec<Phi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<Action>,
+    pub next: Next,
+}
+
+impl Operation {
+    pub fn new(literals: Vec<Literal>, phis: Vec<Phi>, action: Option<Action>, next: Next) -> Self {
+        Self {
+            literals,
+            phis,
+            action,
+            next,
+        }
+    }
+
+    pub fn call(&self) -> Option<&Call> {
+        match &self.action {
+            Some(Action::Call(call)) => Some(call),
+            _ => None,
+        }
+    }
+
+    pub fn fan_out(&self) -> Option<&FanOut> {
+        match &self.action {
+            Some(Action::FanOut(fan_out)) => Some(fan_out),
+            _ => None,
+        }
+    }
+
+    pub fn collect(&self) -> Option<&Collect> {
+        match &self.action {
+            Some(Action::Collect(collect)) => Some(collect),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Next {
@@ -126,5 +155,19 @@ impl Next {
 
     pub fn return_unit() -> Self {
         Self::Return { var: None }
+    }
+
+    /// The operations control can go to next.
+    pub fn successors(&self) -> impl Iterator<Item = OpId> {
+        let (first, second) = match *self {
+            Next::Jump { next } => (Some(next), None),
+            Next::Branch {
+                true_next,
+                false_next,
+                ..
+            } => (Some(true_next), Some(false_next)),
+            Next::Return { .. } => (None, None),
+        };
+        first.into_iter().chain(second)
     }
 }

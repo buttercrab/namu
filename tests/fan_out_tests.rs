@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use namu::prelude::*;
+use namu_core::ir::Operation;
 
 pub struct Stats;
 
@@ -43,22 +44,10 @@ fn passing_a_list_fans_out_and_passing_items_collects() {
     assert_eq!(wf().graph_string().trim(), expected);
 
     let ir = wf().to_serializable("wf".to_string());
-    let fan_out = ir.operations.iter().find_map(|op| op.fan_out.as_ref());
-    let collect = ir.operations.iter().find_map(|op| op.collect.as_ref());
+    let fan_out = ir.operations.iter().find_map(Operation::fan_out);
+    let collect = ir.operations.iter().find_map(Operation::collect);
     assert_eq!(fan_out.map(|f| (f.input, f.output)), Some((2, 3)));
     assert_eq!(collect.map(|c| (c.input, c.output)), Some((4, 5)));
-    // Each action (call, fan-out, collect) gets its own operation.
-    assert!(ir.operations.iter().all(|op| {
-        [
-            op.call.is_some(),
-            op.fan_out.is_some(),
-            op.collect.is_some(),
-        ]
-        .iter()
-        .filter(|set| **set)
-        .count()
-            <= 1
-    }));
 }
 
 #[test]
@@ -76,7 +65,7 @@ fn non_copy_mut_values_work_across_control_flow() {
     assert!(
         ir.operations
             .iter()
-            .any(|op| op.call.as_ref().is_some_and(|c| c.task_id == "shout"))
+            .any(|op| op.call().is_some_and(|c| c.task_id == "shout"))
     );
 }
 

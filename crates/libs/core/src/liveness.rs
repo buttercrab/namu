@@ -41,7 +41,7 @@ pub fn liveness(workflow: &Workflow) -> Liveness {
         for id in (0..ops.len()).rev() {
             let op = &ops[id];
             let mut out = Set::new();
-            for next in successors(&op.next) {
+            for next in op.next.successors() {
                 let succ = &ops[next];
                 let entered = entry_defs(succ);
                 out.extend(live_in[next].iter().filter(|v| !entered.contains(v)));
@@ -104,14 +104,8 @@ fn before_action(op: &Operation, after: &Set) -> Set {
         .copied()
         .filter(|v| !action_defs(op).contains(v))
         .collect();
-    if let Some(call) = &op.call {
-        live.extend(call.inputs.iter().copied());
-    }
-    if let Some(fan_out) = &op.fan_out {
-        live.insert(fan_out.input);
-    }
-    if let Some(collect) = &op.collect {
-        live.insert(collect.input);
+    if let Some(action) = &op.action {
+        live.extend(action.inputs().iter().copied());
     }
     live
 }
@@ -134,35 +128,23 @@ fn entry_defs(op: &Operation) -> Set {
 }
 
 fn action_defs(op: &Operation) -> Set {
-    let call = op.call.iter().flat_map(|call| call.outputs.iter().copied());
-    let fan_out = op.fan_out.iter().map(|fan_out| fan_out.output);
-    let collect = op.collect.iter().map(|collect| collect.output);
-    call.chain(fan_out).chain(collect).collect()
-}
-
-fn successors(next: &Next) -> Vec<OpId> {
-    match next {
-        Next::Jump { next } => vec![*next],
-        Next::Branch {
-            true_next,
-            false_next,
-            ..
-        } => vec![*true_next, *false_next],
-        Next::Return { .. } => Vec::new(),
-    }
+    op.action
+        .iter()
+        .flat_map(|action| action.outputs().iter().copied())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Call, Literal, Phi};
+    use crate::ir::{Action, Call, Literal, Phi};
 
-    fn call(task: &str, inputs: Vec<ValueId>, output: ValueId) -> Option<Call> {
-        Some(Call {
+    fn call(task: &str, inputs: Vec<ValueId>, output: ValueId) -> Option<Action> {
+        Some(Action::Call(Call {
             task_id: task.to_string(),
             inputs,
             outputs: vec![output],
-        })
+        }))
     }
 
     /// `let cfg = 7; let mut x = 0; while cond(x) { x = step(x, cfg) } x`
