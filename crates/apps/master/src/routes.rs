@@ -328,6 +328,7 @@ pub async fn sweep(state: &AppState) -> anyhow::Result<()> {
             .query_async(&mut redis)
             .await?;
         successors.insert(dead, successor);
+        state.mesh.remove_peer(dead);
     }
 
     let resolve = |mut worker: u64| {
