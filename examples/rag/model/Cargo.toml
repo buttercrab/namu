@@ -1,0 +1,23 @@
+[package]
+name = "namu-rag-model"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "The RAG example's embedding model: all-MiniLM-L6-v2 on candle."
+
+[dependencies]
+anyhow = "1"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+serde_json = "1"
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+ureq = "3"
+
+# On macOS, Accelerate for the CPU, and Metal for the GPU (`NAMU_DEVICE=metal`).
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", features = ["accelerate", "metal"] }
+candle-nn = { version = "0.11", features = ["accelerate", "metal"] }
+candle-transformers = { version = "0.11", features = ["accelerate", "metal"] }
+
+[workspace]

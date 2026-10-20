@@ -6,7 +6,8 @@
 #   WORKERS="wasm native" WORKFLOW=bench_handoff ./scripts/poc-local.sh
 #
 # WORKERS is a space-separated list, one entry per worker, each a comma-separated list of
-# runtimes. RUNS=N runs the workflow N times (the first run includes cold start: artifact download
+# runtimes. TASKS_DIR and WORKFLOWS (the workflow crate) pick another example, e.g.
+# TASKS_DIR=examples/rag/tasks WORKFLOWS=namu-rag-workflows. RUNS=N runs the workflow N times (the first run includes cold start: artifact download
 # and WASM compilation). KEEP=1 leaves everything running afterwards.
 set -euo pipefail
 
@@ -17,6 +18,8 @@ REDIS_PORT=${REDIS_PORT:-6390}
 ORCH_PORT=${ORCH_PORT:-8090}
 WORKERS=${WORKERS:-"wasm,native wasm wasm"}
 WORKFLOW=${WORKFLOW:-doc_stats}
+TASKS_DIR=${TASKS_DIR:-examples/distributed/tasks}
+WORKFLOWS=${WORKFLOWS:-namu-distributed-workflows}
 RUNS=${RUNS:-1}
 POC_DIR=${POC_DIR:-$ROOT_DIR/data/poc}
 BIN="$ROOT_DIR/target/release"
@@ -52,7 +55,7 @@ trap cleanup EXIT
 rm -rf "$POC_DIR" && mkdir -p "$POC_DIR/logs"
 
 cargo build --release -q -p namu-master -p namu-worker -p namu-cli
-cargo run -q -p namu-distributed-workflows --bin export -- "$POC_DIR/workflows" >/dev/null
+cargo run -q -p "$WORKFLOWS" --bin export -- "$POC_DIR/workflows" >/dev/null
 
 if redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; then
   echo "port $REDIS_PORT is already serving Redis; stop it or set REDIS_PORT" >&2
@@ -79,7 +82,7 @@ for runtimes in $WORKERS; do
   echo "worker-$i: $runtimes"
 done
 
-"$BIN/namu" build --tasks-dir examples/distributed/tasks \
+"$BIN/namu" build --tasks-dir "$TASKS_DIR" \
   --workflows-dir "$POC_DIR/workflows" --out-dir "$POC_DIR/dist" >"$POC_DIR/logs/build.log" 2>&1
 "$BIN/namu" publish --out-dir "$POC_DIR/dist" >"$POC_DIR/logs/publish.log"
 

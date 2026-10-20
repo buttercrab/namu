@@ -1815,6 +1815,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "namu-rag-workflows"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "namu",
+ "namu-core",
+ "namu-proto",
+ "serde_json",
+]
+
+[[package]]
 name = "namu-worker"
 version = "0.1.0"
 dependencies = [

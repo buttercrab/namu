@@ -1,0 +1,8 @@
+{
+  "task_id": "articles",
+  "version": "0.1.0",
+  "task_kind": "stream",
+  "runtime": "native",
+  "input_arity": 1,
+  "output_arity": 1
+}
