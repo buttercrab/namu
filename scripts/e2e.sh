@@ -38,12 +38,19 @@ check label_stats '{"status": "succeeded", "failures": 0, "TREE": 4, "STREAM": 4
 check doc_stats_partial '{"status": "partial_failed", "failures": 14, "docs": 34}'
 # Tasks that crash (trap) fail their branch; the run carries on without it.
 check doc_stats_poison '{"status": "partial_failed", "failures": 14, "docs": 34}'
+# Errors as values: sends a flaky service turns down are matched on and retried in a loop, and
+# no branch fails.
+check retry_stats '{"status": "succeeded", "failures": 0, "docs": 48, "retries": 72, "most": 3}'
 
 # Recovery: kill -9 a worker in the middle of a run. Once its membership expires, its successor
 # takes over from the log, and the run must produce the result of an uninterrupted run.
 echo "== doc_stats_slow with a worker killed mid-run"
 crash_dir="$ROOT_DIR/data/e2e/crash"
+# Worker 2 also runs native tasks, among them `deliver`, which appends to $deliveries.
+deliveries="$ROOT_DIR/data/e2e/deliveries.log"
+rm -f "$deliveries"
 KEEP=1 POC_DIR="$crash_dir" NAMU_TASK_SLOTS=2 WORKFLOW=doc_stats_slow \
+  WORKERS="wasm,native wasm,native wasm" NAMU_DELIVERIES="$deliveries" \
   ./scripts/poc-local.sh >"$crash_dir.log" 2>&1
 read -r -a pids <<<"$(sed -n 's/^left running (pids: \(.*\))$/\1/p' "$crash_dir.log")"
 teardown() {
@@ -63,13 +70,21 @@ teardown() {
 }
 trap teardown EXIT
 # pids: redis, orchestrator, worker-1, worker-2, worker-3
+# Alongside it, a run that delivers a side effect per document, keyed by the call.
 NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
   run doc_stats_slow 0.1.0 --wait >"$crash_dir/crashed.json" &
 run_pid=$!
-sleep 2
+NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+  run deliveries_slow 0.1.0 --wait >"$crash_dir/deliveries.json" &
+deliveries_pid=$!
+# Killed as soon as it has delivered something: it dies waiting for the acknowledgement.
+for _ in $(seq 200); do
+  grep -q " worker-2 " "$deliveries" 2>/dev/null && break
+  sleep 0.05
+done
 kill -9 "${pids[3]}"
 echo "   killed worker-2"
-wait "$run_pid"
+wait "$run_pid" "$deliveries_pid"
 python3 - "$crash_dir/run-1.json" "$crash_dir/crashed.json" <<'PY'
 import json, sys
 def load(path):
@@ -80,6 +95,18 @@ assert crashed["status"] == "succeeded", crashed
 assert not crashed["failures"], crashed["failures"]
 assert crashed["results"] == baseline["results"], (crashed["results"], baseline["results"])
 print(f"   ok: same result as the uninterrupted run ({crashed['elapsed_ms']} ms vs {baseline['elapsed_ms']} ms)")
+PY
+# Every document was delivered under one key: the deliveries the engine ran again (their worker
+# died after delivering, before their branches moved on) carried the keys they had the first time.
+python3 - "$crash_dir/deliveries.json" "$deliveries" <<'PY'
+import json, sys
+text = open(sys.argv[1]).read()
+run = json.loads(text[text.index("{"):])
+assert run["status"] == "succeeded" and run["results"] == [48], run
+keys = [line.split()[1] for line in open(sys.argv[2])]
+assert len(set(keys)) == 48, f"{len(set(keys))} keys for 48 documents"
+assert len(keys) > 48, "no delivery was run again: the crash did not test the keys"
+print(f"   ok: 48 documents delivered under 48 keys ({len(keys) - 48} deliveries run again)")
 PY
 
 # Drain: SIGTERM a worker in the middle of a run. It hands on what it holds and leaves, and the

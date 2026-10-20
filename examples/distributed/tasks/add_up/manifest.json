@@ -1,0 +1,8 @@
+{
+  "task_id": "add_up",
+  "version": "0.1.0",
+  "task_kind": "single",
+  "runtime": "wasm",
+  "input_arity": 1,
+  "output_arity": 1
+}
