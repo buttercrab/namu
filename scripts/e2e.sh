@@ -77,11 +77,16 @@ run_pid=$!
 NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
   run deliveries_slow 0.1.0 --wait >"$crash_dir/deliveries.json" &
 deliveries_pid=$!
-# Killed as soon as it has delivered something: it dies waiting for the acknowledgement.
-for _ in $(seq 200); do
+# Killed as soon as it has delivered something: it dies waiting for the acknowledgement. However
+# long that takes (on a small machine, the other run's work comes first), but not forever.
+for _ in $(seq 2400); do
   grep -q " worker-2 " "$deliveries" 2>/dev/null && break
   sleep 0.05
 done
+if ! grep -q " worker-2 " "$deliveries" 2>/dev/null; then
+  echo "worker-2 delivered nothing in 2 minutes" >&2
+  exit 1
+fi
 kill -9 "${pids[3]}"
 echo "   killed worker-2"
 wait "$run_pid" "$deliveries_pid"
