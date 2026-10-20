@@ -1,0 +1,16 @@
+[package]
+name = "namu-rag-task-embed"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1"
+namu-guest = { path = "../../../../crates/libs/guest", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+namu-rag-model = { path = "../../model" }
+
+[workspace]

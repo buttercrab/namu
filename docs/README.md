@@ -31,3 +31,5 @@ Welcome to the NAMU docs. Start with Getting Started for a runnable local stack,
 - `examples/basic` - a workflow and its tasks, run in-process on a `LocalCluster`.
 - `examples/advanced` - a labeling pipeline with a stream and continuous batching, in-process.
 - `examples/distributed` - WASM and native tasks with fan-out/fan-in across workers.
+- `examples/rag` - Wikipedia into a Qdrant vector index with a real embedding model, across
+  workers, surviving a worker killed mid-run; see its README.
