@@ -435,10 +435,14 @@ asynchronous; the receiver starts on the work immediately.
   once that record is durable. Recovery therefore never runs it again (a crash during the task
   itself still repeats it).
 - Task execution is **at-least-once**. Each call gets a deterministic **idempotency key** so
-  side-effecting tasks can deduplicate: run id, branch id, how many calls the branch made before
-  this one, and the op. The count is the branch's logical clock: it travels and is logged with the
-  branch, so a branch run again from a record counts its calls exactly as it did the first time,
-  and the calls of a loop each get their own key. Tasks read it in the guest
+  side-effecting tasks can deduplicate: the run id, the branch's **lineage** and **clock**, and
+  the op. Both are logical, never minted while running. The clock counts the branch's calls and
+  fan-outs; it travels and is logged with the branch, so a branch run again from a record counts
+  exactly as it did the first time, and the calls of a loop each get their own key. The lineage
+  is a hash of the branch's path through the fan-outs (its parent's lineage, the parent's clock
+  at the fan-out, the item's index), so a fan-out done again after a crash (its scope not yet
+  durable, so its scope and branch ids are minted anew) names its items' calls as before. Tasks
+  read it in the guest
   (`namu_guest::call_key()`, passed through the task ABI, version 6) or in process; a stream has
   its call's key, recorded with its source, for as long as it runs and whenever it is reopened;
   a batch step has the keys of its items (`call_keys()`).

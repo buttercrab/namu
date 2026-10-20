@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 use super::drive::{Driving, run_task};
 use super::view::View;
 use super::{Inner, Run};
-use crate::ids::ScopeId;
+use crate::ids::{ScopeId, child_lineage};
 use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
@@ -42,7 +42,8 @@ impl Inner {
         let continuation = Continuation {
             branch: branch.id,
             hop: branch.hop,
-            calls: branch.calls,
+            lineage: branch.lineage,
+            clock: branch.clock,
             ctx: branch.ctx,
             scopes: branch.scopes.clone(),
             collect: run.spec.collect_ops[fan_out],
@@ -236,7 +237,8 @@ impl Inner {
                 index,
             },
             hop: 0,
-            calls: 0,
+            lineage: child_lineage(feeding.source.key.lineage, feeding.source.key.clock, index),
+            clock: 0,
             ctx: node.id(),
             resume: Resume::Kernel(Start::After {
                 op: feeding.source.fan_out,
@@ -333,7 +335,8 @@ impl Inner {
             id: continuation.branch,
             hop: continuation.hop + 1,
             // The stream call is run again, under the key it had.
-            calls: source.key.call,
+            lineage: continuation.lineage,
+            clock: source.key.clock,
             ctx: continuation.ctx,
             resume: Resume::Call { op: source.call },
             scopes: continuation.scopes,

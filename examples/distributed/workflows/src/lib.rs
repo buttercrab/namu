@@ -11,6 +11,7 @@ use namu::prelude::*;
 pub struct Config;
 pub struct Stats;
 pub struct Summary;
+pub struct RetryReport;
 
 #[task(single)]
 pub fn split_docs(n: i32) -> Result<Vec<String>>;
@@ -183,4 +184,62 @@ pub fn label_stats() -> std::collections::BTreeMap<String, usize> {
     let topics = classify(docs);
     let labels = refine(topics);
     tally(labels)
+}
+
+#[task(single)]
+pub fn doc_id(doc: String) -> Result<i64>;
+
+/// Turns down the first `id % 4` attempts for a document.
+#[task(single)]
+pub fn flaky_send(id: i64, attempt: i64) -> Result<i64>;
+
+#[task(single)]
+pub fn retry_report(retries: Vec<i64>) -> Result<RetryReport>;
+
+/// Errors as values: every document goes to a flaky service, and its branch tries again until a
+/// send goes through (up to 5 tries). A failed send is matched on, not a failed branch.
+#[workflow(id = "retry_stats")]
+pub fn retry_stats() -> RetryReport {
+    let n = 48;
+    let docs = split_docs(n);
+    let id = doc_id(docs);
+    let mut tries = 0;
+    let mut retries = 0;
+    while less_than(tries, 5) {
+        match attempt(flaky_send(id, tries)) {
+            Ok(_) => {
+                break;
+            }
+            Err(_) => {
+                retries = inc(retries);
+            }
+        }
+        tries = inc(tries);
+    }
+    retry_report(retries)
+}
+
+/// Delivers each document's stats to an outside system, keyed by the call, which takes `ack_ms`
+/// to acknowledge.
+#[task(single)]
+pub fn deliver(stats: Stats, ack_ms: i64) -> Result<i64>;
+
+#[task(single)]
+pub fn add_up(xs: Vec<i64>) -> Result<i64>;
+
+/// Delivers every document's stats as a side effect, which is slow to acknowledge.
+/// `scripts/e2e.sh` kills a worker during it, which has delivered without moving on: the engine
+/// runs those deliveries again, under the keys they had, so the outside system sees each
+/// document's delivery under exactly one key.
+#[workflow(id = "deliveries_slow")]
+pub fn deliveries_slow() -> i64 {
+    let min_len = 6;
+    let rounds = 1;
+    let n = 48;
+    let ack_ms = 500;
+    let cfg = make_config(min_len, rounds);
+    let docs = split_docs(n);
+    let stats = analyze(docs, cfg);
+    let delivered = deliver(stats, ack_ms);
+    add_up(delivered)
 }

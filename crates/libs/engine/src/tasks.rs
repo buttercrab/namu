@@ -22,14 +22,15 @@ pub type Args = Vec<Value>;
 
 /// Names one task call, for tasks with side effects to deduplicate on (design §7.5): the same
 /// each time recovery runs the call again, and different for every other call. It is the call's
-/// place in its run: the `call`-th call of its branch, at `op`. A branch run again from a record
-/// starts from the count recorded with it, so it names its calls as it did the first time; the
-/// op tells calls apart if a task's output sent the branch down another path.
+/// logical place in its run: its branch's lineage (its path through the fan-outs) and clock, and
+/// its op. Neither depends on ids minted while running, so a part of the run done again (even a
+/// fan-out whose scope was not yet durable) names its calls as it did the first time; the op
+/// tells calls apart if a task's output sent a branch down another path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CallKey {
     pub run: RunId,
-    pub branch: BranchId,
-    pub call: u64,
+    pub lineage: Lineage,
+    pub clock: u64,
     pub op: OpId,
 }
 
@@ -37,11 +38,11 @@ impl Display for CallKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self {
             run,
-            branch,
-            call,
+            lineage,
+            clock,
             op,
         } = self;
-        write!(f, "{run}/{:x}.{}/{call}/{op}", branch.scope, branch.index)
+        write!(f, "{run}/{lineage:016x}/{clock}/{op}")
     }
 }
 
@@ -87,8 +88,7 @@ fn with_key<T>(key: CallKey, f: impl FnOnce() -> T) -> T {
     f()
 }
 
-use crate::ids::RunId;
-use crate::message::BranchId;
+use crate::ids::{Lineage, RunId};
 use crate::run::RunSpec;
 
 /// A task at the version a run uses.
@@ -566,11 +566,11 @@ mod tests {
         assert!(call("add", vec![Value::new("x".to_string())]).is_err());
     }
 
-    fn key(call: u64) -> CallKey {
+    fn key(clock: u64) -> CallKey {
         CallKey {
             run: RunId::nil(),
-            branch: BranchId { scope: 1, index: 2 },
-            call,
+            lineage: 0x12,
+            clock,
             op: 4,
         }
     }
@@ -586,7 +586,7 @@ mod tests {
         let named = task.call(vec![], key(5)).unwrap().unwrap();
         assert_eq!(
             named.to::<Option<String>>().unwrap().as_deref(),
-            Some("00000000-0000-0000-0000-000000000000/1.2/5/4")
+            Some("00000000-0000-0000-0000-000000000000/0000000000000012/5/4")
         );
         // Only while the call runs.
         assert_eq!(call_key(), None);

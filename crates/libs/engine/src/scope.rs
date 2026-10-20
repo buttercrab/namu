@@ -17,7 +17,7 @@ use namu_core::value::Value;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-use crate::ids::{NodeId, ScopeId};
+use crate::ids::{Lineage, NodeId, ScopeId};
 use crate::message::BranchId;
 use crate::run::RunOutcome;
 use crate::tasks::CallKey;
@@ -61,8 +61,9 @@ pub struct Continuation {
     pub branch: BranchId,
     /// Its hop when it fanned out; it continues as the next hop.
     pub hop: u64,
-    /// The calls it had made when it fanned out.
-    pub calls: u64,
+    pub lineage: Lineage,
+    /// Its clock once it fanned out.
+    pub clock: u64,
     /// The context it fanned out from.
     pub ctx: NodeId,
     /// The scopes enclosing it, innermost last.

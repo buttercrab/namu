@@ -18,6 +18,7 @@ liveness-based placement, streams, batching, Python and GPU are not implemented 
 | Streams | `stream_stats` streams the same 48 documents `doc_stats` gets as a list, through a WASM stream task, and gives the same checksum; each document is analyzed as it arrives. In-process tests check pipelining, the window (backpressure), failures, and resuming a stream after its worker dies. |
 | Batching | `label_stats` labels documents with a dynamic batch task (`classify`) and a continuous one (`refine`), both WASM components. In-process tests check that batches form and respect `batch_size`, that a lone item runs at once (or waits for `max_wait`), that item and step failures stay where they belong, that short items overtake a long one in continuous batching, that two runs share steps, and that a batch survives its worker dying. |
 | Elastic routing | A branch whose next task no member serves waits until one joins, instead of failing. |
+| Errors as values | `retry_stats`: a flaky WASM task turns down each document's first sends; every branch matches on the failures (`attempt`) and retries in a loop (`break` once a send goes through). No branch fails, and the retries add up to what the service turned down. |
 | Crash recovery | `kill -9` of a worker mid-run (`scripts/e2e.sh`): its successor takes over from the log, and the run produces the same result as an uninterrupted run. In-process tests kill a worker, the run's owner, or a successor too, at every moment of a run, and check the outcome. Checkpoint tasks are not repeated. |
 
 ## Architecture
@@ -62,7 +63,10 @@ Design §7, in short:
   twice (the engine's drain tests count every call; `scripts/e2e.sh` drains a worker mid-run).
 
 - **Call keys.** Every call gets a key, the same each time recovery runs it again, which a task
-  with side effects passes on as an idempotency key (`namu_guest::call_key()`).
+  with side effects passes on as an idempotency key (`namu_guest::call_key()`). `scripts/e2e.sh`
+  kills a worker right after it delivered a side effect (`deliveries_slow`): the deliveries the
+  engine runs again, even a whole fan-out done again, carry the keys they had, so 48 documents
+  are delivered under exactly 48 keys.
 
 Not covered yet: Redis failure (run Redis with persistence), and
 runs whose only server for a task never comes back (they wait).

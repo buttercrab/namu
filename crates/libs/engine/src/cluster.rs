@@ -14,6 +14,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use namu_core::ir::{Operation, Workflow};
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::{Duration, Instant};
 
 use crate::ids::{NodeId, RunId, WorkerId};
 use crate::log::{Durable, Log, MemoryLog, Record, RunEstate};
@@ -60,6 +61,13 @@ impl LocalCluster {
     /// Starts one worker per task set, connected by channels. Must be called within a Tokio
     /// runtime.
     pub fn new(task_sets: Vec<Arc<dyn Tasks>>) -> Self {
+        Self::with_log_delay(task_sets, Duration::ZERO)
+    }
+
+    /// Like [`LocalCluster::new`], but what a worker logs becomes durable only `delay` later, in
+    /// order, as with a log written behind the critical path over a network (Redis): a worker
+    /// killed in that time loses what it had not yet made durable.
+    pub fn with_log_delay(task_sets: Vec<Arc<dyn Tasks>>, delay: Duration) -> Self {
         let transport = Arc::new(LocalTransport::default());
         let mut connect = |id: WorkerId| -> Endpoint {
             let inbox = transport.connect(id);
@@ -69,7 +77,7 @@ impl LocalCluster {
         let endpoints = (1..=task_sets.len() as WorkerId)
             .map(&mut connect)
             .collect();
-        Self::assemble(task_sets, control, endpoints)
+        Self::assemble(task_sets, control, endpoints, delay)
     }
 
     /// Like [`LocalCluster::new`], but the workers talk over TCP on localhost, so every message
@@ -89,7 +97,12 @@ impl LocalCluster {
             .map(|(transport, _, inbox)| (transport as Arc<dyn Transport>, inbox))
             .collect();
         let control = endpoints.remove(0);
-        Ok(Self::assemble(task_sets, control, endpoints))
+        Ok(Self::assemble(
+            task_sets,
+            control,
+            endpoints,
+            Duration::ZERO,
+        ))
     }
 
     /// Starts `n` workers that all serve `tasks`.
@@ -101,6 +114,7 @@ impl LocalCluster {
         task_sets: Vec<Arc<dyn Tasks>>,
         control: Endpoint,
         endpoints: Vec<Endpoint>,
+        log_delay: Duration,
     ) -> Self {
         assert!(!task_sets.is_empty(), "a cluster needs a worker");
         let dead = Arc::new(Dead::default());
@@ -114,11 +128,7 @@ impl LocalCluster {
                     inner: transport,
                     dead: dead.clone(),
                 });
-                let log = Arc::new(MortalLog {
-                    worker: id,
-                    inner: log.clone(),
-                    dead: dead.clone(),
-                });
+                let log = Arc::new(MortalLog::new(id, log.clone(), dead.clone(), log_delay));
                 let slots = Worker::default_task_slots();
                 Worker::spawn(id, tasks, routes.clone(), transport, log, inbox, slots)
             })
@@ -288,11 +298,43 @@ impl Transport for Mortal {
     }
 }
 
-/// A worker's view of the shared log; a killed worker's appends never land.
+/// A worker's view of the shared log; a killed worker's appends never land, nor do those still
+/// on their way when it is killed.
 struct MortalLog {
     worker: WorkerId,
     inner: Arc<MemoryLog>,
     dead: Arc<Dead>,
+    /// Appends on their way, if they take time to become durable.
+    writer: Option<mpsc::UnboundedSender<Append>>,
+}
+
+/// An append on its way: when it was made, its records, and who waits for it to be durable.
+type Append = (Instant, Vec<Record>, oneshot::Sender<()>);
+
+impl MortalLog {
+    fn new(worker: WorkerId, inner: Arc<MemoryLog>, dead: Arc<Dead>, delay: Duration) -> Self {
+        let writer = (!delay.is_zero()).then(|| {
+            let (writer, mut appends) = mpsc::unbounded_channel::<Append>();
+            let (inner, dead) = (inner.clone(), dead.clone());
+            tokio::spawn(async move {
+                while let Some((sent, records, durable)) = appends.recv().await {
+                    tokio::time::sleep_until(sent + delay).await;
+                    if dead.contains(worker) {
+                        return;
+                    }
+                    drop(inner.append(records));
+                    let _ = durable.send(());
+                }
+            });
+            writer
+        });
+        Self {
+            worker,
+            inner,
+            dead,
+            writer,
+        }
+    }
 }
 
 #[async_trait]
@@ -301,7 +343,14 @@ impl Log for MortalLog {
         if self.dead.contains(self.worker) {
             return oneshot::channel().1;
         }
-        self.inner.append(records)
+        match &self.writer {
+            Some(writer) => {
+                let (durable, done) = oneshot::channel();
+                let _ = writer.send((Instant::now(), records, durable));
+                done
+            }
+            None => self.inner.append(records),
+        }
     }
 
     async fn node(&self, run: RunId, id: NodeId) -> anyhow::Result<Option<Arc<Node>>> {

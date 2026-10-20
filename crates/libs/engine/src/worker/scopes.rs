@@ -139,7 +139,8 @@ impl Inner {
         let Continuation {
             branch,
             hop,
-            calls,
+            lineage,
+            clock,
             scopes,
             collect,
             ..
@@ -164,7 +165,8 @@ impl Inner {
         let branch = Branch {
             id: branch,
             hop: hop + 1,
-            calls,
+            lineage,
+            clock,
             ctx: node.id(),
             resume: Resume::Kernel(Start::After { op }),
             scopes,
