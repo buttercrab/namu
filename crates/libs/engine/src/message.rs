@@ -8,7 +8,7 @@ use namu_core::ir::Workflow;
 use namu_core::value::Value;
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{NodeId, RunId, ScopeId, WorkerId};
+use crate::ids::{Lineage, NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
 use crate::routes::Load;
 use crate::run::{RunInfo, RunOutcome, WorkerStats};
@@ -28,10 +28,12 @@ pub struct Branch {
     pub id: BranchId,
     /// How many times the branch has moved; each stop on a worker is its own log record.
     pub hop: u64,
-    /// How many task calls it has made: its logical clock, which names its calls (see
-    /// [`CallKey`](crate::tasks::CallKey)). Logged with it, so a branch run again from a record
-    /// counts its calls as it did the first time.
-    pub calls: u64,
+    /// Its logical identity, which names its calls with its clock.
+    pub lineage: Lineage,
+    /// Its logical clock: how many task calls and fan-outs it has made. Logged with it, so a
+    /// branch run again from a record counts as it did the first time (see
+    /// [`CallKey`](crate::tasks::CallKey)).
+    pub clock: u64,
     pub ctx: NodeId,
     pub resume: Resume,
     /// The scopes it is in, innermost (`id.scope`) last. The first is the run's root scope.

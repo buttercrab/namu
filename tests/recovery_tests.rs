@@ -246,3 +246,73 @@ async fn a_call_run_again_after_a_crash_keeps_its_key() {
         assert!(keys.len() > 48, "killing {victim} repeated no call");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fan_out_done_again_names_its_calls_as_before() {
+    #[task]
+    fn deliver(x: i32) -> Result<i32>;
+
+    #[workflow]
+    fn wf() -> i32 {
+        let xs = range(1, 25);
+        let ys = deliver(xs);
+        sum(ys)
+    }
+
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tasks: Arc<dyn Tasks> = Arc::new(
+        FnTasks::new()
+            .with("range", |(start, end): (i32, i32)| {
+                Ok::<_, String>((start..end).map(|x| x * 10).collect::<Vec<_>>())
+            })
+            .with("deliver", {
+                let keys = keys.clone();
+                move |x: i32| {
+                    let key = namu_engine::call_key().expect("a call has a key");
+                    keys.lock().unwrap().push(key.to_string());
+                    std::thread::sleep(Duration::from_millis(20));
+                    Ok::<_, String>(x)
+                }
+            })
+            .with("sum", |xs: Vec<i32>| {
+                Ok::<_, String>(xs.iter().sum::<i32>())
+            }),
+    );
+    // What a worker logs takes 100 ms to be durable. The run's owner fans out and dies before its
+    // scope is: its successor fans out again, under a new scope id, while the first items' branches
+    // are already delivering elsewhere.
+    let cluster = Arc::new(LocalCluster::with_log_delay(
+        vec![tasks; 3],
+        Duration::from_millis(100),
+    ));
+    let run = tokio::spawn({
+        let cluster = cluster.clone();
+        async move { cluster.run(workflow_of(wf())).await }
+    });
+    tokio::time::sleep(Duration::from_millis(130)).await;
+    cluster.kill(1).unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(20), run)
+        .await
+        .expect("the run finished")
+        .unwrap()
+        .unwrap();
+    assert_eq!(json(&outcome.results), [json!(3000)]);
+    let keys = keys.lock().unwrap();
+    let distinct: std::collections::HashSet<_> = keys.iter().collect();
+    assert!(
+        keys.len() > 24,
+        "nothing was delivered twice: {}",
+        keys.len()
+    );
+    assert_eq!(
+        distinct.len(),
+        24,
+        "{} keys for 24 deliveries",
+        distinct.len()
+    );
+}
+
+fn workflow_of<T>(graph: namu::__macro_exports::Graph<T>) -> Workflow {
+    graph.to_serializable("fan_out_again".into())
+}

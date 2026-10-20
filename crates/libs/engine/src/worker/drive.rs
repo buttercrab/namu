@@ -14,7 +14,7 @@ use tokio::task::{AbortHandle, JoinSet};
 use super::delivery::Release;
 use super::view::View;
 use super::{Inner, Run};
-use crate::ids::{NodeId, WorkerId, owner};
+use crate::ids::{NodeId, WorkerId, child_lineage, owner};
 use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Handoff, Report, Reported, Resume};
@@ -392,10 +392,13 @@ impl Inner {
     ) {
         let branch = &at.branch;
         let scope = self.ids.next();
+        // A fan-out is a tick of the branch's clock; its items are named by it.
+        let clock = branch.clock;
         let continuation = Continuation {
             branch: branch.id,
             hop: branch.hop,
-            calls: branch.calls,
+            lineage: branch.lineage,
+            clock: clock + 1,
             ctx: branch.ctx,
             scopes: branch.scopes.clone(),
             collect: run.spec.collect_ops[op],
@@ -436,7 +439,8 @@ impl Inner {
             let child = Branch {
                 id: BranchId { scope, index },
                 hop: 0,
-                calls: 0,
+                lineage: child_lineage(branch.lineage, clock, index),
+                clock: 0,
                 ctx,
                 resume: Resume::Kernel(Start::After { op }),
                 scopes: inner.clone(),
@@ -512,11 +516,11 @@ impl Driving {
     pub(super) fn key(&mut self, run: &Run, op: OpId) -> CallKey {
         let key = CallKey {
             run: run.id(),
-            branch: self.branch.id,
-            call: self.branch.calls,
+            lineage: self.branch.lineage,
+            clock: self.branch.clock,
             op,
         };
-        self.branch.calls += 1;
+        self.branch.clock += 1;
         key
     }
 }
