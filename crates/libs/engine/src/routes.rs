@@ -3,7 +3,9 @@
 //!
 //! Work goes to the least loaded worker that can take it. A worker's load is what it last
 //! reported (on the acknowledgements it sends anyway) plus what was sent to it since, per task
-//! slot. A worker that has not reported counts as idle, so a new worker draws work at once.
+//! slot. A worker that has not reported counts as idle, with as many slots as this machine has
+//! (the likeliest guess in a cluster of alike machines; its first report corrects it), so a new
+//! worker draws work at once, and not only a share of one slot's worth.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,6 +26,8 @@ pub struct Routes {
     /// Where to start looking, so workers equally loaded take turns.
     cursor: AtomicUsize,
     loads: Mutex<HashMap<WorkerId, Estimate>>,
+    /// The slots of a worker that has not reported: this machine's.
+    slots: u32,
     /// Bumped on every change.
     version: watch::Sender<u64>,
 }
@@ -35,18 +39,20 @@ pub struct Load {
     pub slots: u32,
 }
 
-/// A worker's last reported load, and the work sent to it since.
+/// A worker's last reported load, if it has reported, and the work sent to it since.
 #[derive(Debug, Default)]
 struct Estimate {
-    load: Load,
+    load: Option<Load>,
     sent: u32,
 }
 
 impl Estimate {
-    /// Pending work per slot, as a fraction to compare exactly.
-    fn busy(&self) -> (u64, u64) {
-        let pending = u64::from(self.load.pending) + u64::from(self.sent);
-        (pending, u64::from(self.load.slots.max(1)))
+    /// Pending work per slot, as a fraction to compare exactly. Before its first report, a
+    /// worker is taken to have `slots`.
+    fn busy(&self, slots: u32) -> (u64, u64) {
+        let load = self.load.unwrap_or(Load { pending: 0, slots });
+        let pending = u64::from(load.pending) + u64::from(self.sent);
+        (pending, u64::from(load.slots.max(1)))
     }
 }
 
@@ -58,6 +64,7 @@ impl Default for Routes {
             successors: RwLock::default(),
             cursor: AtomicUsize::new(0),
             loads: Mutex::default(),
+            slots: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             version: watch::Sender::new(0),
         }
     }
@@ -156,7 +163,10 @@ impl Routes {
     /// `worker` reports its load.
     pub fn report(&self, worker: WorkerId, load: Load) {
         let mut loads = self.loads.lock().unwrap();
-        *loads.entry(worker).or_default() = Estimate { load, sent: 0 };
+        *loads.entry(worker).or_default() = Estimate {
+            load: Some(load),
+            sent: 0,
+        };
     }
 
     /// The least loaded of `workers` but `skip`, which is then counted as one call busier.
@@ -171,7 +181,11 @@ impl Routes {
         }
         let start = self.cursor.fetch_add(1, Ordering::Relaxed);
         let mut loads = self.loads.lock().unwrap();
-        let busy = |worker: &WorkerId| loads.get(worker).map_or((0, 1), Estimate::busy);
+        let busy = |worker: &WorkerId| {
+            loads
+                .get(worker)
+                .map_or((0, 1), |estimate| estimate.busy(self.slots))
+        };
         let mut best = workers[start % workers.len()];
         for offset in 1..workers.len() {
             let worker = workers[(start + offset) % workers.len()];
@@ -240,6 +254,29 @@ mod tests {
             },
         );
         assert_eq!(routes.any(None), Some(2));
+    }
+
+    #[test]
+    fn a_worker_that_has_not_reported_counts_with_a_machine_s_slots() {
+        // One worker reported 14 slots; two have not. Work sent to them is weighed per slot as
+        // for the first, so it spreads instead of piling onto the one that reported.
+        let routes = Routes {
+            slots: 14,
+            ..Routes::default()
+        };
+        routes.set_workers(vec![1, 2, 3]);
+        routes.report(
+            1,
+            Load {
+                pending: 0,
+                slots: 14,
+            },
+        );
+        let mut picks = HashMap::new();
+        for _ in 0..42 {
+            *picks.entry(routes.any(None).unwrap()).or_insert(0) += 1;
+        }
+        assert_eq!(picks, HashMap::from([(1, 14), (2, 14), (3, 14)]));
     }
 
     #[test]
