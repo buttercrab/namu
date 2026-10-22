@@ -77,6 +77,10 @@ pub fn fused_fan_outs(workflow: &Workflow) -> Vec<Option<OpId>> {
             .iter()
             .flat_map(|phi| &phi.from)
             .for_each(|(_, value)| used(*value));
+        op.builtins
+            .iter()
+            .flat_map(|builtin| &builtin.inputs)
+            .for_each(|&value| used(value));
         if let Some(action) = &op.action {
             action.inputs().iter().for_each(|&value| used(value));
         }
@@ -96,8 +100,8 @@ pub fn fused_fan_outs(workflow: &Workflow) -> Vec<Option<OpId>> {
             };
             let target = ops.get(next)?;
             let fans_out = target.fan_out().is_some_and(|f| f.input == output);
-            let entered_directly = target.literals.is_empty() && target.phis.is_empty();
-            (fans_out && entered_directly && uses.get(&output) == Some(&1)).then_some(next)
+            let only_use = uses.get(&output) == Some(&1);
+            (fans_out && target.entered_directly() && only_use).then_some(next)
         })
         .collect()
 }

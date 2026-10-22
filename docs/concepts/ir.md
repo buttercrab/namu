@@ -9,9 +9,11 @@ A workflow is a list of **operations**. Each operation does, in order:
 1. **Literals**: constants, as JSON text.
 2. **Phis**: values chosen by the operation control came from, applied together (all sources are
    read before any is written).
-3. At most one **action**: `Call` (a task), `FanOut` (one branch per item of a list), or
+3. **Built-ins**, in order: expressions the engine evaluates itself, such as
+   `{ "op": "add", "ty": "i64", "inputs": [3, 4], "output": 5 }`. `ty` is the operands' type.
+4. At most one **action**: `Call` (a task), `FanOut` (one branch per item of a list), or
    `Collect` (gather one value from every branch of the innermost fan-out).
-4. **Next**: `Jump`, `Branch` on a bool, or `Return`.
+5. **Next**: `Jump`, `Branch` on a bool, or `Return`.
 
 A `Call` may have an error edge, `catch: { "error": e, "next": op }`, as LLVM's `invoke` does: if
 the task fails, its outputs are not defined; its error message is bound to `e` and control goes to

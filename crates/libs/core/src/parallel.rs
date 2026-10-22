@@ -2,12 +2,12 @@
 //! calls in it run in parallel).
 //!
 //! A group starts at a call and takes the calls that follow it in a straight line: each reached by
-//! a plain jump from the one before, with no literals or phis of its own. None of them may feed a
-//! stream fusion (its fan-out must start right after it) or have an error edge (where control goes
-//! depends on how it ends). Within the group the calls form a DAG by the outputs they read: each
-//! starts once the calls it reads from have finished, so a call that reads none of them starts at
-//! once. A straight run in which every call reads the one before is a chain, with nothing to
-//! overlap, and is not a group.
+//! a plain jump from the one before, with no literals, phis or built-ins of its own. None of them
+//! may feed a stream fusion (its fan-out must start right after it) or have an error edge (where
+//! control goes depends on how it ends). Within the group the calls form a DAG by the outputs they
+//! read: each starts once the calls it reads from have finished, so a call that reads none of them
+//! starts at once. A straight run in which every call reads the one before is a chain, with nothing
+//! to overlap, and is not a group.
 
 use std::collections::HashMap;
 
@@ -19,7 +19,6 @@ pub fn parallel_calls(workflow: &Workflow, fused: &[Option<OpId>]) -> Vec<Option
     let ops = &workflow.operations;
     let groupable =
         |op: OpId| ops[op].call().is_some_and(|call| call.catch.is_none()) && fused[op].is_none();
-    let entered_directly = |op: OpId| ops[op].literals.is_empty() && ops[op].phis.is_empty();
     (0..ops.len())
         .map(|first| {
             if !groupable(first) {
@@ -27,7 +26,7 @@ pub fn parallel_calls(workflow: &Workflow, fused: &[Option<OpId>]) -> Vec<Option
             }
             let mut group = vec![first];
             while let Next::Jump { next } = ops[*group.last().expect("not empty")].next {
-                if !groupable(next) || !entered_directly(next) || group.contains(&next) {
+                if !groupable(next) || !ops[next].entered_directly() || group.contains(&next) {
                     break;
                 }
                 group.push(next);

@@ -9,6 +9,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use namu_core::ValueId;
+use namu_core::ir::{BuiltinOp, ScalarType};
 use serde::Serialize;
 
 use crate::graph::{Graph, NodeArena, TracedValue, ValueArena};
@@ -87,6 +88,11 @@ impl<T> Builder<T> {
     /// Emits a fan-in of `input` over the innermost fan-out scope and returns the list value.
     pub fn collect(&self, input: ValueId) -> ValueId {
         self.add_node(NodeKind::Collect { input }, 1)[0]
+    }
+
+    /// Emits a built-in expression over `inputs`, read as `ty`, and returns its value.
+    pub fn builtin(&self, op: BuiltinOp, ty: ScalarType, inputs: Vec<ValueId>) -> ValueId {
+        self.add_node(NodeKind::Builtin { op, ty, inputs }, 1)[0]
     }
 
     pub fn phi(&self, from: Vec<(BlockId, ValueId)>) -> ValueId {
@@ -274,4 +280,99 @@ pub fn return_value<T: 'static, U: 'static>(builder: &Builder<T>, value: TracedV
 
 pub fn return_unit<T>(builder: &Builder<T>) {
     builder.seal_block(Terminator::return_unit());
+}
+
+// --- Built-in expressions ---
+
+/// A type built-in expressions work on.
+pub trait Scalar: 'static {
+    const TYPE: ScalarType;
+}
+
+macro_rules! scalar {
+    ($($t:ty => $variant:ident),*) => {$(
+        impl Scalar for $t {
+            const TYPE: ScalarType = ScalarType::$variant;
+        }
+    )*};
+}
+
+scalar!(bool => Bool, i32 => I32, i64 => I64, u32 => U32, u64 => U64, f32 => F32, f64 => F64,
+    String => String);
+
+/// Numbers: what arithmetic is defined on.
+pub trait Number: Scalar {}
+
+impl Number for i32 {}
+impl Number for i64 {}
+impl Number for u32 {}
+impl Number for u64 {}
+impl Number for f32 {}
+impl Number for f64 {}
+
+/// What `+` is defined on: numbers, and strings (concatenation).
+pub trait Plus: Scalar {}
+
+impl<T: Number> Plus for T {}
+impl Plus for String {}
+
+/// Numbers that have a negative: what unary `-` is defined on.
+pub trait Signed: Number {}
+
+impl Signed for i32 {}
+impl Signed for i64 {}
+impl Signed for f32 {}
+impl Signed for f64 {}
+
+fn builtin<G, T: Scalar, R>(
+    builder: &Builder<G>,
+    op: BuiltinOp,
+    inputs: &[ValueId],
+) -> TracedValue<R> {
+    TracedValue::new(builder.builtin(op, T::TYPE, inputs.to_vec()))
+}
+
+/// `a + b`.
+pub fn plus<G, T: Plus>(b: &Builder<G>, x: TracedValue<T>, y: TracedValue<T>) -> TracedValue<T> {
+    builtin::<G, T, T>(b, BuiltinOp::Add, &[x.id, y.id])
+}
+
+/// `a - b`, `a * b`, `a / b`, `a % b`.
+pub fn arith<G, T: Number>(
+    b: &Builder<G>,
+    op: BuiltinOp,
+    x: TracedValue<T>,
+    y: TracedValue<T>,
+) -> TracedValue<T> {
+    builtin::<G, T, T>(b, op, &[x.id, y.id])
+}
+
+/// `-a`.
+pub fn negate<G, T: Signed>(b: &Builder<G>, x: TracedValue<T>) -> TracedValue<T> {
+    builtin::<G, T, T>(b, BuiltinOp::Neg, &[x.id])
+}
+
+/// `a == b`, `a != b`, `a < b`, `a <= b`, `a > b`, `a >= b`.
+pub fn compare<G, T: Scalar>(
+    b: &Builder<G>,
+    op: BuiltinOp,
+    x: TracedValue<T>,
+    y: TracedValue<T>,
+) -> TracedValue<bool> {
+    builtin::<G, T, bool>(b, op, &[x.id, y.id])
+}
+
+/// `a && b`, `a || b`. Both sides are evaluated: they are values, which have no effects.
+pub fn logic<G>(
+    b: &Builder<G>,
+    op: BuiltinOp,
+    x: TracedValue<bool>,
+    y: TracedValue<bool>,
+) -> TracedValue<bool> {
+    builtin::<G, bool, bool>(b, op, &[x.id, y.id])
+}
+
+/// `!a`.
+pub fn not<G>(b: &Builder<G>, x: TracedValue<bool>) -> TracedValue<bool> {
+    builtin::<G, bool, bool>(b, BuiltinOp::Not, &[x.id])
 }

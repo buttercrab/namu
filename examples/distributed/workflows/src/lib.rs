@@ -205,16 +205,12 @@ pub fn retry_stats() -> RetryReport {
     let id = doc_id(docs);
     let mut tries = 0;
     let mut retries = 0;
-    while less_than(tries, 5) {
+    while tries < 5 {
         match attempt(flaky_send(id, tries)) {
-            Ok(_) => {
-                break;
-            }
-            Err(_) => {
-                retries = inc(retries);
-            }
+            Ok(_) => break,
+            Err(_) => retries += 1,
         }
-        tries = inc(tries);
+        tries += 1;
     }
     retry_report(retries)
 }

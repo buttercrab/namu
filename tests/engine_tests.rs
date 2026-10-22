@@ -699,3 +699,106 @@ async fn in_a_group_the_first_failure_in_order_is_the_one_reported() {
         .unwrap();
     assert_eq!(outcome.failures, ["fail_slowly: first"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loop_of_builtins_calls_no_task() {
+    #[workflow]
+    fn wf() -> i32 {
+        let mut a = 0;
+        let mut b = 1;
+        while a < 100 {
+            let c = a + b;
+            a = b;
+            b = c;
+        }
+        a * 2 - b % 7
+    }
+
+    // a = 144, b = 233: 288 - 2
+    assert_eq!(
+        results(wf().to_serializable("fibonacci_builtins".into())).await,
+        [json!(286)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn builtins_mix_with_tasks_and_fan_out() {
+    #[workflow]
+    fn wf() -> i32 {
+        let x = identity(range(1, 5));
+        let mut y = x * 2;
+        y += 1;
+        let big = y > 50 && !(y == 61);
+        let z = if big { -y } else { y };
+        sum(z)
+    }
+
+    // x = 10, 20, 30, 40; y = 21, 41, 61, 81; big: 81 only; z = 21, 41, 61, -81
+    assert_eq!(
+        results(wf().to_serializable("mixed".into())).await,
+        [json!(42)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_loop_reads_as_rust() {
+    #[workflow]
+    fn wf() -> i32 {
+        let mut x = 20;
+        let mut tries = 0;
+        let mut out = 0;
+        while tries < 3 {
+            match attempt(maybe_fail(x)) {
+                Ok(v) => {
+                    out = v;
+                    break;
+                }
+                Err(_) => {
+                    x += 1;
+                    tries += 1;
+                }
+            }
+        }
+        out + tries * 100
+    }
+
+    // 20 fails once; 21 goes through.
+    assert_eq!(
+        results(wf().to_serializable("retry_builtins".into())).await,
+        [json!(121)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn strings_concatenate_and_compare() {
+    #[workflow]
+    fn wf() -> bool {
+        let s = exclaim("na") + "mu";
+        s == "na!mu"
+    }
+
+    assert_eq!(
+        results(wf().to_serializable("strings".into())).await,
+        [json!(true)]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_overflow_fails_its_branch() {
+    #[workflow]
+    fn wf() -> i32 {
+        let x = identity(range(1, 3));
+        let big = 2147483630;
+        x + big
+    }
+
+    // 10 fits; 20 overflows i32 and fails its branch only.
+    let outcome = run(wf().to_serializable("overflow".into())).await;
+    assert_eq!(ints(&outcome.results), [2147483640]);
+    assert_eq!(outcome.failures.len(), 1);
+    assert!(
+        outcome.failures[0].contains("overflow adding"),
+        "{:?}",
+        outcome.failures
+    );
+}

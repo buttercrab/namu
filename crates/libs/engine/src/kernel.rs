@@ -1,6 +1,7 @@
 //! The kernel: interprets a workflow's IR along one context.
 //!
-//! It applies literals and phis and follows control flow, and stops at the next action its caller
+//! It applies literals and phis, evaluates built-in expressions, and follows control flow, and
+//! stops at the next action its caller
 //! must perform: a task call, a fan-out, a collect, or a return. It knows nothing about where
 //! values live or which machine runs what; values are read and written through [`ValueStore`].
 
@@ -9,7 +10,7 @@ use std::future::Future;
 use anyhow::Context;
 use namu_core::ir::{Action, Call, Collect, FanOut, Next, Operation, Workflow};
 use namu_core::value::Value;
-use namu_core::{OpId, ValueId};
+use namu_core::{OpId, ValueId, builtin};
 use serde::{Deserialize, Serialize};
 
 /// A workflow's literals as values, decoded once per run. The IR keeps them as JSON text, so it
@@ -159,8 +160,9 @@ pub fn operation(workflow: &Workflow, op: OpId) -> anyhow::Result<&Operation> {
         .with_context(|| format!("workflow {} has no op {op}", workflow.name))
 }
 
-/// Applies an operation's literals and phis as one step, in one new node. Every phi source is
-/// read before anything is written, so phis are a parallel assignment (`a, b = b, a` works).
+/// Applies an operation's literals and phis, then evaluates its built-ins in order, as one step in
+/// one new node. Every phi source is read before anything is written, so phis are a parallel
+/// assignment (`a, b = b, a` works); a built-in reads what the step made before it, or the tree.
 async fn enter<S: ValueStore>(
     store: &S,
     ctx: S::Ctx,
@@ -182,6 +184,19 @@ async fn enter<S: ValueStore>(
                 .with_context(|| format!("phi {} has no source for op {pred}", phi.output))?;
             values.push((phi.output, store.get(&ctx, *source).await?));
         }
+    }
+    for builtin in &op.builtins {
+        let mut inputs = Vec::with_capacity(builtin.inputs.len());
+        for &input in &builtin.inputs {
+            // Steps are small: a scan beats a map.
+            inputs.push(match values.iter().rfind(|(made, _)| *made == input) {
+                Some((_, value)) => value.clone(),
+                None => store.get(&ctx, input).await?,
+            });
+        }
+        let value = builtin::eval(builtin.op, builtin.ty, &inputs)
+            .with_context(|| format!("built-in {:?} at op {op_id}", builtin.op))?;
+        values.push((builtin.output, value));
     }
     if values.is_empty() {
         return Ok(ctx);

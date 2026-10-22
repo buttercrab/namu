@@ -42,6 +42,18 @@ fn counting() -> i32 {
     total
 }
 
+/// `counting`, with its arithmetic and comparison as built-ins: no task calls.
+#[workflow]
+fn counting_builtins() -> i32 {
+    let mut i = 0;
+    let mut total = 0;
+    while i < 5000 {
+        i += 1;
+        total += i;
+    }
+    total
+}
+
 #[workflow]
 fn doubling() -> i32 {
     let xs = range(10000);
@@ -70,9 +82,17 @@ fn engine(c: &mut Criterion) {
     let _entered = runtime.enter();
     let cluster = LocalCluster::uniform(1, Arc::new(tasks()));
     let counting = counting().to_serializable("counting".into());
+    let counting_builtins = counting_builtins().to_serializable("counting_builtins".into());
     let doubling = doubling().to_serializable("doubling".into());
     c.bench_function("loop", |b| {
         b.iter(|| runtime.block_on(cluster.run(counting.clone())).unwrap())
+    });
+    c.bench_function("loop_builtins", |b| {
+        b.iter(|| {
+            runtime
+                .block_on(cluster.run(counting_builtins.clone()))
+                .unwrap()
+        })
     });
     c.bench_function("fan_out", |b| {
         b.iter(|| runtime.block_on(cluster.run(doubling.clone())).unwrap())

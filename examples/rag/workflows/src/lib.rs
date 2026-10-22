@@ -37,7 +37,8 @@ pub fn index_report(chunks_per_article: Vec<i64>) -> Result<IndexReport>;
 ///
 /// - Articles stream in, and each is chunked as it arrives (a branch per article).
 /// - Every chunk is a branch of its own; `embed` batches chunks across all articles in flight.
-/// - Chunks are upserted by their own ids, so recovery never stores one twice.
+/// - Chunks are upserted by their own ids, so recovery never stores one twice; a write that fails
+///   is tried again, up to three times, before its chunk counts as not stored.
 /// - Two fan-ins count the chunks per article, then the articles.
 #[workflow(id = "index_wikipedia")]
 pub fn index_wikipedia() -> IndexReport {
@@ -47,7 +48,17 @@ pub fn index_wikipedia() -> IndexReport {
     let article = articles(limit);
     let chunks = chunk(article, words);
     let embedded = embed(chunks);
-    let stored = store(embedded, collection);
+    let mut tries = 0;
+    let mut stored = 0;
+    while tries < 3 {
+        match attempt(store(embedded, collection)) {
+            Ok(n) => {
+                stored = n;
+                break;
+            }
+            Err(_) => tries += 1,
+        }
+    }
     let per_article = count_stored(stored);
     index_report(per_article)
 }
