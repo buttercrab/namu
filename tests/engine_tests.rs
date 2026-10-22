@@ -802,3 +802,93 @@ async fn an_overflow_fails_its_branch() {
         outcome.failures
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reduce_folds_every_item_in_order() {
+    #[workflow]
+    fn wf() -> String {
+        let x = identity(range(1, 11));
+        let y = double(x);
+        join("", y)
+    }
+
+    // In branch order however the branches end, on any number of workers.
+    assert_eq!(
+        results(wf().to_serializable("reduce".into())).await,
+        [json!("20,40,60,80,100,120,140,160,180,200")]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reduce_passes_over_failed_and_filtered_branches() {
+    #[workflow]
+    fn wf() -> String {
+        let x = maybe_fail(range(1, 6));
+        if x == 40 {
+            return;
+        }
+        join("start", x)
+    }
+
+    // 20 failed and 40 returned early: neither is folded.
+    let outcome = run(wf().to_serializable("reduce_skips".into())).await;
+    assert_eq!(outcome.results, [json!("start,10,30,50")]);
+    assert_eq!(outcome.failures, ["maybe_fail: intentional failure"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reduce_over_nothing_is_its_first_accumulator() {
+    #[workflow]
+    fn wf() -> String {
+        let x = identity(range(1, 1));
+        join("nothing", x)
+    }
+
+    assert_eq!(
+        results(wf().to_serializable("reduce_empty".into())).await,
+        [json!("nothing")]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scope_that_reduces_opens_where_its_reduce_task_runs() {
+    #[workflow]
+    fn wf() -> String {
+        let x = identity(range(1, 5));
+        join("", x)
+    }
+
+    // Only worker 3 runs `join`: the branch moves there before it fans out, so worker 3 owns the
+    // scope and folds it.
+    let without_join: Arc<dyn Tasks> = Arc::new(
+        FnTasks::new()
+            .with("range", |(start, end): (i32, i32)| {
+                Ok::<_, String>((start..end).map(|x| x * 10).collect::<Vec<_>>())
+            })
+            .with("identity", Ok::<i32, String>),
+    );
+    let all: Arc<dyn Tasks> = Arc::new(tasks());
+    let cluster = LocalCluster::new(vec![without_join.clone(), without_join, all]);
+    let outcome = cluster
+        .run(wf().to_serializable("reduce_moves".into()))
+        .await
+        .unwrap();
+    assert!(outcome.succeeded(), "{:?}", outcome.failures);
+    assert_eq!(json(&outcome.results), [json!("10,20,30,40")]);
+}
+
+#[test]
+fn a_reduce_must_start_from_a_value_made_before_its_fan_out() {
+    #[workflow]
+    fn wf() -> String {
+        let x = identity(range(1, 4));
+        let start = exclaim("per item");
+        join(start, x)
+    }
+
+    let error = namu_core::scopes::collect_ops(&wf().to_serializable("bad".into())).unwrap_err();
+    assert!(
+        error.to_string().contains("make it before the fan-out"),
+        "{error}"
+    );
+}

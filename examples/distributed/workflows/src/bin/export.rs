@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
         let tasks: BTreeSet<String> = ir
             .operations
             .iter()
-            .filter_map(|op| op.call().map(|c| c.task_id.clone()))
+            .filter_map(|op| op.task_id().map(str::to_string))
             .collect();
         let payload = WorkflowUploadRequest {
             id: entry.id.to_string(),

@@ -51,6 +51,21 @@ summarize(stats)                 // summarize(stats: Vec<Stats>): collect every 
 - Values from before the fan-out (like `cfg`) are shared by every branch.
 - A failed branch is dropped from the collect, and the run ends `partial_failed`.
 
+To fold the items instead of collecting them all, call a reduce task with a first accumulator
+made before the fan-out:
+
+```rust
+#[task(reduce)]
+pub fn merge_stats(summary: Summary, stats: Stats) -> Result<Summary>;
+
+let empty = empty_summary();          // before the fan-out
+let stats = analyze(docs, cfg);       // per document
+merge_stats(empty, stats)             // folds every document, in order, as they finish
+```
+
+Items are folded in document order whatever order they finish in, so the merge need not be
+commutative, and only items that finish early wait in memory.
+
 ## Expressions
 Arithmetic, comparisons and logic on values are built-ins: the engine evaluates them itself,
 with no task call.

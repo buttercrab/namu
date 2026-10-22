@@ -270,3 +270,24 @@ pub fn deliveries_slow() -> i64 {
     let delivered = deliver(stats, ack_ms);
     add_up(delivered)
 }
+
+#[task(single)]
+pub fn empty_summary() -> Result<Summary>;
+
+/// Adds one document's stats to a summary.
+#[task(reduce)]
+pub fn merge_stats(summary: Summary, stats: Stats) -> Result<Summary>;
+
+/// `doc_stats`, reduced: each document's stats are folded into the summary as they come, in
+/// document order, instead of collected into a list first. The same result.
+#[workflow(id = "doc_stats_reduced")]
+pub fn doc_stats_reduced() -> Summary {
+    let min_len = 6;
+    let rounds = 4000;
+    let n = 48;
+    let cfg = make_config(min_len, rounds);
+    let empty = empty_summary();
+    let docs = split_docs(n);
+    let stats = analyze(docs, cfg);
+    merge_stats(empty, stats)
+}

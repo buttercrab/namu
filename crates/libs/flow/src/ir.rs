@@ -29,6 +29,8 @@ pub enum NodeKind {
     /// Collect `input` from every branch of the innermost fan-out scope into a list.
     Collect {
         input: ValueId,
+        /// The task that folds them, and the fold's first accumulator, for a reduce.
+        reduce: Option<(String, ValueId)>,
     },
     /// An expression the engine evaluates itself.
     Builtin {

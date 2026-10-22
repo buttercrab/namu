@@ -8,6 +8,10 @@
 //!
 //! Recovery can run a branch twice (design §7). The owner counts each index once: a second end of
 //! the same branch is dropped.
+//!
+//! A scope closed by a reduce folds its items instead of collecting them: in branch order, as the
+//! ends come in, one fold at a time. Only items that ended ahead of an earlier one wait in memory;
+//! the scope is over once every branch has ended and every item is folded.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -20,7 +24,7 @@ use tokio::sync::Semaphore;
 use crate::ids::{Lineage, NodeId, ScopeId};
 use crate::message::BranchId;
 use crate::run::RunOutcome;
-use crate::tasks::CallKey;
+use crate::tasks::{CallKey, TaskRef};
 use crate::tree::Node;
 
 /// A scope, held by its owner.
@@ -28,11 +32,25 @@ pub struct Scope {
     /// How many branches the scope has, once that is known.
     count: Option<u64>,
     ended: Indices,
-    /// Collected items, by the index of the branch that brought them.
+    /// Collected items, by the index of the branch that brought them; for a fold, those not yet
+    /// folded.
     items: BTreeMap<u64, Value>,
+    pub fold: Option<Fold>,
     pub then: Then,
     /// For a scope fed by a stream: one per item the source may still put in flight.
     pub credits: Option<Arc<Semaphore>>,
+}
+
+/// A scope's fold: `task(accumulator, item)` over its items in branch order.
+pub struct Fold {
+    pub task: TaskRef,
+    /// The reducing collect.
+    pub op: OpId,
+    pub accumulator: Value,
+    /// The next branch to fold: every one before it is folded (or brought no item).
+    pub next: u64,
+    /// A fold step is running.
+    pub busy: bool,
 }
 
 /// What happens when a scope is over.
@@ -109,9 +127,45 @@ impl Scope {
             count,
             ended: Indices::default(),
             items: BTreeMap::new(),
+            fold: None,
             then,
             credits: None,
         }
+    }
+
+    /// The scope folds its items with `fold` instead of collecting them. Items already folded
+    /// (below `fold.next`) are dropped.
+    pub fn with_fold(mut self, fold: Fold) -> Self {
+        self.items = self.items.split_off(&fold.next);
+        self.fold = Some(fold);
+        self
+    }
+
+    /// The next item to fold, and its index, if it has ended and no fold step is running. Ended
+    /// branches that brought no item are passed over.
+    pub fn next_fold(&mut self) -> Option<(u64, Value)> {
+        let fold = self.fold.as_mut()?;
+        if fold.busy {
+            return None;
+        }
+        while self.ended.contains(fold.next) {
+            match self.items.remove(&fold.next) {
+                Some(item) => {
+                    fold.busy = true;
+                    return Some((fold.next, item));
+                }
+                None => fold.next += 1,
+            }
+        }
+        None
+    }
+
+    /// The running fold step is done: `accumulator` is the fold through its item.
+    pub fn folded(&mut self, accumulator: Value) {
+        let fold = self.fold.as_mut().expect("a fold step ran");
+        fold.accumulator = accumulator;
+        fold.next += 1;
+        fold.busy = false;
     }
 
     pub fn with_credits(self, credits: Arc<Semaphore>) -> Self {
@@ -148,15 +202,21 @@ impl Scope {
     }
 
     fn state(&self) -> Ended {
+        let folded = |count| self.fold.as_ref().is_none_or(|fold| fold.next == count);
         match self.count {
-            Some(count) if self.ended.len() == count => Ended::Over,
+            Some(count) if self.ended.len() == count && folded(count) => Ended::Over,
             _ => Ended::Open,
         }
     }
 
-    /// The collected items, in branch order, and what happens next.
-    pub fn into_parts(self) -> (Vec<Value>, Then) {
-        (self.items.into_values().collect(), self.then)
+    /// What the scope gathered (its items as a list, in branch order, or its fold's last
+    /// accumulator), and what happens next.
+    pub fn into_parts(self) -> (Value, Then) {
+        let gathered = match self.fold {
+            Some(fold) => fold.accumulator,
+            None => Value::list(self.items.into_values().collect()),
+        };
+        (gathered, self.then)
     }
 }
 
@@ -170,6 +230,10 @@ struct Indices {
 }
 
 impl Indices {
+    fn contains(&self, index: u64) -> bool {
+        index < self.low || self.above.contains(&index)
+    }
+
     /// Adds `index`; false if it was in already.
     fn insert(&mut self, index: u64) -> bool {
         if index < self.low || !self.above.insert(index) {
@@ -201,8 +265,42 @@ mod tests {
         ];
         assert_eq!(ends, [Ended::Open, Ended::Open, Ended::Over]);
         let (items, _) = scope.into_parts();
-        let items: Vec<i32> = items.into_iter().map(|item| item.take().unwrap()).collect();
-        assert_eq!(items, [1, 3]);
+        assert_eq!(items.take::<Vec<i32>>().unwrap(), [1, 3]);
+    }
+
+    #[test]
+    fn a_fold_goes_in_branch_order_whatever_order_branches_end_in() {
+        let fold = Fold {
+            task: TaskRef {
+                id: "merge".into(),
+                version: String::new(),
+            },
+            op: 7,
+            accumulator: Value::new(0),
+            next: 0,
+            busy: false,
+        };
+        let mut scope = Scope::new(Then::Finish, Some(4)).with_fold(fold);
+        // 2 ends first: nothing to fold until 0 has.
+        assert_eq!(scope.end(2, Some(Value::new(20))), Ended::Open);
+        assert!(scope.next_fold().is_none());
+        assert_eq!(scope.end(0, Some(Value::new(1))), Ended::Open);
+        let (index, item) = scope.next_fold().unwrap();
+        assert_eq!((index, item.take::<i32>().unwrap()), (0, 1));
+        // One step at a time.
+        assert!(scope.next_fold().is_none());
+        scope.folded(Value::new(1));
+        // 1 ended with no item (it was dropped): passed over, to 2.
+        assert_eq!(scope.end(1, None), Ended::Open);
+        let (index, _) = scope.next_fold().unwrap();
+        assert_eq!(index, 2);
+        scope.folded(Value::new(21));
+        assert_eq!(scope.end(3, None), Ended::Open);
+        // Every branch has ended, and passing over 3 finishes the fold.
+        assert!(scope.next_fold().is_none());
+        assert!(scope.is_over());
+        let (accumulator, _) = scope.into_parts();
+        assert_eq!(accumulator.take::<i32>().unwrap(), 21);
     }
 
     #[test]

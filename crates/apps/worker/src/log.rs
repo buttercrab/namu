@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use namu_core::value::Value;
 use namu_engine::RunInfo;
 use namu_engine::ids::{NodeId, RunId, WorkerId, owner};
 use namu_engine::log::{
@@ -245,8 +246,19 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 .ignore()
                 .hdel(key(*run, "positions"), scope)
                 .ignore()
+                .hdel(key(*run, "folds"), scope)
+                .ignore()
                 .del(ends_key(*run, *scope))
                 .ignore();
+        }
+        Record::Folded {
+            run,
+            scope,
+            through,
+            accumulator,
+        } => {
+            let fold = encode(&(through, accumulator))?;
+            pipe.hset(key(*run, "folds"), scope, fold).ignore();
         }
         Record::End { run, scope, end } => {
             pipe.rpush(ends_key(*run, *scope), encode(end)?).ignore();
@@ -265,6 +277,7 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 "scopes",
                 "counts",
                 "positions",
+                "folds",
                 "reports",
             ];
             let mut keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
@@ -330,6 +343,13 @@ impl Log for RedisLog {
             if !owned.is_empty() {
                 counts = redis.hgetall(key(run, "counts")).await?;
             }
+            let mut folds: HashMap<u64, (u64, Value)> = HashMap::new();
+            if !owned.is_empty() {
+                let raw: HashMap<u64, Vec<u8>> = redis.hgetall(key(run, "folds")).await?;
+                for (scope, raw) in raw {
+                    folds.insert(scope, rmp_serde::from_slice(&raw)?);
+                }
+            }
             let mut ends: HashMap<u64, Vec<EndRecord>> = HashMap::new();
             for &scope in owned.keys() {
                 let raw: Vec<Vec<u8>> = redis.lrange(ends_key(run, scope), 0, -1).await?;
@@ -347,6 +367,7 @@ impl Log for RedisLog {
                     source,
                     count: counts.get(&scope).copied(),
                     ends: ends.remove(&scope).unwrap_or_default(),
+                    folded: folds.remove(&scope),
                 })
                 .collect();
 

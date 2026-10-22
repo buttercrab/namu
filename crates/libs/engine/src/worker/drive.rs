@@ -18,7 +18,7 @@ use crate::ids::{NodeId, WorkerId, child_lineage, owner};
 use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Handoff, Report, Reported, Resume};
-use crate::scope::{Continuation, Scope, Then};
+use crate::scope::{Continuation, Fold, Scope, Then};
 use crate::tasks::{Args, CallKey, CallTask, Kind, Task, TaskRef, unpack_output};
 use crate::tree::Node;
 
@@ -97,13 +97,7 @@ impl Inner {
                     kernel::drive(workflow, &run.spec.literals, &view, at.ctx.clone(), start)
                         .await?
                 }
-                Resume::Call { op } => Plan::Call {
-                    op,
-                    call: kernel::operation(workflow, op)?
-                        .call()
-                        .context("resuming at a call without one")?,
-                    ctx: at.ctx.clone(),
-                },
+                Resume::Action { op } => kernel::action(workflow, op, at.ctx.clone())?,
             };
             match plan {
                 Plan::Call { op, call, ctx } => {
@@ -113,14 +107,26 @@ impl Inner {
                     let served = self.tasks.task(task_ref).filter(|_| !self.is_draining());
                     let Some(task) = served else {
                         let to = self.routes.wait_for_server(task_ref, self.skip()).await;
-                        at.branch.resume = Resume::Call { op };
+                        at.branch.resume = Resume::Action { op };
                         self.move_branch(run, at, to);
                         return Ok(());
                     };
                     if let Kind::Stream(stream) = &task.kind
                         && let Some(fan_out) = run.spec.fused[op]
                     {
-                        self.start_stream(run, at, op, fan_out, stream.clone());
+                        // The stream's scope is owned where it runs: if it folds, the reduce task
+                        // must run here too.
+                        if let Some(reducer) = self.reducer(run, fan_out) {
+                            let tasks = [task_ref.clone(), reducer.clone()];
+                            if !self.can_run(reducer) {
+                                let to = self.routes.wait_for_server_of_all(&tasks, self.skip());
+                                at.branch.resume = Resume::Action { op };
+                                self.move_branch(run, at, to.await);
+                                return Ok(());
+                            }
+                        }
+                        let fold = self.fold_of(&view, &at.ctx, fan_out).await?;
+                        self.start_stream(run, at, op, fan_out, stream.clone(), fold);
                         return Ok(());
                     }
                     if let Some(group) = &run.spec.parallel[op]
@@ -164,9 +170,19 @@ impl Inner {
                 }
                 Plan::FanOut { op, fan_out, ctx } => {
                     at.set_ctx(ctx);
+                    // This worker owns the scope: if it folds, the reduce task must run here.
+                    if let Some(reducer) = self.reducer(run, op)
+                        && !self.can_run(reducer)
+                    {
+                        let to = self.routes.wait_for_server(reducer, self.skip()).await;
+                        at.branch.resume = Resume::Action { op };
+                        self.move_branch(run, at, to);
+                        return Ok(());
+                    }
+                    let fold = self.fold_of(&view, &at.ctx, op).await?;
                     let list = view.get(&at.ctx, fan_out.input).await?;
                     let items = list.items().context("fan-out")?;
-                    self.fan_out(run, at, op, fan_out.output, items);
+                    self.fan_out(run, at, op, fan_out.output, items, fold);
                     return Ok(());
                 }
                 Plan::Collect { collect, ctx, .. } => {
@@ -332,8 +348,59 @@ impl Inner {
         Ok(Ok(ctx))
     }
 
+    /// The reduce task that folds the scope fan-out `op` opens, if it folds.
+    pub(super) fn reducer<'r>(&self, run: &'r Run, op: OpId) -> Option<&'r TaskRef> {
+        run.spec.task(run.spec.collect_ops[op]?)
+    }
+
+    /// Whether this worker runs `task` now: it serves it and is not draining.
+    fn can_run(&self, task: &TaskRef) -> bool {
+        self.tasks.task(task).is_some() && !self.is_draining()
+    }
+
+    /// The fold of the scope fan-out `op` opens in `ctx`, if it folds: from its first accumulator.
+    pub(super) async fn fold_of(
+        &self,
+        view: &View<'_>,
+        ctx: &Arc<Node>,
+        op: OpId,
+    ) -> anyhow::Result<Option<Fold>> {
+        match view.run.spec.collect_ops[op] {
+            Some(collect) => self.fold_from(view, ctx, collect).await,
+            None => Ok(None),
+        }
+    }
+
+    /// The fold `collect` makes of a scope opened in `ctx`, if it reduces: from its first
+    /// accumulator.
+    pub(super) async fn fold_from(
+        &self,
+        view: &View<'_>,
+        ctx: &Arc<Node>,
+        collect: OpId,
+    ) -> anyhow::Result<Option<Fold>> {
+        let run = view.run;
+        let Some(reduce) = kernel::operation(run.spec.workflow(), collect)?
+            .collect()
+            .and_then(|collect| collect.reduce.as_ref())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Fold {
+            task: run
+                .spec
+                .task(collect)
+                .context("a reduce has a task")?
+                .clone(),
+            op: collect,
+            accumulator: view.get(ctx, reduce.init).await?,
+            next: 0,
+            busy: false,
+        }))
+    }
+
     /// Runs a task on `args`, whatever its kind, as the call named `key`.
-    async fn invoke(
+    pub(super) async fn invoke(
         self: &Arc<Self>,
         task_ref: &TaskRef,
         task: &Task,
@@ -389,6 +456,7 @@ impl Inner {
         op: OpId,
         output: namu_core::ValueId,
         items: Vec<Value>,
+        fold: Option<Fold>,
     ) {
         let branch = &at.branch;
         let scope = self.ids.next();
@@ -425,10 +493,15 @@ impl Inner {
             },
         ]);
         self.release_when(durable, release.clone());
+        let opened = Scope::new(then, Some(count));
+        let opened = match fold {
+            Some(fold) => opened.with_fold(fold),
+            None => opened,
+        };
         if items.is_empty() {
-            return self.scope_over(run, scope, Scope::new(then, Some(0)));
+            return self.scope_over(run, scope, opened);
         }
-        run.open_scope(scope, Scope::new(then, Some(count)));
+        run.open_scope(scope, opened);
 
         let inner: Arc<[_]> = branch.scopes.iter().copied().chain([scope]).collect();
         let live = run.spec.liveness.after_action(op);

@@ -153,6 +153,17 @@ pub async fn drive<'w, S: ValueStore>(
     }
 }
 
+/// The action at `op`, to perform in `ctx`, which is already prepared for it: where a branch that
+/// moved to perform it resumes.
+pub fn action<C>(workflow: &Workflow, op: OpId, ctx: C) -> anyhow::Result<Plan<'_, C>> {
+    Ok(match &operation(workflow, op)?.action {
+        Some(Action::Call(call)) => Plan::Call { op, call, ctx },
+        Some(Action::FanOut(fan_out)) => Plan::FanOut { op, fan_out, ctx },
+        Some(Action::Collect(collect)) => Plan::Collect { op, collect, ctx },
+        None => anyhow::bail!("op {op} has no action to resume at"),
+    })
+}
+
 pub fn operation(workflow: &Workflow, op: OpId) -> anyhow::Result<&Operation> {
     workflow
         .operations

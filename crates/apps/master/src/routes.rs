@@ -176,7 +176,7 @@ pub async fn upload_workflow(
     let task_ids: BTreeSet<&str> = workflow
         .operations
         .iter()
-        .filter_map(|op| op.call().map(|c| c.task_id.as_str()))
+        .filter_map(|op| op.task_id())
         .collect();
     for task_id in task_ids {
         let version = req

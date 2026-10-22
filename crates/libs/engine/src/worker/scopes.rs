@@ -36,7 +36,7 @@ impl Inner {
         let Some(state) = self.run_state(*run) else {
             return self.orphan(end.into());
         };
-        let over = {
+        let (over, folds) = {
             let mut scopes = state.scopes.lock().unwrap();
             let Some(scope) = scopes.get_mut(scope_id) else {
                 drop(scopes);
@@ -46,13 +46,14 @@ impl Inner {
             if ended != Ended::Again {
                 Self::free_credit(scope);
             }
+            let folds = scope.fold.is_some();
             match ended {
                 Ended::Again => {
                     drop(scopes);
                     return self.ack(*delivery);
                 }
-                Ended::Open => None,
-                Ended::Over => scopes.remove(scope_id),
+                Ended::Open => (None, folds),
+                Ended::Over => (scopes.remove(scope_id), false),
             }
         };
         let record = EndRecord {
@@ -67,6 +68,9 @@ impl Inner {
         self.ack_when(durable, *delivery);
         if let Some(scope) = over {
             self.scope_over(&state, *scope_id, scope);
+        }
+        if folds {
+            self.fold(&state, *scope_id);
         }
     }
 
@@ -98,8 +102,8 @@ impl Inner {
                     finish.expect("the run's outcome is kept where its root scope is"),
                 )
             }
-            (items, Then::Continue { continuation, ctx }) => {
-                self.resume(run, id, continuation, ctx, items);
+            (gathered, Then::Continue { continuation, ctx }) => {
+                self.resume(run, id, continuation, ctx, gathered);
             }
         }
     }
@@ -134,7 +138,7 @@ impl Inner {
         id: ScopeId,
         continuation: Continuation,
         ctx: Arc<Node>,
-        items: Vec<Value>,
+        gathered: Value,
     ) {
         let Continuation {
             branch,
@@ -161,7 +165,7 @@ impl Inner {
             .expect("collect ops are found by scope analysis")
             .output;
         let live = run.spec.liveness.after_action(op);
-        let node = self.grow(run, &ctx, live, vec![(output, Value::list(items))]);
+        let node = self.grow(run, &ctx, live, vec![(output, gathered)]);
         let branch = Branch {
             id: branch,
             hop: hop + 1,

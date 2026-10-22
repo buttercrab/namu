@@ -53,8 +53,8 @@ impl Branch {
 pub enum Resume {
     /// Continue interpreting the IR.
     Kernel(Start),
-    /// Run the task call at `op`; its context is already prepared.
-    Call { op: OpId },
+    /// Perform the action at `op` (a call, a fan-out); its context is already prepared.
+    Action { op: OpId },
 }
 
 /// What a branch reports to its run's owner.

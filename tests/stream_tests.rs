@@ -342,3 +342,27 @@ async fn a_stream_keeps_its_call_key_when_resumed_or_restarted() {
         assert_eq!(opened.len(), 1, "restarted: {restarted}: {opened:?}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_can_be_reduced_as_it_flows() {
+    #[task(reduce)]
+    fn tally(total: i32, x: i32) -> Result<i32>;
+
+    #[workflow]
+    fn wf() -> i32 {
+        let n = 30;
+        let delay = 1;
+        let xs = numbers(n, delay);
+        let ys = double(xs);
+        tally(1000, ys)
+    }
+
+    let tasks =
+        || tasks(Arc::default()).with("tally", |(total, x): (i32, i32)| Ok::<_, String>(total + x));
+    for workers in [1, 3] {
+        let cluster = cluster(workers, tasks());
+        let outcome = run_on(&cluster, wf().to_serializable("s".into())).await;
+        // 1000 + 2 * (0 + .. + 29)
+        assert_eq!(json(&outcome.results), [json!(1870)], "{workers} workers");
+    }
+}

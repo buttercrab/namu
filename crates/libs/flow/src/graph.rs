@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use namu_core::ValueId;
 use namu_core::ir::{
-    Action, Builtin, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Workflow,
+    Action, Builtin, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Reduce, Workflow,
 };
 use namu_core::types::{Defs, Type};
 
@@ -149,10 +149,14 @@ impl<T> Graph<T> {
                             output: node.outputs[0],
                         }));
                     }
-                    NodeKind::Collect { input } => {
+                    NodeKind::Collect { input, reduce } => {
                         pending.action = Some(Action::Collect(Collect {
                             input: *input,
                             output: node.outputs[0],
+                            reduce: reduce.as_ref().map(|(task_id, init)| Reduce {
+                                task_id: task_id.clone(),
+                                init: *init,
+                            }),
                         }));
                     }
                     NodeKind::Builtin { op, ty, inputs } => {
@@ -285,9 +289,14 @@ impl<T> Graph<T> {
                     NodeKind::FanOut { input } => {
                         format!("  let var{} = fan_out(var{});\n", node_id, input)
                     }
-                    NodeKind::Collect { input } => {
-                        format!("  let var{} = collect(var{});\n", node_id, input)
-                    }
+                    NodeKind::Collect {
+                        input,
+                        reduce: None,
+                    } => format!("  let var{} = collect(var{});\n", node_id, input),
+                    NodeKind::Collect {
+                        input,
+                        reduce: Some((task, init)),
+                    } => format!("  let var{node_id} = reduce({task}, var{init}, var{input});\n"),
                     NodeKind::Builtin { op, ty, inputs } => {
                         let inputs: Vec<String> =
                             inputs.iter().map(|v| format!("var{v}")).collect();

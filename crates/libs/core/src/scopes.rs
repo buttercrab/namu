@@ -24,6 +24,9 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
 
     // The stack of open scopes (fan-out ops, innermost last) on entry to each op.
     let mut entry: Vec<Option<Vec<OpId>>> = vec![None; ops.len()];
+    // The same, after each op's action: inside the scope a fan-out opens, outside the one a
+    // collect closes.
+    let mut after: Vec<Vec<OpId>> = vec![Vec::new(); ops.len()];
     let mut collect_of = vec![None; ops.len()];
     entry[0] = Some(Vec::new());
     let mut work = vec![0];
@@ -47,6 +50,7 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
                 _ => collect_of[fan_out] = Some(op_id),
             }
         }
+        after[op_id] = scopes.clone();
         for next in op.successors() {
             ensure!(next < ops.len(), "op {op_id} jumps to missing op {next}");
             match &entry[next] {
@@ -61,7 +65,58 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
             }
         }
     }
+    check_reduces(workflow, &entry, &after, &collect_of)?;
     Ok(collect_of)
+}
+
+/// A reduce's first accumulator is read where its scope was opened, so it must be made outside
+/// that scope: before the fan-out, not per item.
+fn check_reduces(
+    workflow: &Workflow,
+    entry: &[Option<Vec<OpId>>],
+    after: &[Vec<OpId>],
+    collect_of: &[Option<OpId>],
+) -> anyhow::Result<()> {
+    let ops = &workflow.operations;
+    // The scopes each value is made in.
+    let mut made_in: HashMap<ValueId, &[OpId]> = HashMap::new();
+    for (op_id, op) in ops.iter().enumerate() {
+        let Some(entered) = &entry[op_id] else {
+            continue;
+        };
+        let entered_values = op
+            .literals
+            .iter()
+            .map(|literal| literal.output)
+            .chain(op.phis.iter().map(|phi| phi.output))
+            .chain(op.builtins.iter().map(|builtin| builtin.output));
+        for value in entered_values {
+            made_in.insert(value, entered);
+        }
+        for &value in op.action.iter().flat_map(|action| action.outputs()) {
+            made_in.insert(value, &after[op_id]);
+        }
+    }
+    for (op_id, op) in ops.iter().enumerate() {
+        let Some(reduce) = op.collect().and_then(|collect| collect.reduce.as_ref()) else {
+            continue;
+        };
+        let Some(fan_out) = collect_of.iter().position(|&of| of == Some(op_id)) else {
+            continue;
+        };
+        if made_in
+            .get(&reduce.init)
+            .is_some_and(|scopes| scopes.contains(&fan_out))
+        {
+            bail!(
+                "the first accumulator of `{}` (value {}) is made inside the fan-out it folds \
+                 (op {fan_out}), once per item; make it before the fan-out",
+                reduce.task_id,
+                reduce.init
+            );
+        }
+    }
+    Ok(())
 }
 
 /// For every operation that calls a task, the fan-out right after it if that fan-out is the only
@@ -82,7 +137,7 @@ pub fn fused_fan_outs(workflow: &Workflow) -> Vec<Option<OpId>> {
             .flat_map(|builtin| &builtin.inputs)
             .for_each(|&value| used(value));
         if let Some(action) = &op.action {
-            action.inputs().iter().for_each(|&value| used(value));
+            action.inputs().for_each(&mut used);
         }
         match op.next {
             Next::Branch { var, .. } | Next::Return { var: Some(var) } => used(var),
@@ -127,6 +182,7 @@ mod tests {
         let collect = Collect {
             input: 1,
             output: 2,
+            reduce: None,
         };
         Operation::new(Vec::new(), Vec::new(), Some(Action::Collect(collect)), next)
     }
