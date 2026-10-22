@@ -348,6 +348,7 @@ fn parse_task_runtime(raw: &str) -> anyhow::Result<TaskRuntime> {
     match raw {
         "native" => Ok(TaskRuntime::Native),
         "wasm" => Ok(TaskRuntime::Wasm),
+        "python" => Ok(TaskRuntime::Python),
         _ => Err(anyhow!("invalid task runtime: {raw}")),
     }
 }

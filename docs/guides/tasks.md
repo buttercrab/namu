@@ -117,6 +117,33 @@ let tasks = FnTasks::new()
 
 See `examples/basic`.
 
+## Python tasks
+Write the task with the `namu` package (`sdk/python`, no dependencies) and give its directory a
+manifest with `"runtime": "python"`; the directory holds the one module:
+
+```python
+from dataclasses import dataclass
+import namu
+
+@dataclass
+class Stats:
+    words: int
+    top_word: str
+
+@namu.task
+def summarize_py(stats: list[Stats]) -> dict[str, int]:
+    return {"docs": len(stats), "words": sum(s.words for s in stats)}
+```
+
+The workflow declares it like any task (`#[task] pub fn summarize_py(stats: Vec<Stats>) -> ...`).
+A worker that serves `python` (`NAMU_RUNTIMES=wasm,python`) runs it in a pool of Python processes
+(`NAMU_PYTHON_PROCESSES`, default 4; `NAMU_PYTHON`, default `python3`), each running one call at a
+time, awaited by the worker like an async task. Values cross as MessagePack: a struct is a map of
+its fields, and a parameter annotated with a dataclass gets one. `namu.call_key()` gives the
+call's key. The task runs in the worker's Python environment: install what it imports there. A
+process that crashes fails its call and is replaced. Single tasks only, for now. See
+`examples/distributed/tasks/summarize_py`.
+
 ## Async tasks
 A task that mostly waits (on a model server, an API, another process) is registered as async:
 the worker awaits it, so a hundred calls in flight hold no task slots and no threads.

@@ -1,0 +1,15 @@
+[project]
+name = "namu"
+version = "0.1.0"
+description = "Write NAMU tasks in Python."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+# The C MessagePack codec, used when it is installed; the built-in one otherwise.
+fast = ["msgpack>=1.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

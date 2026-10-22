@@ -16,7 +16,7 @@ cd "$ROOT_DIR"
 
 REDIS_PORT=${REDIS_PORT:-6390}
 ORCH_PORT=${ORCH_PORT:-8090}
-WORKERS=${WORKERS:-"wasm,native wasm wasm"}
+WORKERS=${WORKERS:-"wasm,native,python wasm,python wasm"}
 WORKFLOW=${WORKFLOW:-doc_stats}
 TASKS_DIR=${TASKS_DIR:-examples/distributed/tasks}
 WORKFLOWS=${WORKFLOWS:-namu-distributed-workflows}

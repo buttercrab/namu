@@ -241,7 +241,7 @@ const WASM_TARGET: &str = "wasm32-wasip2";
 fn set_build_info(manifest: &mut TaskManifest) {
     manifest.platform = match manifest.runtime {
         TaskRuntime::Native => Some(namu_proto::host_platform()),
-        TaskRuntime::Wasm => None,
+        TaskRuntime::Wasm | TaskRuntime::Python => None,
     };
     manifest.abi_version = namu_proto::TASK_ABI_VERSION.to_string();
 }
@@ -277,20 +277,23 @@ fn find_artifact(task_dir: &Path, runtime: &TaskRuntime) -> anyhow::Result<PathB
     match runtime {
         TaskRuntime::Native => find_library(task_dir),
         TaskRuntime::Wasm => find_wasm(task_dir),
+        TaskRuntime::Python => {
+            find_single_artifact(task_dir, |name| TaskRuntime::Python.is_artifact(name)).ok_or_else(
+                || anyhow::anyhow!("expected 1 Python module in {}", task_dir.display()),
+            )
+        }
     }
 }
 
 fn find_library(task_dir: &Path) -> anyhow::Result<PathBuf> {
     let target_dir = task_dir.join("target/release");
-    find_single_artifact(&target_dir, |name| {
-        name.ends_with(".so") || name.ends_with(".dylib") || name.ends_with(".dll")
-    })
-    .ok_or_else(|| anyhow::anyhow!("expected 1 library in {}", target_dir.display()))
+    find_single_artifact(&target_dir, |name| TaskRuntime::Native.is_artifact(name))
+        .ok_or_else(|| anyhow::anyhow!("expected 1 library in {}", target_dir.display()))
 }
 
 fn find_wasm(task_dir: &Path) -> anyhow::Result<PathBuf> {
     let dir = task_dir.join("target").join(WASM_TARGET).join("release");
-    find_single_artifact(&dir, |name| name.ends_with(".wasm"))
+    find_single_artifact(&dir, |name| TaskRuntime::Wasm.is_artifact(name))
         .ok_or_else(|| anyhow::anyhow!("expected 1 wasm component in {}", dir.display()))
 }
 
