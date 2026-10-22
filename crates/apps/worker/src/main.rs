@@ -53,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .map(|rt| match rt {
             TaskRuntime::Wasm => "wasm".to_string(),
+            TaskRuntime::Python => "python".to_string(),
             TaskRuntime::Native => format!("native:{platform}"),
         })
         .collect();

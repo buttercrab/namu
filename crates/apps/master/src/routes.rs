@@ -13,7 +13,8 @@ use namu_engine::message::Message;
 use namu_engine::transport::Transport;
 use namu_proto::{
     MEMBERSHIP_TTL_MS, Member, Membership, RunCreateRequest, RunCreateResponse, RunStatusResponse,
-    TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse, WorkflowUploadRequest, keys,
+    TaskManifest, TaskRuntime, WorkerRegisterRequest, WorkerRegisterResponse,
+    WorkflowUploadRequest, keys,
 };
 use redis::AsyncCommands;
 use serde_json::{Value as JsonValue, json};
@@ -127,9 +128,9 @@ fn read_artifact(bytes: &Bytes) -> anyhow::Result<TaskManifest> {
         entry.read_to_end(&mut buf)?;
         if name == "manifest.json" {
             manifest = Some(serde_json::from_slice(&buf)?);
-        } else if [".wasm", ".so", ".dylib", ".dll"]
+        } else if TaskRuntime::ALL
             .iter()
-            .any(|ext| name.ends_with(ext))
+            .any(|runtime| runtime.is_artifact(&name))
         {
             binary_digest = Some(format!("sha256:{:x}", sha2::Sha256::digest(&buf)));
         }

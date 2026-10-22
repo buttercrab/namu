@@ -1,6 +1,7 @@
 //! Task runtimes and the artifact cache. Each task picks its runtime in its manifest.
 
 pub mod native;
+pub mod python;
 pub mod wasm;
 
 use std::path::{Path, PathBuf};
@@ -41,6 +42,15 @@ impl Runtimes {
     /// Loads the task a manifest describes, as its runtime and kind say.
     pub async fn load(&self, manifest: &TaskManifest) -> anyhow::Result<Kind> {
         let path = self.fetch_artifact(manifest).await?;
+        if manifest.runtime == TaskRuntime::Python {
+            anyhow::ensure!(
+                matches!(manifest.task_kind, TaskKind::Single),
+                "a Python task is a single task for now, not a {:?} one",
+                manifest.task_kind
+            );
+            let task = python::PythonTask::load(&manifest.task_id, &path, &self.cache_dir)?;
+            return Ok(Kind::Async(task));
+        }
         let engine = self.engine.clone();
         let runtime = manifest.runtime;
         let kind = manifest.task_kind.clone();
@@ -54,10 +64,12 @@ impl Runtimes {
                 (TaskKind::Single, TaskRuntime::Native) => {
                     Kind::Call(Arc::new(native::NativeTask::load(&path)?))
                 }
+                (_, TaskRuntime::Python) => unreachable!("loaded above"),
                 (TaskKind::Stream, runtime) => Kind::Stream(Stream {
                     task: match runtime {
                         TaskRuntime::Wasm => Arc::new(wasm::WasmStreamTask::load(&engine, &path)?),
                         TaskRuntime::Native => Arc::new(native::NativeStreamTask::load(&path)?),
+                        TaskRuntime::Python => unreachable!("loaded above"),
                     },
                     window,
                 }),
@@ -65,6 +77,7 @@ impl Runtimes {
                     task: match runtime {
                         TaskRuntime::Wasm => Arc::new(wasm::WasmBatchTask::load(&engine, &path)?),
                         TaskRuntime::Native => Arc::new(native::NativeBatchTask::load(&path)?),
+                        TaskRuntime::Python => unreachable!("loaded above"),
                     },
                     policy,
                 }),
@@ -127,7 +140,7 @@ fn extract(
         let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
             continue;
         };
-        if !is_binary(&name, runtime) {
+        if !runtime.is_artifact(&name) {
             continue;
         }
         let mut bytes = Vec::new();
@@ -141,15 +154,6 @@ fn extract(
         return Ok(out);
     }
     anyhow::bail!("artifact has no {} binary", runtime.as_str())
-}
-
-fn is_binary(name: &str, runtime: TaskRuntime) -> bool {
-    match runtime {
-        TaskRuntime::Wasm => name.ends_with(".wasm"),
-        TaskRuntime::Native => {
-            name.ends_with(".so") || name.ends_with(".dylib") || name.ends_with(".dll")
-        }
-    }
 }
 
 /// Rejects ids that could escape the cache directory.

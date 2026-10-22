@@ -32,6 +32,8 @@ PY
 check doc_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 # The same, with the summary folded document by document (a reduce) rather than collected.
 check doc_stats_reduced '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
+# The summary written in Python, run by a pool of Python processes on the workers.
+check doc_stats_py '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 check nested_stats '{"status": "succeeded", "failures": 0, "result": 30750}'
 # The same documents as doc_stats, streamed in one at a time: the same result.
 check stream_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'

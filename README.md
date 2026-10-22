@@ -31,7 +31,7 @@ Rust source -> namu-macros -> JSON IR -> namu-engine -> workers
 - `examples/basic` - a workflow and its tasks, run in-process (`cargo run -p namu-basic`).
 - `examples/advanced` - a labeling pipeline: a stream, continuous batching, and a report
   (`cargo run -p namu-advanced`).
-- `examples/distributed` - WASM and native tasks across workers.
+- `examples/distributed` - WASM, native and Python tasks across workers.
 - `examples/rag` - a real RAG ingestion pipeline: Wikipedia articles, chunked, embedded with
   all-MiniLM-L6-v2 and indexed in Qdrant across workers, then searched (`./scripts/rag.sh`).
 

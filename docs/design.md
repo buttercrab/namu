@@ -564,8 +564,9 @@ its **shape**:
 - Language-neutral protocol: serialized inputs in, a serialized result or error out, plus task
   metadata (kind, resources, codec).
 - Kinds: `single`, `batch` (§6.6), `stream` (§6.5).
-- Execution modes: **in-process** (Rust, fastest) and **out-of-process** (a warm process pool or
-  sidecar, used for Python).
+- Execution modes: **in-process** (Rust, fastest) and **out-of-process**: Python runs in a warm
+  pool of processes per task on the worker, which awaits each call as an async task. A crash in
+  a task takes down its process, not the worker.
 - Tasks may hold state (a loaded model, connections) via `prepare`, and are reused across calls.
 - SDKs generate the protocol glue: Rust `#[task]`, and a Python SDK later.
 - **Tasks are CPU-bound by contract, and run where the branch is driven.** A call runs on the
@@ -691,7 +692,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Streams | ✅ Fused with their fan-out, per-item credits at the source, resumable by position (§6.5). Guest streams yield no cursors yet; a resumed stream is reopened and skipped forward | Cursors from guest streams; windows for unbounded streams |
 | Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v6; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
-| Runtimes | ✅ Per-task `wasm` or `native`, routed by runtime and platform | Python, containers, GPU |
+| Runtimes | ✅ Per-task `wasm`, `native` or `python`, routed by runtime and platform. Python: a pool of processes per task on the worker, speaking MessagePack frames, called as an async task (`sdk/python`) | Python streams and batches; a Python environment per task; containers, GPU |
 | Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, and nodes no live record reaches are swept whenever a run's nodes double (§7.5) | Reports, which are the run's results, stay until it ends |
 | Fan-in termination | ✅ Counting at scope owners: every branch of a scope is created by its owner, so it knows the count; ended indices are a watermark plus the out-of-order window | |
 | Membership | ✅ Join (register + heartbeats); a worker whose heartbeats stop is replaced by a successor (§7.4). Drain on SIGTERM (§10.4): routed around, branches move on at their next task call, stream sources stop at an item, and once nothing is in flight and everything is durable the worker leaves and its successor takes over its scopes from the log, with nothing run twice | Heartbeats tied to the registering process, not just its id |

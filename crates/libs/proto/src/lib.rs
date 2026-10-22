@@ -37,6 +37,9 @@ pub enum TaskRuntime {
     Wasm,
     /// A native shared library exporting the NAMU C ABI. Platform-specific.
     Native,
+    /// A Python module (the `namu` SDK's `@namu.task`), run by a pool of Python processes on
+    /// the worker, in the worker's Python environment.
+    Python,
 }
 
 impl TaskRuntime {
@@ -44,13 +47,27 @@ impl TaskRuntime {
         match self {
             TaskRuntime::Wasm => "wasm",
             TaskRuntime::Native => "native",
+            TaskRuntime::Python => "python",
         }
+    }
+
+    pub const ALL: [TaskRuntime; 3] = [TaskRuntime::Wasm, TaskRuntime::Native, TaskRuntime::Python];
+
+    /// Whether a file named `name` is the code of a task of this runtime, in its artifact.
+    pub fn is_artifact(&self, name: &str) -> bool {
+        let extensions: &[&str] = match self {
+            TaskRuntime::Wasm => &[".wasm"],
+            TaskRuntime::Native => &[".so", ".dylib", ".dll"],
+            TaskRuntime::Python => &[".py"],
+        };
+        extensions.iter().any(|extension| name.ends_with(extension))
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim() {
             "wasm" => Some(TaskRuntime::Wasm),
             "native" => Some(TaskRuntime::Native),
+            "python" => Some(TaskRuntime::Python),
             _ => None,
         }
     }
@@ -113,6 +130,7 @@ impl TaskManifest {
     pub fn runtime_key(&self) -> String {
         match self.runtime {
             TaskRuntime::Wasm => "wasm".to_string(),
+            TaskRuntime::Python => "python".to_string(),
             TaskRuntime::Native => {
                 format!("native:{}", self.platform.as_deref().unwrap_or("unknown"))
             }

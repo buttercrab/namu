@@ -308,3 +308,19 @@ pub fn stream_windows() -> i64 {
     let summary = summarize(batch);
     total_words(summary)
 }
+
+/// `summarize`, written in Python (`../tasks/summarize_py`) and run by a pool of Python processes.
+#[task(single)]
+pub fn summarize_py(stats: Vec<Stats>) -> Result<Summary>;
+
+/// `doc_stats`, summarized in Python: WASM, then Python, the same result.
+#[workflow(id = "doc_stats_py")]
+pub fn doc_stats_py() -> Summary {
+    let min_len = 6;
+    let rounds = 4000;
+    let n = 48;
+    let cfg = make_config(min_len, rounds);
+    let docs = split_docs(n);
+    let stats = analyze(docs, cfg);
+    summarize_py(stats)
+}
