@@ -252,7 +252,9 @@ async fn runs_share_batches() {
     let tasks = Arc::new(
         tasks(log.clone())
             .with("shift", |x: i32| Ok::<_, String>(x + 1000))
-            .batch("embed", policy(64, None)),
+            // A session that waits for both runs' 60 items: whatever order they arrive in, a
+            // step takes items from both.
+            .batch("embed", policy(60, Some(500))),
     );
     let cluster = Arc::new(LocalCluster::uniform(1, tasks));
     let (a, b) = tokio::join!(
