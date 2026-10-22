@@ -85,6 +85,10 @@ impl VisitMut for WorkflowVisitor {
 
     fn visit_expr_mut(&mut self, i: &mut Expr) {
         match i {
+            Expr::Call(call_expr) if matches!(&*call_expr.func, Expr::Path(func) if func.path.is_ident("window")) =>
+            {
+                *i = self.handle_window(call_expr);
+            }
             Expr::Call(call_expr) => {
                 if matches!(&*call_expr.func, Expr::Path(func) if func.path.is_ident("attempt")) {
                     let call_expr = call_expr.clone();
@@ -304,6 +308,27 @@ impl WorkflowVisitor {
         let (left, right) = (&binary.left, &binary.right);
         let op = op.map(|op| quote! { #op, });
         parse_quote! { ::namu::__macro_exports::#helper(&#builder, #op #left, #right) }
+    }
+
+    /// `window(items, N)`: continues once per `N` items of the innermost fan-out, with them.
+    /// The size is part of the IR, so it is a literal.
+    fn handle_window(&mut self, call: &mut syn::ExprCall) -> Expr {
+        const USAGE: &str = "a window is `window(items, N)`, with N an integer literal";
+        let size = match call.args.iter().nth(1) {
+            Some(Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(size),
+                ..
+            })) if call.args.len() == 2 => size.clone(),
+            _ => {
+                self.fail(&call, USAGE);
+                return Expr::Call(call.clone());
+            }
+        };
+        let mut items = call.args[0].clone();
+        self.visit_expr_mut(&mut items);
+        self.last_expr_has_value = true;
+        let builder = &self.builder_ident;
+        parse_quote! { ::namu::__macro_exports::window(&#builder, #items, #size) }
     }
 
     fn handle_unary(&mut self, unary: &mut syn::ExprUnary) -> Expr {

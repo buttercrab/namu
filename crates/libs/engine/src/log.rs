@@ -16,7 +16,7 @@ use tokio::sync::oneshot;
 use crate::ids::{NodeId, RunId, ScopeId, WorkerId, owner};
 use crate::message::{Branch, BranchId, Report};
 use crate::run::RunInfo;
-use crate::scope::{Continuation, Position, Source};
+use crate::scope::{Continuation, Feed, Position, Source};
 use crate::tree::Node;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,13 +42,22 @@ pub enum Record {
         hop: u64,
     },
     /// A scope opened by its owner: `continuation` is `None` for the run's root scope, `source`
-    /// is the stream feeding it, if one does, and `count` its number of branches if known.
+    /// is the stream feeding it, if one does, `count` its number of branches if known, and
+    /// `feeds` the scope it is windowed into, if it is.
     Scope {
         run: RunId,
         scope: ScopeId,
         continuation: Option<Continuation>,
         source: Option<Source>,
         count: Option<u64>,
+        feeds: Option<(ScopeId, Feed)>,
+    },
+    /// How far windowing `scope` into `into` has got.
+    Fed {
+        run: RunId,
+        scope: ScopeId,
+        into: ScopeId,
+        feed: Feed,
     },
     /// How far the stream feeding `scope` has got.
     Position {
@@ -160,6 +169,8 @@ pub struct ScopeEstate {
     pub ends: Vec<EndRecord>,
     /// How far its fold has got, if it folds: through which branch, and the accumulator there.
     pub folded: Option<(u64, Value)>,
+    /// The scope it is windowed into, and how far that has got, if it is.
+    pub feeds: Option<(ScopeId, Feed)>,
 }
 
 #[async_trait]
@@ -269,6 +280,7 @@ impl MemoryLog {
                     continuation,
                     source,
                     count,
+                    feeds,
                 } => {
                     let estate = ScopeEstate {
                         scope,
@@ -277,6 +289,7 @@ impl MemoryLog {
                         count,
                         ends: Vec::new(),
                         folded: None,
+                        feeds,
                     };
                     runs.entry(run).or_default().scopes.insert(scope, estate);
                 }
@@ -311,6 +324,19 @@ impl MemoryLog {
                     let run = runs.entry(run).or_default();
                     if let Some(scope) = run.scopes.get_mut(&scope) {
                         scope.ends.push(end);
+                    }
+                }
+                Record::Fed {
+                    run,
+                    scope,
+                    into,
+                    feed,
+                } => {
+                    let scope = runs
+                        .get_mut(&run)
+                        .and_then(|run| run.scopes.get_mut(&scope));
+                    if let Some(scope) = scope {
+                        scope.feeds = Some((into, feed));
                     }
                 }
                 Record::Folded {

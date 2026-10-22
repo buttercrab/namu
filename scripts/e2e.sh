@@ -35,6 +35,8 @@ check doc_stats_reduced '{"status": "succeeded", "failures": 0, "docs": 48, "wor
 check nested_stats '{"status": "succeeded", "failures": 0, "result": 30750}'
 # The same documents as doc_stats, streamed in one at a time: the same result.
 check stream_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
+# Windows over the stream: every 8 documents are summarized together; the same words in all.
+check stream_windows '{"status": "succeeded", "failures": 0, "result": 30750}'
 # Two batch tasks (dynamic, then continuous) label each document; every label is counted.
 check label_stats '{"status": "succeeded", "failures": 0, "TREE": 4, "STREAM": 4, "BRANCH": 4, "A": 1, "WORKER": 2}'
 check doc_stats_partial '{"status": "partial_failed", "failures": 14, "docs": 34}'

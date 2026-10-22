@@ -366,3 +366,80 @@ async fn a_stream_can_be_reduced_as_it_flows() {
         assert_eq!(json(&outcome.results), [json!(1870)], "{workers} workers");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_goes_out_in_windows_as_it_flows() {
+    #[workflow]
+    fn wf() -> Vec<i32> {
+        let n = 10;
+        let delay = 5;
+        let x = each(numbers(n, delay));
+        let batch = window(x, 4);
+        let total = sum(batch);
+        listing(total)
+    }
+
+    for workers in [1, 3] {
+        let cluster = cluster(workers, tasks(Arc::default()));
+        let outcome = run_on(&cluster, wf().to_serializable("w".into())).await;
+        // [0..4], [4..8], [8, 9]; collected in window order.
+        assert_eq!(
+            json(&outcome.results),
+            [json!([6, 22, 17])],
+            "{workers} workers: {:?}",
+            outcome.failures
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn windows_survive_their_worker_dying_mid_stream() {
+    #[task]
+    fn total(xs: Vec<i32>) -> Result<i32>;
+
+    #[workflow]
+    fn wf() -> Vec<i32> {
+        let n = 40;
+        let delay = 10;
+        let x = each(numbers(n, delay));
+        let batch = window(x, 5);
+        let t = total(batch);
+        listing(t)
+    }
+
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tasks: Arc<dyn Tasks> = Arc::new(tasks(Arc::default()).with("total", {
+        let keys = keys.clone();
+        move |xs: Vec<i32>| {
+            let key = namu_engine::call_key().expect("a call has a key");
+            keys.lock().unwrap().push(key.to_string());
+            Ok::<_, String>(xs.iter().sum::<i32>())
+        }
+    }));
+    // Logs take 30 ms to be durable: the worker dies with windows sent that its successor does
+    // not know of.
+    let cluster = Arc::new(LocalCluster::with_log_delay(
+        vec![tasks; 3],
+        Duration::from_millis(30),
+    ));
+    let run = tokio::spawn({
+        let cluster = cluster.clone();
+        async move { cluster.run(wf().to_serializable("w".into())).await }
+    });
+    // The first run is owned by worker 1, which runs the stream and owns its scopes.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    cluster.kill(1).unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(20), run)
+        .await
+        .expect("the run finished")
+        .unwrap()
+        .unwrap();
+    assert!(outcome.succeeded(), "{:?}", outcome.failures);
+    let windows: Vec<i32> = (0..8).map(|w| (w * 5..w * 5 + 5).sum()).collect();
+    assert_eq!(json(&outcome.results), [json!(windows)]);
+    // A window's call done again had the key it had the first time.
+    let keys = keys.lock().unwrap();
+    let distinct: std::collections::HashSet<_> = keys.iter().collect();
+    assert_eq!(distinct.len(), 8, "{} keys for 8 windows", distinct.len());
+}

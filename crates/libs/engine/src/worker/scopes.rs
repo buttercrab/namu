@@ -36,7 +36,7 @@ impl Inner {
         let Some(state) = self.run_state(*run) else {
             return self.orphan(end.into());
         };
-        let (over, folds) = {
+        let (over, (folds, feeds)) = {
             let mut scopes = state.scopes.lock().unwrap();
             let Some(scope) = scopes.get_mut(scope_id) else {
                 drop(scopes);
@@ -47,13 +47,14 @@ impl Inner {
                 Self::free_credit(scope);
             }
             let folds = scope.fold.is_some();
+            let feeds = scope.feed.is_some();
             match ended {
                 Ended::Again => {
                     drop(scopes);
                     return self.ack(*delivery);
                 }
-                Ended::Open => (None, folds),
-                Ended::Over => (scopes.remove(scope_id), false),
+                Ended::Open => (None, (folds, feeds)),
+                Ended::Over => (scopes.remove(scope_id), (false, false)),
             }
         };
         let record = EndRecord {
@@ -71,6 +72,9 @@ impl Inner {
         }
         if folds {
             self.fold(&state, *scope_id);
+        }
+        if feeds {
+            self.send_windows(&state, *scope_id);
         }
     }
 
@@ -92,6 +96,7 @@ impl Inner {
     }
 
     pub(super) fn scope_over(self: &Arc<Self>, run: &Arc<Run>, id: ScopeId, scope: Scope) {
+        let windows = scope.feed.map(|feed| feed.windows);
         match scope.into_parts() {
             // The root scope stays in the log until the run is gone, so a successor of this
             // worker can still finish the run.
@@ -104,6 +109,14 @@ impl Inner {
             }
             (gathered, Then::Continue { continuation, ctx }) => {
                 self.resume(run, id, continuation, ctx, gathered);
+            }
+            // Every window has gone out: the windows' scope knows how many it has.
+            (_, Then::Feed { into, .. }) => {
+                self.log.record(vec![Record::ScopeGone {
+                    run: run.id(),
+                    scope: id,
+                }]);
+                self.close(run, into, windows.expect("a scope that feeds has a feed"));
             }
         }
     }

@@ -17,6 +17,7 @@ mod recovery;
 mod scopes;
 mod streams;
 mod view;
+mod windows;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -332,6 +333,7 @@ impl Inner {
                 continuation: None,
                 source: None,
                 count: Some(1),
+                feeds: None,
             },
             Record::Branch {
                 run: id,

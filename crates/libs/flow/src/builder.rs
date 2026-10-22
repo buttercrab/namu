@@ -114,6 +114,11 @@ impl<T> Builder<T> {
         )[0]
     }
 
+    /// Emits a window of `size` items of `input` and returns the per-window list.
+    pub fn window(&self, input: ValueId, size: u64) -> ValueId {
+        self.add_node(NodeKind::Window { input, size }, 1)[0]
+    }
+
     /// Emits a fan-in that folds `input` from every branch with `task_id`, from `init`, and
     /// returns the last accumulator.
     pub fn reduce(&self, task_id: String, init: ValueId, input: ValueId) -> ValueId {
@@ -250,6 +255,25 @@ impl<T: Data> IntoArg<Vec<T>> for TracedValue<T> {
         builder.typed::<Vec<T>>(list);
         list
     }
+}
+
+/// `window(item, size)`: continues once per `size` items of the innermost fan-out, with them, in
+/// branch order.
+pub fn window<G, T: Data>(
+    builder: &Builder<G>,
+    item: TracedValue<T>,
+    size: u64,
+) -> TracedValue<Vec<T>> {
+    assert!(size > 0, "a window holds at least one item");
+    let output = builder.window(item.id, size);
+    builder.typed::<Vec<T>>(output);
+    TracedValue::new(output)
+}
+
+/// `each(list)`: one branch per item of `list` (as it arrives, for a stream's), each with its
+/// item. What passing a list to a task taking one item does, without the task.
+pub fn each<G, T: Data>(builder: &Builder<G>, list: TracedValue<Vec<T>>) -> TracedValue<T> {
+    TracedValue::new(IntoArg::<T>::into_arg(list, builder))
 }
 
 /// A reduce task's call: folds `item` over every branch of the innermost fan-out, from `init`.

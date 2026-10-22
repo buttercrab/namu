@@ -2,6 +2,8 @@
 
 pub mod prelude {
     pub use anyhow::Result;
+    /// One branch per item of a list: `let page = each(pages);` (in a workflow).
+    pub use namu_flow::each;
 
     pub use crate::{Data, task, workflow};
 }
@@ -36,7 +38,7 @@ pub mod __macro_exports {
     pub use namu_flow::{
         Builder, Graph, IntoArg, Node, NodeKind, TracedValue, arith, branch, call, call0, call1,
         call2, call3, call4, call5, call6, call7, call8, call9, catch, compare, jump, literal,
-        logic, negate, not, phi, plus, reduce, return_unit, return_value, typed_like,
+        logic, negate, not, phi, plus, reduce, return_unit, return_value, typed_like, window,
     };
 }
 

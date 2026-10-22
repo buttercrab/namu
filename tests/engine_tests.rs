@@ -4,6 +4,7 @@ mod common;
 
 use std::sync::Arc;
 
+use namu::prelude::each;
 use namu::workflow;
 use namu_engine::{FnTasks, LocalCluster, Tasks};
 use serde_json::json;
@@ -890,5 +891,55 @@ fn a_reduce_must_start_from_a_value_made_before_its_fan_out() {
     assert!(
         error.to_string().contains("make it before the fan-out"),
         "{error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn windows_continue_once_per_n_items_in_order() {
+    #[workflow]
+    fn wf() -> String {
+        let x = each(range(1, 8));
+        let batch = window(x, 3);
+        let total = sum(batch);
+        join("", total)
+    }
+
+    // Windows [10, 20, 30], [40, 50, 60], [70]: one sum each, folded in window order.
+    assert_eq!(
+        results(wf().to_serializable("windows".into())).await,
+        [json!("60,150,70")]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_counts_the_items_that_reach_it() {
+    #[workflow]
+    fn wf() -> String {
+        let x = maybe_fail(range(1, 6));
+        let batch = window(x, 2);
+        let n = count(batch);
+        let total = sum(batch);
+        join("", n * 1000 + total)
+    }
+
+    // 20 failed: windows [10, 30], [40, 50].
+    let outcome = run(wf().to_serializable("windows_skip".into())).await;
+    assert_eq!(outcome.results, [json!("2040,2090")]);
+    assert_eq!(outcome.failures, ["maybe_fail: intentional failure"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_items_make_no_windows() {
+    #[workflow]
+    fn wf() -> String {
+        let x = each(range(1, 1));
+        let batch = window(x, 3);
+        let total = sum(batch);
+        join("none", total)
+    }
+
+    assert_eq!(
+        results(wf().to_serializable("windows_empty".into())).await,
+        [json!("none")]
     );
 }

@@ -18,6 +18,9 @@ A workflow is a list of **operations**. Each operation does, in order:
 A `Collect` may fold instead: `reduce: { "task_id": "merge", "init": v }` folds the items in
 branch order with `merge(accumulator, item)`, starting from `v`, a value made before the fan-out.
 
+A `Window { input, output, size }` closes the innermost fan-out scope like a collect, and opens a
+new one: every `size` items, in branch order, go on as one branch with the list bound to `output`.
+
 A `Call` may have an error edge, `catch: { "error": e, "next": op }`, as LLVM's `invoke` does: if
 the task fails, its outputs are not defined; its error message is bound to `e` and control goes to
 `op` instead of `next`. Without one, a failure fails the branch. `match attempt(..)` emits it.

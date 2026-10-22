@@ -32,6 +32,11 @@ pub enum NodeKind {
         /// The task that folds them, and the fold's first accumulator, for a reduce.
         reduce: Option<(String, ValueId)>,
     },
+    /// Windows of `size` items of the innermost fan-out, each continuing as its own branch.
+    Window {
+        input: ValueId,
+        size: u64,
+    },
     /// An expression the engine evaluates itself.
     Builtin {
         op: BuiltinOp,

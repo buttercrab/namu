@@ -8,7 +8,7 @@
 use std::future::Future;
 
 use anyhow::Context;
-use namu_core::ir::{Action, Call, Collect, FanOut, Next, Operation, Workflow};
+use namu_core::ir::{Action, Call, Collect, FanOut, Next, Operation, Window, Workflow};
 use namu_core::value::Value;
 use namu_core::{OpId, ValueId, builtin};
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,11 @@ pub enum Plan<'w, C> {
         collect: &'w Collect,
         ctx: C,
     },
+    Window {
+        op: OpId,
+        window: &'w Window,
+        ctx: C,
+    },
     /// The workflow returned, with `value` if it returns one.
     Return {
         ctx: C,
@@ -141,6 +146,13 @@ pub async fn drive<'w, S: ValueStore>(
                     ctx,
                 });
             }
+            Some(Action::Window(window)) => {
+                return Ok(Plan::Window {
+                    op: op_id,
+                    window,
+                    ctx,
+                });
+            }
             None => {}
         }
         match leave(workflow, store, &ctx, op_id).await? {
@@ -160,6 +172,7 @@ pub fn action<C>(workflow: &Workflow, op: OpId, ctx: C) -> anyhow::Result<Plan<'
         Some(Action::Call(call)) => Plan::Call { op, call, ctx },
         Some(Action::FanOut(fan_out)) => Plan::FanOut { op, fan_out, ctx },
         Some(Action::Collect(collect)) => Plan::Collect { op, collect, ctx },
+        Some(Action::Window(window)) => Plan::Window { op, window, ctx },
         None => anyhow::bail!("op {op} has no action to resume at"),
     })
 }

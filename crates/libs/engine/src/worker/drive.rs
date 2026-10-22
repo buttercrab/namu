@@ -13,6 +13,7 @@ use tokio::task::{AbortHandle, JoinSet};
 
 use super::delivery::Release;
 use super::view::View;
+use super::windows::Windowed;
 use super::{Inner, Run};
 use crate::ids::{NodeId, WorkerId, child_lineage, owner};
 use crate::kernel::{self, Plan, Point, Start, ValueStore};
@@ -185,6 +186,12 @@ impl Inner {
                     self.fan_out(run, at, op, fan_out.output, items, fold);
                     return Ok(());
                 }
+                // An item reaches its window: it ends, bringing itself to the scope's owner.
+                Plan::Window { window, ctx, .. } => {
+                    let item = view.get(&ctx, window.input).await?;
+                    self.end_branch(run, &at.branch, Some(item));
+                    return Ok(());
+                }
                 Plan::Collect { collect, ctx, .. } => {
                     let item = view.get(&ctx, collect.input).await?;
                     self.end_branch(run, &at.branch, Some(item));
@@ -348,9 +355,43 @@ impl Inner {
         Ok(Ok(ctx))
     }
 
-    /// The reduce task that folds the scope fan-out `op` opens, if it folds.
+    /// The reduce task that folds the scope fan-out `op` opens, if it folds; or, if a window
+    /// closes it, the windows' scope (which the same worker owns).
     pub(super) fn reducer<'r>(&self, run: &'r Run, op: OpId) -> Option<&'r TaskRef> {
-        run.spec.task(run.spec.collect_ops[op]?)
+        let collect = run.spec.collect_ops[op]?;
+        match run.spec.workflow().operations[collect].window() {
+            Some(_) => self.reducer(run, collect),
+            None => run.spec.task(collect),
+        }
+    }
+
+    /// What a scope opened with `continuation` in `ctx` does when it is over, the fold it keeps,
+    /// and the windows' scope it feeds if a window closes it (which keeps `fold` instead).
+    pub(super) fn then_for(
+        self: &Arc<Self>,
+        run: &Arc<Run>,
+        continuation: &Continuation,
+        ctx: &Arc<Node>,
+        fold: Option<Fold>,
+    ) -> (Then, Option<Fold>, Option<Windowed>) {
+        let windowed = continuation
+            .collect
+            .is_some_and(|op| run.spec.workflow().operations[op].window().is_some());
+        if windowed {
+            let windows = self.open_windows(run, continuation, ctx, fold);
+            let into = windows.as_ref().expect("a window closes it").into;
+            let then = Then::Feed {
+                into,
+                continuation: continuation.clone(),
+                ctx: ctx.clone(),
+            };
+            return (then, None, windows);
+        }
+        let then = Then::Continue {
+            continuation: continuation.clone(),
+            ctx: ctx.clone(),
+        };
+        (then, fold, None)
     }
 
     /// Whether this worker runs `task` now: it serves it and is not draining.
@@ -358,17 +399,25 @@ impl Inner {
         self.tasks.task(task).is_some() && !self.is_draining()
     }
 
-    /// The fold of the scope fan-out `op` opens in `ctx`, if it folds: from its first accumulator.
+    /// The fold of the scope fan-out `op` opens in `ctx`, if it folds (or of the windows' scope,
+    /// if a window closes it): from its first accumulator.
     pub(super) async fn fold_of(
         &self,
         view: &View<'_>,
         ctx: &Arc<Node>,
         op: OpId,
     ) -> anyhow::Result<Option<Fold>> {
-        match view.run.spec.collect_ops[op] {
-            Some(collect) => self.fold_from(view, ctx, collect).await,
-            None => Ok(None),
+        let spec = &view.run.spec;
+        let Some(mut collect) = spec.collect_ops[op] else {
+            return Ok(None);
+        };
+        if spec.workflow().operations[collect].window().is_some() {
+            let Some(after) = spec.collect_ops[collect] else {
+                return Ok(None);
+            };
+            collect = after;
         }
+        self.fold_from(view, ctx, collect).await
     }
 
     /// The fold `collect` makes of a scope opened in `ctx`, if it reduces: from its first
@@ -473,31 +522,25 @@ impl Inner {
         };
         let trail = self.trail(at);
         let count = items.len() as u64;
-        let then = Then::Continue {
-            continuation: continuation.clone(),
-            ctx: at.ctx.clone(),
-        };
+        let (then, fold, windows) = self.then_for(run, &continuation, &at.ctx, fold);
         // The opening branch's record goes once the scope and every child are durable elsewhere.
         let release = self.release_after(items.len() + 1, self.gone(run, branch));
-        let durable = self.log.append(vec![
-            Record::Nodes {
-                run: run.id(),
-                nodes: trail.clone(),
-            },
-            Record::Scope {
-                run: run.id(),
-                scope,
-                continuation: Some(continuation),
-                source: None,
-                count: Some(count),
-            },
-        ]);
+        let mut records = vec![Record::Nodes {
+            run: run.id(),
+            nodes: trail.clone(),
+        }];
+        records.extend(windows.as_ref().map(|windows| windows.record.clone()));
+        records.push(Record::Scope {
+            run: run.id(),
+            scope,
+            continuation: Some(continuation),
+            source: None,
+            count: Some(count),
+            feeds: windows.as_ref().map(|windows| (windows.into, windows.feed)),
+        });
+        let durable = self.log.append(records);
         self.release_when(durable, release.clone());
-        let opened = Scope::new(then, Some(count));
-        let opened = match fold {
-            Some(fold) => opened.with_fold(fold),
-            None => opened,
-        };
+        let opened = Scope::new(then, Some(count)).with(fold, windows.map(|windows| windows.feed));
         if items.is_empty() {
             return self.scope_over(run, scope, opened);
         }

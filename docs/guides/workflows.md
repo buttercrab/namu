@@ -66,6 +66,18 @@ merge_stats(empty, stats)             // folds every document, in order, as they
 Items are folded in document order whatever order they finish in, so the merge need not be
 commutative, and only items that finish early wait in memory.
 
+`each(list)` fans out without a task, and `window(item, n)` groups the items again, `n` at a
+time, in order, each group going on as a branch of its own; over a stream that never ends, the
+windows keep coming:
+
+```rust
+let doc = each(stream_docs(n, delay));   // one branch per document, as it arrives
+let stats = analyze(doc, cfg);
+let batch = window(stats, 8);            // a Vec<Stats> for every 8 documents
+let summary = summarize(batch);          // once per window
+total_words(summary)                     // collects the windows
+```
+
 ## Expressions
 Arithmetic, comparisons and logic on values are built-ins: the engine evaluates them itself,
 with no task call.
