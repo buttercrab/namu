@@ -10,6 +10,8 @@ use std::marker::PhantomData;
 
 use namu_core::ValueId;
 use namu_core::ir::{BuiltinOp, ScalarType};
+use namu_core::types::{Defs, Type};
+use namu_core::value::Data;
 use serde::Serialize;
 
 use crate::graph::{Graph, NodeArena, TracedValue, ValueArena};
@@ -22,6 +24,9 @@ struct BuilderInner {
     val_arena: ValueArena,
     blocks: Vec<BasicBlock>,
     current_block_id: BlockId,
+    /// Each value's type, by value id, as it is made.
+    types: Vec<Option<Type>>,
+    defs: Defs,
 }
 pub struct Builder<T> {
     inner: RefCell<BuilderInner>,
@@ -42,9 +47,22 @@ impl<T> Builder<T> {
                 val_arena: ValueArena::default(),
                 blocks: vec![BasicBlock::default()],
                 current_block_id: 0,
+                types: Vec::new(),
+                defs: Defs::new(),
             }),
             _phantom: PhantomData,
         }
+    }
+
+    /// Records that `value` is a `V`.
+    pub fn typed<V: Data>(&self, value: ValueId) {
+        let mut inner = self.inner.borrow_mut();
+        let inner = &mut *inner;
+        let ty = V::describe(&mut inner.defs);
+        if inner.types.len() <= value {
+            inner.types.resize(value + 1, None);
+        }
+        inner.types[value] = Some(ty);
     }
 
     pub fn current_block_id(&self) -> BlockId {
@@ -141,16 +159,17 @@ impl<T> Builder<T> {
 
     pub fn build(self) -> Graph<T> {
         let inner = self.inner.into_inner();
-        Graph::new(inner.node_arena, inner.blocks)
+        Graph::new(inner.node_arena, inner.blocks, inner.types, inner.defs)
     }
 }
 
-pub fn call<Env: 'static, T: 'static>(
+pub fn call<Env: 'static, T: Data>(
     builder: &Builder<Env>,
     task_id: &str,
     inputs: Vec<ValueId>,
 ) -> TracedValue<T> {
     let outs = builder.call(task_id.to_string(), inputs, 1);
+    builder.typed::<T>(outs[0]);
     TracedValue::new(outs[0])
 }
 
@@ -158,12 +177,13 @@ macro_rules! define_call {
     ($fname:ident, $arity:expr, [$($idx:tt),*], [$($T:ident),*]) => {
         #[allow(non_snake_case)]
         #[allow(unused_variables)]
-        pub fn $fname<Env: 'static, $( $T: 'static ),*>(
+        pub fn $fname<Env: 'static, $( $T: Data ),*>(
             builder: &Builder<Env>,
             task_id: &str,
             inputs: Vec<ValueId>,
         ) -> ( $( TracedValue<$T>, )* ) {
             let outs = builder.call(task_id.to_string(), inputs, $arity);
+            $( builder.typed::<$T>(outs[$idx]); )*
             #[allow(clippy::unused_unit)]
             ( $( TracedValue::new(outs[$idx]), )*)
         }
@@ -203,27 +223,39 @@ impl<T> IntoArg<T> for TracedValue<T> {
     }
 }
 
-impl<T> IntoArg<T> for TracedValue<Vec<T>> {
+impl<T: Data> IntoArg<T> for TracedValue<Vec<T>> {
     fn into_arg<G>(self, builder: &Builder<G>) -> ValueId {
-        builder.fan_out(self.id)
+        let item = builder.fan_out(self.id);
+        builder.typed::<T>(item);
+        item
     }
 }
 
-impl<T> IntoArg<Vec<T>> for TracedValue<T> {
+impl<T: Data> IntoArg<Vec<T>> for TracedValue<T> {
     fn into_arg<G>(self, builder: &Builder<G>) -> ValueId {
-        builder.collect(self.id)
+        let list = builder.collect(self.id);
+        builder.typed::<Vec<T>>(list);
+        list
     }
 }
 
-pub fn literal<T: Serialize + Debug + Send + Sync + 'static, U>(
-    builder: &Builder<U>,
-    value: T,
-) -> TracedValue<T> {
+pub fn literal<T: Data + Debug, U>(builder: &Builder<U>, value: T) -> TracedValue<T> {
     let id = builder.literal(value);
+    builder.typed::<T>(id);
     TracedValue::new(id)
 }
 
-pub fn phi<G: 'static, T: Clone + 'static>(
+/// `value`, made by hand, typed as `like` is.
+pub fn typed_like<G, T: Data>(
+    builder: &Builder<G>,
+    value: ValueId,
+    _like: &TracedValue<T>,
+) -> TracedValue<T> {
+    builder.typed::<T>(value);
+    TracedValue::new(value)
+}
+
+pub fn phi<G: 'static, T: Data>(
     builder: &Builder<G>,
     from: Vec<(BlockId, TracedValue<T>)>,
 ) -> TracedValue<T> {
@@ -246,6 +278,7 @@ pub fn phi<G: 'static, T: Clone + 'static>(
         .collect();
 
     let id = builder.phi(from);
+    builder.typed::<T>(id);
     TracedValue::new(id)
 }
 
@@ -264,7 +297,9 @@ pub fn branch<T>(
 
 /// Ends the current block with the call just emitted, which may fail: see [`Builder::catch`].
 pub fn catch<T>(builder: &Builder<T>, ok: BlockId, err: BlockId) -> TracedValue<String> {
-    TracedValue::new(builder.catch(ok, err))
+    let error = builder.catch(ok, err);
+    builder.typed::<String>(error);
+    TracedValue::new(error)
 }
 
 pub fn return_value<T: 'static, U: 'static>(builder: &Builder<T>, value: TracedValue<U>) {
@@ -285,7 +320,7 @@ pub fn return_unit<T>(builder: &Builder<T>) {
 // --- Built-in expressions ---
 
 /// A type built-in expressions work on.
-pub trait Scalar: 'static {
+pub trait Scalar: Data {
     const TYPE: ScalarType;
 }
 
@@ -324,12 +359,14 @@ impl Signed for i64 {}
 impl Signed for f32 {}
 impl Signed for f64 {}
 
-fn builtin<G, T: Scalar, R>(
+fn builtin<G, T: Scalar, R: Data>(
     builder: &Builder<G>,
     op: BuiltinOp,
     inputs: &[ValueId],
 ) -> TracedValue<R> {
-    TracedValue::new(builder.builtin(op, T::TYPE, inputs.to_vec()))
+    let id = builder.builtin(op, T::TYPE, inputs.to_vec());
+    builder.typed::<R>(id);
+    TracedValue::new(id)
 }
 
 /// `a + b`.

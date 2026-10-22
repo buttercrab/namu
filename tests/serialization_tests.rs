@@ -56,7 +56,8 @@ fn serializable_conditional_workflow() {
       },
       "next": { "Jump": { "next": 1 } }
     }
-  ]
+  ],
+  "types": [{ "int": { "bits": 32, "signed": true } }, "bool", { "int": { "bits": 32, "signed": true } }, { "int": { "bits": 32, "signed": true } }, { "int": { "bits": 32, "signed": true } }]
 }"#;
 
     let expected: Workflow = serde_json::from_str(expected).unwrap();
@@ -110,7 +111,8 @@ fn serializable_while_loop_workflow() {
       "phis": [],
       "next": { "Return": { "var": 1 } }
     }
-  ]
+  ],
+  "types": [{ "int": { "bits": 32, "signed": true } }, { "int": { "bits": 32, "signed": true } }, { "int": { "bits": 32, "signed": true } }, "bool", { "int": { "bits": 32, "signed": true } }, { "int": { "bits": 32, "signed": true } }]
 }"#;
 
     let expected: Workflow = serde_json::from_str(expected).unwrap();

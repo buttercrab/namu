@@ -48,7 +48,11 @@ pub fn while_loop_workflow() -> ::namu::__macro_exports::Graph<i32> {
                             ),
                         ),
                     );
-                ::namu::__macro_exports::TracedValue::new(__phi_id)
+                ::namu::__macro_exports::typed_like(
+                    &__builder,
+                    __phi_id,
+                    &__pre_while_i_0,
+                )
             };
             i = __i_phi_val_0;
             let __i_phi_node_id_0 = __builder.arena().nodes.len() - 1;
@@ -100,7 +104,11 @@ pub fn while_loop_workflow() -> ::namu::__macro_exports::Graph<i32> {
                         __while_breaks_0.iter().map(|(block, ids)| (*block, ids[0usize])),
                     )
                     .collect();
-                ::namu::__macro_exports::TracedValue::new(__builder.phi(__from))
+                ::namu::__macro_exports::typed_like(
+                    &__builder,
+                    __builder.phi(__from),
+                    &__i_phi_val_0,
+                )
             };
         }
         i

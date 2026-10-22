@@ -7,11 +7,42 @@
 #![allow(dead_code)]
 
 use namu::prelude::*;
+use serde::{Deserialize, Serialize};
 
-pub struct Config;
-pub struct Stats;
-pub struct Summary;
-pub struct RetryReport;
+// The values that pass between tasks, as the tasks (in `../tasks`) define them. The IR describes
+// every value by these shapes.
+
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct Config {
+    pub min_len: usize,
+    pub rounds: u32,
+    pub stopwords: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct Stats {
+    pub words: usize,
+    pub long_words: usize,
+    pub top_word: String,
+    pub top_count: usize,
+    pub checksum: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct Summary {
+    pub docs: usize,
+    pub words: usize,
+    pub long_words: usize,
+    pub top_words: std::collections::BTreeMap<String, usize>,
+    pub checksum: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct RetryReport {
+    pub docs: usize,
+    pub retries: i64,
+    pub most: i64,
+}
 
 #[task(single)]
 pub fn split_docs(n: i32) -> Result<Vec<String>>;

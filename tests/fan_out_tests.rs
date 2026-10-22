@@ -3,7 +3,10 @@
 use namu::prelude::*;
 use namu_core::ir::Operation;
 
-pub struct Stats;
+#[derive(Clone, serde::Serialize, serde::Deserialize, namu::Data)]
+pub struct Stats {
+    pub words: usize,
+}
 
 // Signatures only: these tasks are implemented elsewhere (e.g. as WASM components).
 #[task]

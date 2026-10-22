@@ -21,6 +21,18 @@ the task fails, its outputs are not defined; its error message is bound to `e` a
 
 Values are SSA ids: each is produced once.
 
+## Types
+Every value has a type: `types[v]` is value `v`'s. Standard types are structural (`"bool"`,
+`{ "int": { "bits": 32, "signed": true } }`, `"string"`, `{ "list": ... }`, ...); structs and enums
+are `{ "named": "crate::module::Name" }`, with their shapes in `defs`:
+
+```json
+"defs": {
+  "my_crate::Chunk": { "struct": [["doc_id", { "int": { "bits": 64, "signed": false } }],
+                                   ["text", "string"]] }
+}
+```
+
 ## Example
 ```json
 {

@@ -5,11 +5,38 @@
 #![allow(dead_code)]
 
 use namu::prelude::*;
+use serde::{Deserialize, Serialize};
 
-pub struct Article;
-pub struct Chunk;
-pub struct Embedded;
-pub struct IndexReport;
+// The values that pass between tasks, as the tasks (in `../tasks`) define them.
+
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct Article {
+    pub id: u64,
+    pub title: String,
+    pub url: String,
+    pub text: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct Chunk {
+    pub doc_id: u64,
+    pub title: String,
+    pub url: String,
+    pub index: u32,
+    pub text: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct Embedded {
+    pub chunk: Chunk,
+    pub vector: Vec<f32>,
+}
+
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct IndexReport {
+    pub articles: usize,
+    pub chunks: i64,
+}
 
 /// Streams the corpus, one article at a time.
 #[task(stream)]
