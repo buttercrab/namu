@@ -82,6 +82,32 @@ impl RuntimeTasks {
         self.routes.set_servers(task.clone(), servers);
     }
 
+    /// Looks `task` up, and loads it if this worker serves it.
+    async fn entry(&self, task: &TaskRef) -> anyhow::Result<Entry> {
+        let manifest = self
+            .manifest(task)
+            .await
+            .with_context(|| format!("manifest of {}@{}", task.id, task.version))?;
+        let runtime_key = manifest.runtime_key();
+        if !self.runtime_keys.contains(&runtime_key) {
+            return Ok(Entry {
+                runtime_key,
+                task: None,
+            });
+        }
+        let started = std::time::Instant::now();
+        let kind = self.runtimes.load(&manifest).await?;
+        let ms = started.elapsed().as_millis() as u64;
+        tracing::info!(task = task.id, ms, "task loaded");
+        Ok(Entry {
+            runtime_key,
+            task: Some(Task {
+                kind,
+                checkpoint: manifest.checkpoint,
+            }),
+        })
+    }
+
     async fn manifest(&self, task: &TaskRef) -> anyhow::Result<TaskManifest> {
         let url = format!(
             "{}/tasks/{}/{}",
@@ -104,29 +130,22 @@ impl RuntimeTasks {
 #[async_trait]
 impl Tasks for RuntimeTasks {
     async fn prepare(&self, run: &RunSpec) -> anyhow::Result<()> {
-        let tasks: HashSet<&TaskRef> = run.tasks().collect();
-        for task in tasks {
-            if self.tasks.read().unwrap().contains_key(task) {
-                continue;
-            }
-            let manifest = self
-                .manifest(task)
-                .await
-                .with_context(|| format!("manifest of {}@{}", task.id, task.version))?;
-            let runtime_key = manifest.runtime_key();
-            let loaded = match self.runtime_keys.contains(&runtime_key) {
-                true => Some(Task {
-                    kind: self.runtimes.load(&manifest).await?,
-                    checkpoint: manifest.checkpoint,
-                }),
-                false => None,
-            };
-            self.route(task, &runtime_key);
-            let entry = Entry {
-                runtime_key,
-                task: loaded,
-            };
-            self.tasks.write().unwrap().insert(task.clone(), entry);
+        let new: HashSet<&TaskRef> = {
+            let known = self.tasks.read().unwrap();
+            run.tasks()
+                .filter(|task| !known.contains_key(*task))
+                .collect()
+        };
+        // All at once: a run waits for its slowest task, not for the sum of them.
+        let entries = futures::future::try_join_all(new.into_iter().map(|task| async move {
+            let entry = self.entry(task).await?;
+            anyhow::Ok((task.clone(), entry))
+        }))
+        .await?;
+        let mut tasks = self.tasks.write().unwrap();
+        for (task, entry) in entries {
+            self.route(&task, &entry.runtime_key);
+            tasks.insert(task, entry);
         }
         Ok(())
     }
