@@ -12,6 +12,7 @@
 mod batches;
 mod delivery;
 mod drive;
+mod folds;
 mod recovery;
 mod scopes;
 mod streams;

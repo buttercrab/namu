@@ -14,13 +14,17 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use namu_core::value::Value;
+
 use super::scopes::record_report;
+use super::view::View;
 use super::{Inner, Run};
 use crate::ids::{RunId, WorkerId, owner};
 use crate::log::{Record, ReportRecord, RunEstate, ScopeEstate};
 use crate::message::{Branch, End, FetchRun, Message, Reported};
 use crate::run::RunInfo;
-use crate::scope::{Finish, Scope, Then};
+use crate::scope::{Continuation, Finish, Fold, Scope, Then};
+use crate::tree::Node;
 
 /// How long to wait before trying a failed log read again.
 const RETRY: Duration = Duration::from_millis(500);
@@ -134,9 +138,13 @@ impl Inner {
         if run.scopes.lock().unwrap().contains_key(&id) {
             return Ok(());
         }
+        let mut fold = None;
         let then = match estate.continuation {
             Some(continuation) => {
                 let ctx = self.node(run, continuation.ctx).await?;
+                fold = self
+                    .adopt_fold(run, &continuation, &ctx, estate.folded)
+                    .await?;
                 Then::Continue { continuation, ctx }
             }
             None => {
@@ -153,16 +161,45 @@ impl Inner {
         for end in estate.ends {
             scope.end(end.index, end.item);
         }
+        // After the ends, so that the items it has folded already are dropped.
+        if let Some(fold) = fold {
+            scope = scope.with_fold(fold);
+        }
         if let Some(source) = estate.source
             && estate.count.is_none()
         {
             self.adopt_stream(run, id, scope, source);
         } else if scope.is_over() {
             self.scope_over(run, id, scope);
+            return Ok(());
         } else {
             run.open_scope(id, scope);
         }
+        self.fold(run, id);
         Ok(())
+    }
+
+    /// The fold of an adopted scope, if it folds: where its last logged step left it, or from its
+    /// first accumulator.
+    async fn adopt_fold(
+        self: &Arc<Self>,
+        run: &Arc<Run>,
+        continuation: &Continuation,
+        ctx: &Arc<Node>,
+        folded: Option<(u64, Value)>,
+    ) -> anyhow::Result<Option<Fold>> {
+        let view = View { worker: self, run };
+        let Some(collect) = continuation.collect else {
+            return Ok(None);
+        };
+        let Some(mut fold) = self.fold_from(&view, ctx, collect).await? else {
+            return Ok(None);
+        };
+        if let Some((through, accumulator)) = folded {
+            fold.next = through;
+            fold.accumulator = accumulator;
+        }
+        Ok(Some(fold))
     }
 
     /// Runs a branch the dead worker held again, from where it was recorded.

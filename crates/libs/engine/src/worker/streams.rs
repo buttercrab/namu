@@ -21,7 +21,7 @@ use crate::ids::{ScopeId, child_lineage};
 use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
-use crate::scope::{Continuation, Position, Scope, Source, Then};
+use crate::scope::{Continuation, Fold, Position, Scope, Source, Then};
 use crate::tasks::{Args, CallKey, Kind, Stream, StreamTask, Task, TaskStream};
 use crate::tree::Node;
 
@@ -35,6 +35,7 @@ impl Inner {
         call: OpId,
         fan_out: OpId,
         stream: Stream,
+        fold: Option<Fold>,
     ) {
         let key = at.key(run, call);
         let branch = &at.branch;
@@ -74,7 +75,12 @@ impl Inner {
             continuation,
             ctx: at.ctx.clone(),
         };
-        self.feed_scope(run, scope, Scope::new(then, None), source, stream, trail);
+        let opened = Scope::new(then, None);
+        let opened = match fold {
+            Some(fold) => opened.with_fold(fold),
+            None => opened,
+        };
+        self.feed_scope(run, scope, opened, source, stream, trail);
     }
 
     /// Gives `scope` (which may have ended branches already, after recovery) the credits it has
@@ -338,7 +344,7 @@ impl Inner {
             lineage: continuation.lineage,
             clock: source.key.clock,
             ctx: continuation.ctx,
-            resume: Resume::Call { op: source.call },
+            resume: Resume::Action { op: source.call },
             scopes: continuation.scopes,
         };
         self.log.record(vec![

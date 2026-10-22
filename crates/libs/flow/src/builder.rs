@@ -105,7 +105,20 @@ impl<T> Builder<T> {
 
     /// Emits a fan-in of `input` over the innermost fan-out scope and returns the list value.
     pub fn collect(&self, input: ValueId) -> ValueId {
-        self.add_node(NodeKind::Collect { input }, 1)[0]
+        self.add_node(
+            NodeKind::Collect {
+                input,
+                reduce: None,
+            },
+            1,
+        )[0]
+    }
+
+    /// Emits a fan-in that folds `input` from every branch with `task_id`, from `init`, and
+    /// returns the last accumulator.
+    pub fn reduce(&self, task_id: String, init: ValueId, input: ValueId) -> ValueId {
+        let reduce = Some((task_id, init));
+        self.add_node(NodeKind::Collect { input, reduce }, 1)[0]
     }
 
     /// Emits a built-in expression over `inputs`, read as `ty`, and returns its value.
@@ -237,6 +250,19 @@ impl<T: Data> IntoArg<Vec<T>> for TracedValue<T> {
         builder.typed::<Vec<T>>(list);
         list
     }
+}
+
+/// A reduce task's call: folds `item` over every branch of the innermost fan-out, from `init`.
+pub fn reduce<G, A: Data, T>(
+    builder: &Builder<G>,
+    task_id: &str,
+    init: impl IntoArg<A>,
+    item: TracedValue<T>,
+) -> TracedValue<A> {
+    let init = init.into_arg(builder);
+    let output = builder.reduce(task_id.to_string(), init, item.id);
+    builder.typed::<A>(output);
+    TracedValue::new(output)
 }
 
 pub fn literal<T: Data + Debug, U>(builder: &Builder<U>, value: T) -> TracedValue<T> {

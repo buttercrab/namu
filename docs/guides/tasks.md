@@ -147,3 +147,6 @@ A task that must never run twice once it has returned is a checkpoint task inste
   from every branch and run, step by step
 - `stream`: one input, outputs yielded over time; a list in the workflow, fanned out as it
   arrives
+- `reduce`: `(accumulator, item) -> accumulator`, called with a first accumulator and a
+  per-item value; folds the items of a fan-out in order. It is an ordinary two-argument task to
+  the engine and the runtimes: only the workflow declares it `#[task(reduce)]`

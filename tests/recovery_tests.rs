@@ -316,3 +316,76 @@ async fn a_fan_out_done_again_names_its_calls_as_before() {
 fn workflow_of<T>(graph: namu::__macro_exports::Graph<T>) -> Workflow {
     graph.to_serializable("fan_out_again".into())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reduce_survives_its_owner_dying_mid_fold() {
+    #[task(reduce)]
+    fn fold_in(list: String, x: i32) -> Result<String>;
+
+    #[workflow]
+    fn wf() -> String {
+        let xs = range(1, 25);
+        let ys = slow(xs);
+        fold_in("", ys)
+    }
+
+    let folds = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tasks: Arc<dyn Tasks> = Arc::new(
+        FnTasks::new()
+            .with("range", |(start, end): (i32, i32)| {
+                Ok::<_, String>((start..end).map(|x| x * 10).collect::<Vec<_>>())
+            })
+            .with("slow", |x: i32| {
+                std::thread::sleep(Duration::from_millis(30));
+                Ok::<_, String>(x * 2)
+            })
+            .with("fold_in", {
+                let folds = folds.clone();
+                move |(list, x): (String, i32)| {
+                    let key = namu_engine::call_key().expect("a fold step has a key");
+                    folds.lock().unwrap().push(key.to_string());
+                    // Each step takes a while: the owner dies in the middle of the fold.
+                    std::thread::sleep(Duration::from_millis(20));
+                    Ok::<_, String>(match list.is_empty() {
+                        true => x.to_string(),
+                        false => format!("{list},{x}"),
+                    })
+                }
+            }),
+    );
+    // What a worker logs takes 30 ms to be durable, as on Redis: the owner dies with fold steps
+    // done that its successor does not know of, and does them again.
+    let cluster = Arc::new(LocalCluster::with_log_delay(
+        vec![tasks; 3],
+        Duration::from_millis(30),
+    ));
+    let run = tokio::spawn({
+        let cluster = cluster.clone();
+        async move { cluster.run(workflow_of(wf())).await }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let folded_before = folds.lock().unwrap().len();
+    cluster.kill(1).unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(20), run)
+        .await
+        .expect("the run finished")
+        .unwrap()
+        .unwrap();
+    assert!(outcome.succeeded(), "{:?}", outcome.failures);
+    assert!(
+        (1..24).contains(&folded_before),
+        "the owner died with {folded_before} of 24 steps done, not in the middle"
+    );
+    let expected: Vec<String> = (1..25).map(|x| (x * 20).to_string()).collect();
+    assert_eq!(json(&outcome.results), [json!(expected.join(","))]);
+    // Every step done again had the key it had the first time.
+    let folds = folds.lock().unwrap();
+    let distinct: std::collections::HashSet<_> = folds.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        24,
+        "{} keys for 24 fold steps",
+        distinct.len()
+    );
+    assert!(folds.len() > 24, "no step was done again");
+}

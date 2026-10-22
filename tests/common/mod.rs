@@ -62,6 +62,10 @@ pub fn maybe_fail(v: i32) -> Result<i32>;
 #[task]
 pub fn sum(xs: Vec<i32>) -> Result<i32>;
 
+/// Appends `x` to a comma-separated list: a fold whose result depends on its order.
+#[task(reduce)]
+pub fn join(list: String, x: i32) -> Result<String>;
+
 /// The length of `s` in bytes.
 #[task]
 pub fn length(s: String) -> Result<i32>;
@@ -98,6 +102,12 @@ pub fn tasks() -> FnTasks {
         })
         .with("sum", |xs: Vec<i32>| ok(xs.iter().sum::<i32>()))
         .with("length", |s: String| ok(s.len() as i32))
+        .with("join", |(list, x): (String, i32)| {
+            ok(match list.is_empty() {
+                true => x.to_string(),
+                false => format!("{list},{x}"),
+            })
+        })
         .with("count", |xs: Vec<i32>| ok(xs.len() as i32))
 }
 

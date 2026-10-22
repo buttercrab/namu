@@ -133,26 +133,46 @@ impl Routes {
 
     /// A worker that can run `task`, other than `skip`.
     pub fn server(&self, task: &TaskRef, skip: Option<WorkerId>) -> Option<WorkerId> {
-        self.servers
-            .read()
-            .unwrap()
-            .get(task)
-            .and_then(|workers| self.pick(workers, skip))
+        self.server_of_all(std::slice::from_ref(task), skip)
+    }
+
+    /// A worker that can run every one of `tasks`, other than `skip`.
+    pub fn server_of_all(&self, tasks: &[TaskRef], skip: Option<WorkerId>) -> Option<WorkerId> {
+        let servers = self.servers.read().unwrap();
+        let (first, rest) = tasks.split_first()?;
+        let workers: Vec<WorkerId> = servers
+            .get(first)?
+            .iter()
+            .copied()
+            .filter(|worker| {
+                rest.iter()
+                    .all(|task| servers.get(task).is_some_and(|all| all.contains(worker)))
+            })
+            .collect();
+        self.pick(&workers, skip)
     }
 
     /// A worker other than `skip` that can run `task`, waiting for one to join if there is none.
     pub async fn wait_for_server(&self, task: &TaskRef, skip: Option<WorkerId>) -> WorkerId {
+        self.wait_for_server_of_all(std::slice::from_ref(task), skip)
+            .await
+    }
+
+    /// A worker other than `skip` that can run every one of `tasks`, waiting for one to join if
+    /// there is none.
+    pub async fn wait_for_server_of_all(
+        &self,
+        tasks: &[TaskRef],
+        skip: Option<WorkerId>,
+    ) -> WorkerId {
         let mut changes = self.watch();
         loop {
             changes.borrow_and_update();
-            if let Some(worker) = self.server(task, skip) {
+            if let Some(worker) = self.server_of_all(tasks, skip) {
                 return worker;
             }
-            tracing::info!(
-                task = task.id,
-                version = task.version,
-                "waiting for a worker that serves the task"
-            );
+            let names: Vec<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
+            tracing::info!(?names, "waiting for a worker that serves the tasks");
             if changes.changed().await.is_err() {
                 // Routes are never dropped while workers use them.
                 std::future::pending::<()>().await;

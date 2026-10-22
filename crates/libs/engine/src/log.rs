@@ -72,6 +72,14 @@ pub enum Record {
         scope: ScopeId,
         end: EndRecord,
     },
+    /// The fold of `scope` is done through branch `through` (exclusive): `accumulator` is its
+    /// value there. It replaces the scope's previous one.
+    Folded {
+        run: RunId,
+        scope: ScopeId,
+        through: u64,
+        accumulator: Value,
+    },
     Report {
         run: RunId,
         report: ReportRecord,
@@ -150,6 +158,8 @@ pub struct ScopeEstate {
     /// How many branches the scope has, if known.
     pub count: Option<u64>,
     pub ends: Vec<EndRecord>,
+    /// How far its fold has got, if it folds: through which branch, and the accumulator there.
+    pub folded: Option<(u64, Value)>,
 }
 
 #[async_trait]
@@ -266,6 +276,7 @@ impl MemoryLog {
                         source,
                         count,
                         ends: Vec::new(),
+                        folded: None,
                     };
                     runs.entry(run).or_default().scopes.insert(scope, estate);
                 }
@@ -300,6 +311,19 @@ impl MemoryLog {
                     let run = runs.entry(run).or_default();
                     if let Some(scope) = run.scopes.get_mut(&scope) {
                         scope.ends.push(end);
+                    }
+                }
+                Record::Folded {
+                    run,
+                    scope,
+                    through,
+                    accumulator,
+                } => {
+                    let scope = runs
+                        .get_mut(&run)
+                        .and_then(|run| run.scopes.get_mut(&scope));
+                    if let Some(scope) = scope {
+                        scope.folded = Some((through, accumulator));
                     }
                 }
                 Record::Report { run, report } => {

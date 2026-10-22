@@ -113,11 +113,22 @@ pub struct FanOut {
 }
 
 /// Fan-in: gathers `input` from every surviving branch of the innermost fan-out scope into a list
-/// bound to `output`, then continues once in the scope's context.
+/// bound to `output`, then continues once in the scope's context. With `reduce`, it folds them
+/// instead, in branch order, as they end: `output` is the last accumulator.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Collect {
     pub input: ValueId,
     pub output: ValueId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduce: Option<Reduce>,
+}
+
+/// A fold: `task_id(accumulator, item)` gives the next accumulator, starting from `init`, a value
+/// of the scope's own context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Reduce {
+    pub task_id: String,
+    pub init: ValueId,
 }
 
 /// What an operation does after its literals and phis.
@@ -129,12 +140,17 @@ pub enum Action {
 }
 
 impl Action {
-    pub fn inputs(&self) -> &[ValueId] {
-        match self {
-            Action::Call(call) => &call.inputs,
-            Action::FanOut(fan_out) => std::slice::from_ref(&fan_out.input),
-            Action::Collect(collect) => std::slice::from_ref(&collect.input),
-        }
+    /// The values it reads: a reduce's `init` too, which must outlive the scope it closes.
+    pub fn inputs(&self) -> impl Iterator<Item = ValueId> + '_ {
+        let (values, init): (&[ValueId], _) = match self {
+            Action::Call(call) => (&call.inputs, None),
+            Action::FanOut(fan_out) => (std::slice::from_ref(&fan_out.input), None),
+            Action::Collect(collect) => (
+                std::slice::from_ref(&collect.input),
+                collect.reduce.as_ref().map(|reduce| reduce.init),
+            ),
+        };
+        values.iter().copied().chain(init)
     }
 
     pub fn outputs(&self) -> &[ValueId] {
@@ -198,6 +214,18 @@ impl Operation {
     pub fn collect(&self) -> Option<&Collect> {
         match &self.action {
             Some(Action::Collect(collect)) => Some(collect),
+            _ => None,
+        }
+    }
+
+    /// The task it uses: the one it calls, or the one a reducing collect folds with.
+    pub fn task_id(&self) -> Option<&str> {
+        match &self.action {
+            Some(Action::Call(call)) => Some(&call.task_id),
+            Some(Action::Collect(Collect {
+                reduce: Some(reduce),
+                ..
+            })) => Some(&reduce.task_id),
             _ => None,
         }
     }

@@ -105,7 +105,7 @@ fn before_action(op: &Operation, after: &Set) -> Set {
         .filter(|v| !action_defs(op).contains(v))
         .collect();
     if let Some(action) = &op.action {
-        live.extend(action.inputs().iter().copied());
+        live.extend(action.inputs());
     }
     live
 }

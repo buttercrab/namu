@@ -46,6 +46,9 @@ enum TaskKind {
     /// Yields its results over time. In a workflow its output is a list, `Vec<T>`, whose items
     /// can be fanned out as they arrive.
     Stream,
+    /// Folds: `(accumulator, item) -> accumulator`. Called with a first accumulator and a
+    /// per-item value, it closes the fan-out, folding every item in order as it ends.
+    Reduce,
 }
 
 impl Parse for TaskKind {
@@ -58,7 +61,8 @@ impl Parse for TaskKind {
             "single" => Self::Single,
             "batch" => Self::Batch,
             "stream" => Self::Stream,
-            _ => bail!(ident, "expected `single`, `batch`, or `stream`"),
+            "reduce" => Self::Reduce,
+            _ => bail!(ident, "expected `single`, `batch`, `stream`, or `reduce`"),
         };
         if !input.is_empty() {
             return Err(input.error("unexpected task argument"));
@@ -117,8 +121,13 @@ fn constructor(
         bail!(sig.output, "a task must return a `Result`");
     };
 
+    if let TaskKind::Reduce = kind {
+        return reducer(vis, sig, &params, result_inner(ret)?);
+    }
+
     // What one call yields: per item for batch tasks, the whole list for stream tasks.
     let output: Type = match kind {
+        TaskKind::Reduce => unreachable!("handled above"),
         TaskKind::Single => result_inner(ret)?.clone(),
         TaskKind::Batch => {
             let [(_, input)] = params.as_mut_slice() else {
@@ -172,6 +181,37 @@ fn constructor(
                 #( ::namu::__macro_exports::IntoArg::into_arg(#arg_names, __builder) ),*
             ]);
             ::namu::__macro_exports::#call_fn(__builder, stringify!(#name), __inputs)
+        }
+    })
+}
+
+/// A reduce task's constructor: `name(init, item)`, which folds `item` over the fan-out.
+fn reducer(
+    vis: &syn::Visibility,
+    sig: &syn::Signature,
+    params: &[(Ident, Type)],
+    output: &Type,
+) -> syn::Result<TokenStream2> {
+    let [(_, accumulator), (_, item)] = params else {
+        bail!(
+            sig.inputs,
+            "a reduce task takes an accumulator and an item: `(acc: A, item: T) -> Result<A>`"
+        );
+    };
+    if quote!(#accumulator).to_string() != quote!(#output).to_string() {
+        bail!(
+            accumulator,
+            "a reduce task returns its accumulator's type: `(acc: A, item: T) -> Result<A>`"
+        );
+    }
+    let name = &sig.ident;
+    Ok(quote! {
+        #vis fn #name<G: 'static>(
+            __builder: &::namu::__macro_exports::Builder<G>,
+            init: impl ::namu::__macro_exports::IntoArg<#accumulator>,
+            item: ::namu::__macro_exports::TracedValue<#item>,
+        ) -> ::namu::__macro_exports::TracedValue<#accumulator> {
+            ::namu::__macro_exports::reduce(__builder, stringify!(#name), init, item)
         }
     })
 }

@@ -205,9 +205,9 @@ impl LocalCluster {
         let tasks = workflow
             .operations
             .iter()
-            .filter_map(Operation::call)
-            .map(|call| TaskRef {
-                id: call.task_id.clone(),
+            .filter_map(Operation::task_id)
+            .map(|id| TaskRef {
+                id: id.to_string(),
                 version: String::new(),
             });
         self.tasks.lock().unwrap().extend(tasks);

@@ -47,7 +47,8 @@ pub struct RunSpec {
     /// What is live where nodes are created, for placing them (design §6.2).
     pub liveness: Liveness,
     pub literals: Literals,
-    /// For each op that calls a task, the task at the run's version.
+    /// For each op that uses a task (a call, or a reducing collect), the task at the run's
+    /// version.
     tasks: Vec<Option<TaskRef>>,
 }
 
@@ -63,13 +64,9 @@ impl RunSpec {
             .operations
             .iter()
             .map(|op| {
-                op.call().map(|call| TaskRef {
-                    version: info
-                        .task_versions
-                        .get(&call.task_id)
-                        .cloned()
-                        .unwrap_or_default(),
-                    id: call.task_id.clone(),
+                op.task_id().map(|id| TaskRef {
+                    version: info.task_versions.get(id).cloned().unwrap_or_default(),
+                    id: id.to_string(),
                 })
             })
             .collect();
@@ -92,7 +89,7 @@ impl RunSpec {
         &self.info.workflow
     }
 
-    /// The task called at `op`, if it calls one.
+    /// The task `op` uses, if it uses one: the one it calls, or the one it folds with.
     pub fn task(&self, op: OpId) -> Option<&TaskRef> {
         self.tasks.get(op)?.as_ref()
     }
