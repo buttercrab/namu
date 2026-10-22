@@ -4,6 +4,7 @@ use namu_core::ValueId;
 use namu_core::ir::{
     Action, Builtin, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Workflow,
 };
+use namu_core::types::{Defs, Type};
 
 use crate::ir::{BasicBlock, NodeId};
 use crate::{Node, NodeKind, Terminator};
@@ -67,14 +68,24 @@ impl ValueArena {
 pub struct Graph<T> {
     pub arena: NodeArena,
     pub blocks: Vec<BasicBlock>,
+    /// Each value's type, by value id.
+    pub types: Vec<Option<Type>>,
+    pub defs: Defs,
     _phantom: PhantomData<T>,
 }
 
 impl<T> Graph<T> {
-    pub fn new(arena: NodeArena, blocks: Vec<BasicBlock>) -> Self {
+    pub fn new(
+        arena: NodeArena,
+        blocks: Vec<BasicBlock>,
+        types: Vec<Option<Type>>,
+        defs: Defs,
+    ) -> Self {
         Self {
             arena,
             blocks,
+            types,
+            defs,
             _phantom: PhantomData,
         }
     }
@@ -233,9 +244,21 @@ impl<T> Graph<T> {
         // Block 0 is the entry, and its first operation is op 0.
         ops[0].literals = constants;
 
+        // Every value the builder made has a type; one without is a bug in the builder.
+        let types = self
+            .types
+            .iter()
+            .enumerate()
+            .map(|(value, ty)| {
+                ty.clone()
+                    .unwrap_or_else(|| panic!("value {value} of workflow {name} has no type"))
+            })
+            .collect();
         Workflow {
             name,
             operations: ops,
+            types,
+            defs: self.defs.clone(),
         }
     }
 

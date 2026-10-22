@@ -23,9 +23,18 @@ use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::types::{Defs, Type};
+
 /// A type the engine can hold as a value. Derive it for your own types with
 /// `#[derive(namu::Data)]`; it is implemented for the standard ones.
 pub trait Data: Clone + Send + Sync + Serialize + DeserializeOwned + 'static {
+    /// The type, as a workflow's IR records it; named types are defined in `defs`. A type that
+    /// does not say is named after its Rust type, with its shape unknown.
+    fn describe(defs: &mut Defs) -> Type {
+        let _ = defs;
+        Type::Named(type_name::<Self>().to_string())
+    }
+
     /// The elements of a list or tuple, which a fan-out or a task's several outputs split into.
     /// `None` for everything else.
     const ITEMS: Option<fn(&Self) -> Vec<Value>> = None;
@@ -410,35 +419,57 @@ pub fn from_args<T: Data>(mut args: Vec<Value>) -> anyhow::Result<T> {
 }
 
 macro_rules! scalars {
-    ($($t:ty),* $(,)?) => { $(impl Data for $t {})* };
+    ($($t:ty => $type:expr),* $(,)?) => {$(
+        impl Data for $t {
+            fn describe(_: &mut Defs) -> Type {
+                $type
+            }
+        }
+    )*};
+}
+
+const fn int(bits: u8, signed: bool) -> Type {
+    Type::Int { bits, signed }
 }
 
 scalars!(
-    (),
-    bool,
-    char,
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    isize,
-    u8,
-    u16,
-    u32,
-    u64,
-    u128,
-    usize,
-    f32,
-    f64,
-    String
+    () => Type::Unit,
+    bool => Type::Bool,
+    char => Type::Char,
+    i8 => int(8, true),
+    i16 => int(16, true),
+    i32 => int(32, true),
+    i64 => int(64, true),
+    i128 => int(128, true),
+    isize => int(64, true),
+    u8 => int(8, false),
+    u16 => int(16, false),
+    u32 => int(32, false),
+    u64 => int(64, false),
+    u128 => int(128, false),
+    usize => int(64, false),
+    f32 => Type::Float { bits: 32 },
+    f64 => Type::Float { bits: 64 },
+    String => Type::String,
 );
 
-impl<T: Data> Data for Option<T> {}
+impl<T: Data> Data for Option<T> {
+    fn describe(defs: &mut Defs) -> Type {
+        Type::Option(Box::new(T::describe(defs)))
+    }
+}
 
-impl<T: Data> Data for Box<T> {}
+impl<T: Data> Data for Box<T> {
+    fn describe(defs: &mut Defs) -> Type {
+        T::describe(defs)
+    }
+}
 
 impl<T: Data> Data for Vec<T> {
+    fn describe(defs: &mut Defs) -> Type {
+        Type::List(Box::new(T::describe(defs)))
+    }
+
     const ITEMS: Option<fn(&Self) -> Vec<Value>> =
         Some(|list| list.iter().cloned().map(Value::new).collect());
 
@@ -446,7 +477,11 @@ impl<T: Data> Data for Vec<T> {
         Some(|items| items.into_iter().map(Value::take).collect());
 }
 
-impl<K: Data + Ord, V: Data> Data for BTreeMap<K, V> {}
+impl<K: Data + Ord, V: Data> Data for BTreeMap<K, V> {
+    fn describe(defs: &mut Defs) -> Type {
+        Type::Map(Box::new(K::describe(defs)), Box::new(V::describe(defs)))
+    }
+}
 
 impl<K, V, S> Data for HashMap<K, V, S>
 where
@@ -454,11 +489,18 @@ where
     V: Data,
     S: BuildHasher + Default + Clone + Send + Sync + 'static,
 {
+    fn describe(defs: &mut Defs) -> Type {
+        Type::Map(Box::new(K::describe(defs)), Box::new(V::describe(defs)))
+    }
 }
 
 macro_rules! tuples {
     ($(($($name:ident $index:tt),+))*) => {$(
         impl<$($name: Data),+> Data for ($($name,)+) {
+            fn describe(defs: &mut Defs) -> Type {
+                Type::Tuple(vec![$($name::describe(defs)),+])
+            }
+
             const ITEMS: Option<fn(&Self) -> Vec<Value>> =
                 Some(|tuple| vec![$(Value::new(tuple.$index.clone())),+]);
 

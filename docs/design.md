@@ -156,7 +156,12 @@ come first, and no design decision may rule out unbounded streams.
   and order chains as in §6.2.
 - Literals are serialized values with a type tag, not debug strings.
 - Every value id has a declared type or schema, so tasks in different languages can check each
-  other at compile or publish time.
+  other at compile or publish time. Types are structural for the standard ones (`bool`, sized
+  integers and floats, `string`, `bytes`, `option`, `list`, `map`, `tuple`) and named for structs
+  and enums, whose shapes (fields; variants and their fields) are defined once per workflow, so a
+  type may contain itself. They come from Rust: `Data` describes a type, `#[derive(Data)]` a
+  struct's or enum's shape, and the builder records the type of every value it makes, so an
+  untyped value cannot reach the IR.
 - The IR is versioned and language-neutral.
 
 ## 6. Execution model
@@ -662,6 +667,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |
 | Expressions | ✅ Built-ins: `+ - * / %`, unary `-`, comparisons, `&& || !` and compound assignment on `bool`, integers, floats and strings (`+` concatenates), typed by rustc and evaluated in the kernel; checked integer arithmetic (§4.3) | Field and index access, tuples, string formatting |
+| Types | ✅ Every value in the IR has a type (`types`, by value id) and named types have their shapes (`defs`), from `Data` and `#[derive(Data)]` (§5) | Checked against task signatures at publish time; typed WIT task signatures; serde renames reflected in field names |
 | Errors in DSL | ✅ `match attempt(task(..)) { Ok(..) => .., Err(e) => .. }`: the call gets an error edge in the IR (§4.4); a failure nobody attempts drops the branch and is recorded in run failures | Typed errors: a task's own error type, not only its message |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
 | Distributed path | ✅ Peer-to-peer TCP mesh with a reliable session per pair of workers (sequence numbers, replay on reconnect); the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |

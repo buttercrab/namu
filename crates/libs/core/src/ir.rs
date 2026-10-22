@@ -1,16 +1,28 @@
 use serde::{Deserialize, Serialize};
 
+use crate::types::{Defs, Type};
 use crate::{OpId, ValueId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Workflow {
     pub name: String,
     pub operations: Vec<Operation>,
+    /// Every value's type, by value id; empty in a workflow written without them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<Type>,
+    /// The shapes of the named types in `types`.
+    #[serde(default, skip_serializing_if = "Defs::is_empty")]
+    pub defs: Defs,
 }
 
 impl Workflow {
     pub fn new(name: String, operations: Vec<Operation>) -> Self {
-        Self { name, operations }
+        Self {
+            name,
+            operations,
+            types: Vec::new(),
+            defs: Defs::new(),
+        }
     }
 }
 

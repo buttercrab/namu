@@ -14,4 +14,5 @@ namu = { path = "../../../", version = "0.1.0" }
 namu-core = { path = "../../../crates/libs/core", version = "0.1.0" }
 namu-proto = { path = "../../../crates/libs/proto", version = "0.1.0" }
 anyhow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }

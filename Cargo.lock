@@ -1752,6 +1752,7 @@ dependencies = [
  "namu",
  "namu-core",
  "namu-proto",
+ "serde",
  "serde_json",
 ]
 
@@ -1846,6 +1847,7 @@ dependencies = [
  "namu",
  "namu-core",
  "namu-proto",
+ "serde",
  "serde_json",
 ]
 

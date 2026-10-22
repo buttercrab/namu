@@ -6,6 +6,7 @@ pub mod liveness;
 pub mod parallel;
 pub mod registry;
 pub mod scopes;
+pub mod types;
 pub mod value;
 
 pub type ValueId = usize;

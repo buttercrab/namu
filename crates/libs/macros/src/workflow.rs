@@ -611,7 +611,7 @@ impl WorkflowVisitor {
             quote! {
                 let #phi_val_ident = {
                     let __phi_id = #builder.phi(vec![(#parent_predecessor_id, #pre_while_name.id)]);
-                    ::namu::__macro_exports::TracedValue::new(__phi_id)
+                    ::namu::__macro_exports::typed_like(&#builder, __phi_id, &#pre_while_name)
                 };
                 #name = #phi_val_ident;
                 let #phi_node_id = #builder.arena().nodes.len() - 1;
@@ -666,7 +666,7 @@ impl WorkflowVisitor {
                     let __from = ::std::iter::once((#header_exit, #phi_val_ident.id))
                         .chain(#breaks.iter().map(|(block, ids)| (*block, ids[#index])))
                         .collect();
-                    ::namu::__macro_exports::TracedValue::new(#builder.phi(__from))
+                    ::namu::__macro_exports::typed_like(&#builder, #builder.phi(__from), &#phi_val_ident)
                 };
             }
         });

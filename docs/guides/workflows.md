@@ -17,6 +17,18 @@ fn demo() -> i32 {
 }
 ```
 
+## Types
+The values passed between tasks are `namu::Data`: the standard types are, and your own derive it,
+which also gives the IR their shape:
+
+```rust
+#[derive(Clone, Serialize, Deserialize, namu::Data)]
+pub struct Chunk { pub doc_id: u64, pub text: String }
+```
+
+Every value in the IR records its type, so a UI or a task in another language knows what flows
+where.
+
 ## Workflow ids
 By default the workflow id is the function name. You can override it:
 
