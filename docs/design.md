@@ -571,10 +571,10 @@ its **shape**:
 - **Tasks are CPU-bound by contract, and run where the branch is driven.** A call runs on the
   driving thread (`block_in_place` on a multi-threaded runtime), bounded by the worker's task
   slots: no hop to a blocking pool and back, which on the per-step path costs more than a small
-  task does. A task that mostly waits (on the network, on a subprocess) holds a thread while it
-  waits, so those get their own kind later: an **async task** that the worker polls instead of
-  blocking on, which is also how out-of-process runtimes (a Python pool, a sidecar) will be
-  called.
+  task does. A task that mostly waits (on the network, on a subprocess) is an **async task**
+  instead: the worker awaits it, holding no task slot and no thread while it waits, and at most
+  its limit of calls (256 by default) are in flight on a worker. Out-of-process runtimes (a
+  Python pool, a sidecar) are called that way.
 
 ## 10. Distribution
 

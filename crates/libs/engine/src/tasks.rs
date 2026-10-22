@@ -8,6 +8,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,11 +52,18 @@ thread_local! {
     static CALL_KEYS: RefCell<Vec<CallKey>> = const { RefCell::new(Vec::new()) };
 }
 
+tokio::task_local! {
+    /// An async call's key: its future may move between threads while it waits.
+    static ASYNC_CALL_KEY: CallKey;
+}
+
 /// The key of the call an in-process task is running for, read from inside the task. A stream has
 /// the key of the call that opened it, while it opens and while each item is pulled. `None`
 /// outside a call, and in batch tasks, whose steps serve many calls at once: see [`call_keys`].
 pub fn call_key() -> Option<CallKey> {
-    CALL_KEY.get()
+    CALL_KEY
+        .get()
+        .or_else(|| ASYNC_CALL_KEY.try_with(|key| *key).ok())
 }
 
 /// The keys of the calls an in-process batch step serves, in the order of its items: the list a
@@ -124,6 +132,8 @@ pub struct Task {
 pub enum Kind {
     /// Runs once per call.
     Call(Arc<dyn CallTask>),
+    /// Runs once per call, awaited (design §9): for a task that mostly waits.
+    Async(Async),
     /// Yields items over time (design §6.5).
     Stream(Stream),
     /// Runs in sessions that take items in and give results back in steps (design §6.6).
@@ -157,6 +167,40 @@ impl Task {
 pub trait CallTask: Send + Sync {
     /// Runs the call named `key` on `args`.
     fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>>;
+}
+
+/// A task the worker awaits rather than runs: one that mostly waits, on a model server, an API or
+/// another process. While it waits it holds no task slot and no thread; at most `limit` of its
+/// calls are in flight on a worker at once.
+#[derive(Clone)]
+pub struct Async {
+    pub task: Arc<dyn AsyncTask>,
+    pub limit: Arc<tokio::sync::Semaphore>,
+}
+
+/// Calls of an async task in flight on a worker at once, unless the task says otherwise.
+pub const DEFAULT_ASYNC_LIMIT: usize = 256;
+
+impl Async {
+    pub fn new(task: Arc<dyn AsyncTask>) -> Self {
+        Self {
+            task,
+            limit: Arc::new(tokio::sync::Semaphore::new(DEFAULT_ASYNC_LIMIT)),
+        }
+    }
+
+    /// Runs the call named `key`, once a place among its limit is free. `call_key()` gives the
+    /// key inside it, wherever it runs.
+    pub async fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
+        let _permit = self.limit.acquire().await?;
+        ASYNC_CALL_KEY.scope(key, self.task.call(args, key)).await
+    }
+}
+
+#[async_trait]
+pub trait AsyncTask: Send + Sync {
+    /// Runs the call named `key` on `args`. Errors as for [`CallTask`].
+    async fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>>;
 }
 
 pub trait StreamTask: Send + Sync {
@@ -300,6 +344,39 @@ impl FnTasks {
         self.register(task, Kind::Call(Arc::new(FnCall(call))))
     }
 
+    /// Registers an async task: `f` returns a future, which the worker awaits.
+    pub fn with_async<I, O, E, Fut>(
+        mut self,
+        task: &str,
+        f: impl Fn(I) -> Fut + Send + Sync + 'static,
+    ) -> Self
+    where
+        I: Data,
+        O: Data,
+        E: Display,
+        Fut: Future<Output = Result<O, E>> + Send + 'static,
+    {
+        let call = FnAsync(move |args: Args| {
+            let future = from_args::<I>(args).map(&f);
+            async move {
+                let future = future.map_err(|err| format!("bad input: {err:#}"))?;
+                future.await.map(Value::new).map_err(|err| err.to_string())
+            }
+        });
+        let kind = Kind::Async(Async::new(Arc::new(call)));
+        self.tasks.insert(task.to_string(), Task::new(kind));
+        self
+    }
+
+    /// Lets at most `limit` calls of the async task `task` be in flight on a worker at once.
+    pub fn limit(mut self, task: &str, limit: usize) -> Self {
+        match &mut self.registered(task).kind {
+            Kind::Async(task) => task.limit = Arc::new(tokio::sync::Semaphore::new(limit)),
+            _ => panic!("task {task} is not an async task"),
+        }
+        self
+    }
+
     /// Registers a stream task: `f` returns the items, which are produced as they are pulled. The
     /// items give no cursors, so a resumed stream is opened again and skipped forward.
     pub fn with_stream<I, O, E, S>(
@@ -411,6 +488,19 @@ struct FnCall<F>(F);
 impl<F: Fn(Args) -> Result<Value, String> + Send + Sync> CallTask for FnCall<F> {
     fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
         Ok(with_key(key, || (self.0)(args)))
+    }
+}
+
+struct FnAsync<F>(F);
+
+#[async_trait]
+impl<F, Fut> AsyncTask for FnAsync<F>
+where
+    F: Fn(Args) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<Value, String>> + Send,
+{
+    async fn call(&self, args: Args, _key: CallKey) -> anyhow::Result<Result<Value, String>> {
+        Ok((self.0)(args).await)
     }
 }
 

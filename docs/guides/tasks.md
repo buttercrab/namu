@@ -117,6 +117,16 @@ let tasks = FnTasks::new()
 
 See `examples/basic`.
 
+## Async tasks
+A task that mostly waits (on a model server, an API, another process) is registered as async:
+the worker awaits it, so a hundred calls in flight hold no task slots and no threads.
+
+```rust
+let tasks = FnTasks::new()
+    .with_async("complete", |prompt: String| async move { llm.complete(&prompt).await })
+    .limit("complete", 32);   // at most 32 calls in flight per worker (default 256)
+```
+
 ## Side effects: the call key
 A task can run more than once for one call: after a crash, the engine runs again what the dead
 worker had not finished. A task whose effect must happen once (a payment, an email, a write to
@@ -133,7 +143,7 @@ namu_guest::task! {
 }
 ```
 
-In-process tasks read it with `namu_engine::call_key()`. A stream has the key of the call that
+In-process tasks read it with `namu_engine::call_key()`, async ones included (across awaits). A stream has the key of the call that
 opened it, while it opens and while each item is pulled, however often it is reopened after a
 crash. A batch step serves many calls, so it reads them all: `call_keys()` (in the guest or the
 engine) lists the keys of its items, in the order of the list a dynamic batch task is given, or of
