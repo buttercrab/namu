@@ -458,6 +458,8 @@ impl Inner {
     ) -> anyhow::Result<Result<Value, String>> {
         match &task.kind {
             Kind::Call(task) => self.call(task, args, key).await,
+            // Awaited, holding no task slot: it waits rather than computes.
+            Kind::Async(task) => task.call(args, key).await,
             // Not feeding a fan-out: the stream is read to its end into a list.
             Kind::Stream(stream) => self.read_stream(stream, args, key).await,
             Kind::Batch(batch) => self.batch_call(task_ref, batch, args, key).await,
