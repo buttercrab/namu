@@ -24,7 +24,7 @@ use namu_engine::log::{
     Durable, EndRecord, Log, Record, ReportRecord, RunEstate, SWEEP_FLOOR, ScopeEstate, dead_nodes,
 };
 use namu_engine::message::{Branch, BranchId};
-use namu_engine::scope::{Continuation, Position, Source};
+use namu_engine::scope::{Continuation, Feed, Position, Source};
 use namu_engine::tree::Node;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
@@ -221,12 +221,26 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             continuation,
             source,
             count,
+            feeds,
         } => {
             let record = encode(&(continuation, source))?;
             pipe.hset(key(*run, "scopes"), scope, record).ignore();
             if let Some(count) = count {
                 pipe.hset(key(*run, "counts"), scope, count).ignore();
             }
+            if let Some(feeds) = feeds {
+                pipe.hset(key(*run, "feeds"), scope, encode(feeds)?)
+                    .ignore();
+            }
+        }
+        Record::Fed {
+            run,
+            scope,
+            into,
+            feed,
+        } => {
+            let feeds = encode(&(into, feed))?;
+            pipe.hset(key(*run, "feeds"), scope, feeds).ignore();
         }
         Record::Position {
             run,
@@ -247,6 +261,8 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 .hdel(key(*run, "positions"), scope)
                 .ignore()
                 .hdel(key(*run, "folds"), scope)
+                .ignore()
+                .hdel(key(*run, "feeds"), scope)
                 .ignore()
                 .del(ends_key(*run, *scope))
                 .ignore();
@@ -278,6 +294,7 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 "counts",
                 "positions",
                 "folds",
+                "feeds",
                 "reports",
             ];
             let mut keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
@@ -344,10 +361,15 @@ impl Log for RedisLog {
                 counts = redis.hgetall(key(run, "counts")).await?;
             }
             let mut folds: HashMap<u64, (u64, Value)> = HashMap::new();
+            let mut feeds: HashMap<u64, (u64, Feed)> = HashMap::new();
             if !owned.is_empty() {
                 let raw: HashMap<u64, Vec<u8>> = redis.hgetall(key(run, "folds")).await?;
                 for (scope, raw) in raw {
                     folds.insert(scope, rmp_serde::from_slice(&raw)?);
+                }
+                let raw: HashMap<u64, Vec<u8>> = redis.hgetall(key(run, "feeds")).await?;
+                for (scope, raw) in raw {
+                    feeds.insert(scope, rmp_serde::from_slice(&raw)?);
                 }
             }
             let mut ends: HashMap<u64, Vec<EndRecord>> = HashMap::new();
@@ -368,6 +390,7 @@ impl Log for RedisLog {
                     count: counts.get(&scope).copied(),
                     ends: ends.remove(&scope).unwrap_or_default(),
                     folded: folds.remove(&scope),
+                    feeds: feeds.remove(&scope),
                 })
                 .collect();
 

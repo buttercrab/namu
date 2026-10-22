@@ -146,7 +146,16 @@ Fan-in kinds:
   out. Each step is logged with its accumulator; a successor goes on from the last one, and a
   step done again keeps its item's call key. A failed step drops its item, as a failed branch is
   dropped from a collect.
-- **window** (later): collect or reduce per N items or T time; required for unbounded streams.
+- **window**: `let batch = window(item, n);` closes the items' scope and continues once per `n`
+  items (in branch order), with them as a `Vec<T>`, each window a branch of a new scope that a
+  later collect or reduce closes. The last window may be shorter, and goes out once every item
+  has ended. Over an unbounded stream, windows keep going out; nothing waits for its end. The
+  owner of the items' scope opens both scopes and sends each window out as the items' watermark
+  passes it, logged with its progress, so a successor neither loses nor repeats a window.
+  Windows by time are for later: time is not the same when recovery replays.
+- **each**: `let item = each(list);` fans out over a list (as it arrives, for a stream's) without
+  a task: one branch per item, bound to `item`. It is what passing the list to a task taking one
+  item does, made explicit.
 
 Both bounded (finite input) and unbounded (continuous feed) streams are in scope. Bounded streams
 come first, and no design decision may rule out unbounded streams.
@@ -668,7 +677,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Value tree | ✅ Immutable nodes that own their parent: a context keeps its chain alive and nothing else, so a node is freed when its last child or context goes. A lookup walks up to 32 parents, then jumps in O(log depth): binary-lifting ancestors plus a persistent segment tree from value id to depth, built for a chain on its first deep lookup and kept. Workers index nodes weakly to serve fetches; a freed node asked for again is read from the log | |
 | Placement | ✅ A node attaches under the deepest node still holding a live value (liveness from the IR; a node's own values shadow older copies, which is what lets loops stay shallow). Chains stay as deep as the values in use | Several nodes per step, ordered longest-lived first |
 | Dedup | ✅ Constants are hoisted into the root context. Every other op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor (§13 q7) |
-| Fan-out / fan-in | ✅ Type-driven via `IntoArg`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine). Reduce: an ordered fold at the scope's owner as branches end, durable step by step (§4.5) | Window; the log still keeps a reducing scope's items until it is over |
+| Fan-out / fan-in | ✅ Type-driven via `IntoArg`, or explicit with `each`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine). Reduce: an ordered fold at the scope's owner as branches end, durable step by step. Window: every `n` items in branch order go on as a branch, over lists and unbounded streams (§4.5) | Windows by time; the log still keeps a reducing or windowed scope's items until it is over |
 | `return` in a branch | ✅ Ends the branch; before a collect it drops the item (filter) | |
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |

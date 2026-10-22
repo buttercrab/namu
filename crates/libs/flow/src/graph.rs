@@ -2,7 +2,8 @@ use std::marker::PhantomData;
 
 use namu_core::ValueId;
 use namu_core::ir::{
-    Action, Builtin, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Reduce, Workflow,
+    Action, Builtin, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Reduce, Window,
+    Workflow,
 };
 use namu_core::types::{Defs, Type};
 
@@ -159,6 +160,13 @@ impl<T> Graph<T> {
                             }),
                         }));
                     }
+                    NodeKind::Window { input, size } => {
+                        pending.action = Some(Action::Window(Window {
+                            input: *input,
+                            output: node.outputs[0],
+                            size: *size,
+                        }));
+                    }
                     NodeKind::Builtin { op, ty, inputs } => {
                         pending.builtins.push(Builtin {
                             op: *op,
@@ -297,6 +305,9 @@ impl<T> Graph<T> {
                         input,
                         reduce: Some((task, init)),
                     } => format!("  let var{node_id} = reduce({task}, var{init}, var{input});\n"),
+                    NodeKind::Window { input, size } => {
+                        format!("  let var{node_id} = window(var{input}, {size});\n")
+                    }
                     NodeKind::Builtin { op, ty, inputs } => {
                         let inputs: Vec<String> =
                             inputs.iter().map(|v| format!("var{v}")).collect();

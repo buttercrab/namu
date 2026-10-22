@@ -57,29 +57,23 @@ impl Inner {
         };
         let release = self.release_after(1, self.gone(run, branch));
         let trail = self.trail(at);
-        let durable = self.log.append(vec![
-            Record::Nodes {
-                run: run.id(),
-                nodes: trail.clone(),
-            },
-            Record::Scope {
-                run: run.id(),
-                scope,
-                continuation: Some(continuation.clone()),
-                source: Some(source.clone()),
-                count: None,
-            },
-        ]);
+        let (then, fold, windows) = self.then_for(run, &continuation, &at.ctx, fold);
+        let mut records = vec![Record::Nodes {
+            run: run.id(),
+            nodes: trail.clone(),
+        }];
+        records.extend(windows.as_ref().map(|windows| windows.record.clone()));
+        records.push(Record::Scope {
+            run: run.id(),
+            scope,
+            continuation: Some(continuation),
+            source: Some(source.clone()),
+            count: None,
+            feeds: windows.as_ref().map(|windows| (windows.into, windows.feed)),
+        });
+        let durable = self.log.append(records);
         self.release_when(durable, release);
-        let then = Then::Continue {
-            continuation,
-            ctx: at.ctx.clone(),
-        };
-        let opened = Scope::new(then, None);
-        let opened = match fold {
-            Some(fold) => opened.with_fold(fold),
-            None => opened,
-        };
+        let opened = Scope::new(then, None).with(fold, windows.map(|windows| windows.feed));
         self.feed_scope(run, scope, opened, source, stream, trail);
     }
 
@@ -95,9 +89,7 @@ impl Inner {
         stream: Stream,
         trail: Vec<Arc<Node>>,
     ) {
-        let Then::Continue { continuation, .. } = &scope.then else {
-            unreachable!("a stream feeds a fan-out scope")
-        };
+        let (continuation, _) = scope.then.opened().expect("a stream feeds a fan-out scope");
         let in_flight = source.position.yielded - scope.ended();
         let credits = stream.window.saturating_sub(in_flight as usize);
         let credits = Arc::new(Semaphore::new(credits));
@@ -327,16 +319,32 @@ impl Inner {
         {
             let yielded = source.position.yielded;
             tracing::info!(task = task.id, yielded, "resuming a stream");
-            let Then::Continue { ctx, .. } = &scope.then else {
-                unreachable!("a stream feeds a fan-out scope")
-            };
+            let (_, ctx) = scope.then.opened().expect("a stream feeds a fan-out scope");
             let trail = vec![ctx.clone()];
             return self.feed_scope(run, id, scope, source, stream, trail);
         }
         tracing::info!(task = task.id, "restarting a stream where it is served");
-        let Then::Continue { continuation, ctx } = scope.then else {
-            unreachable!("a stream feeds a fan-out scope")
+        let (continuation, ctx, windows) = match scope.then {
+            Then::Continue { continuation, ctx } => (continuation, ctx, None),
+            Then::Feed {
+                into,
+                continuation,
+                ctx,
+            } => (continuation, ctx, Some(into)),
+            Then::Finish => unreachable!("a stream feeds a fan-out scope"),
         };
+        // The stream starts again, with scopes of its own: the windows' scope goes too.
+        let mut gone = vec![Record::ScopeGone {
+            run: run.id(),
+            scope: id,
+        }];
+        if let Some(into) = windows {
+            run.scopes.lock().unwrap().remove(&into);
+            gone.push(Record::ScopeGone {
+                run: run.id(),
+                scope: into,
+            });
+        }
         let branch = Branch {
             id: continuation.branch,
             hop: continuation.hop + 1,
@@ -347,17 +355,13 @@ impl Inner {
             resume: Resume::Action { op: source.call },
             scopes: continuation.scopes,
         };
-        self.log.record(vec![
-            Record::Branch {
-                run: run.id(),
-                holder: self.id,
-                branch: branch.clone(),
-            },
-            Record::ScopeGone {
-                run: run.id(),
-                scope: id,
-            },
-        ]);
+        let mut records = vec![Record::Branch {
+            run: run.id(),
+            holder: self.id,
+            branch: branch.clone(),
+        }];
+        records.extend(gone);
+        self.log.record(records);
         self.spawn_drive(run.clone(), branch, ctx);
     }
 }

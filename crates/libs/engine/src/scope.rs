@@ -36,6 +36,7 @@ pub struct Scope {
     /// folded.
     items: BTreeMap<u64, Value>,
     pub fold: Option<Fold>,
+    pub feed: Option<Feed>,
     pub then: Then,
     /// For a scope fed by a stream: one per item the source may still put in flight.
     pub credits: Option<Arc<Semaphore>>,
@@ -53,6 +54,19 @@ pub struct Fold {
     pub busy: bool,
 }
 
+/// A scope whose items go out in windows: every `size` items, in branch order, make a branch of
+/// the scope it feeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Feed {
+    pub size: u64,
+    /// The window op.
+    pub op: OpId,
+    /// The first branch of the window being filled: every item before it has gone out.
+    pub start: u64,
+    /// Windows gone out so far; the next one is numbered this.
+    pub windows: u64,
+}
+
 /// What happens when a scope is over.
 pub enum Then {
     /// The run's root scope: the run is over.
@@ -63,6 +77,27 @@ pub enum Then {
         continuation: Continuation,
         ctx: Arc<Node>,
     },
+    /// A scope windowed into scope `into`, which knows how many windows it has once this one is
+    /// over. Like a fan-out scope, it holds the context it was opened in (and the windows go out
+    /// from it), but the branch that opened it continues from the windows' scope.
+    Feed {
+        into: ScopeId,
+        continuation: Continuation,
+        ctx: Arc<Node>,
+    },
+}
+
+impl Then {
+    /// How a scope that is not the run's root was opened: by whom, and in what context.
+    pub fn opened(&self) -> Option<(&Continuation, &Arc<Node>)> {
+        match self {
+            Then::Finish => None,
+            Then::Continue { continuation, ctx }
+            | Then::Feed {
+                continuation, ctx, ..
+            } => Some((continuation, ctx)),
+        }
+    }
 }
 
 /// The run's outcome as its owner collects it.
@@ -128,9 +163,64 @@ impl Scope {
             ended: Indices::default(),
             items: BTreeMap::new(),
             fold: None,
+            feed: None,
             then,
             credits: None,
         }
+    }
+
+    /// With `fold` and `feed`, if given.
+    pub fn with(self, fold: Option<Fold>, feed: Option<Feed>) -> Self {
+        let scope = match fold {
+            Some(fold) => self.with_fold(fold),
+            None => self,
+        };
+        match feed {
+            Some(feed) => scope.with_feed(feed),
+            None => scope,
+        }
+    }
+
+    /// The scope sends its items out in windows. Items already gone out (below `feed.start`) are
+    /// dropped.
+    pub fn with_feed(mut self, feed: Feed) -> Self {
+        self.items = self.items.split_off(&feed.start);
+        self.feed = Some(feed);
+        self
+    }
+
+    /// The windows ready to go out, each with the feed as it is once it has: each full one, in
+    /// branch order, and the last, partial one once every branch has ended. Their items leave the
+    /// scope.
+    pub fn next_windows(&mut self) -> Vec<(Feed, Vec<Value>)> {
+        let Some(feed) = self.feed.as_mut() else {
+            return Vec::new();
+        };
+        let mut windows = Vec::new();
+        loop {
+            // The window from `start`: its items, as far as the branches have ended in order.
+            let mut index = feed.start;
+            let mut taken = Vec::new();
+            while (taken.len() as u64) < feed.size && self.ended.contains(index) {
+                if self.items.contains_key(&index) {
+                    taken.push(index);
+                }
+                index += 1;
+            }
+            let full = taken.len() as u64 == feed.size;
+            let last = !taken.is_empty() && self.count == Some(index) && self.ended.len() == index;
+            if !full && !last {
+                break;
+            }
+            let items = taken
+                .iter()
+                .map(|index| self.items.remove(index).expect("taken above"))
+                .collect();
+            feed.start = index;
+            feed.windows += 1;
+            windows.push((*feed, items));
+        }
+        windows
     }
 
     /// The scope folds its items with `fold` instead of collecting them. Items already folded
@@ -203,8 +293,10 @@ impl Scope {
 
     fn state(&self) -> Ended {
         let folded = |count| self.fold.as_ref().is_none_or(|fold| fold.next == count);
+        // A windowed scope is over once its last window has gone out.
+        let fed = || self.feed.is_none() || self.items.is_empty();
         match self.count {
-            Some(count) if self.ended.len() == count && folded(count) => Ended::Over,
+            Some(count) if self.ended.len() == count && folded(count) && fed() => Ended::Over,
             _ => Ended::Open,
         }
     }
@@ -266,6 +358,63 @@ mod tests {
         assert_eq!(ends, [Ended::Open, Ended::Open, Ended::Over]);
         let (items, _) = scope.into_parts();
         assert_eq!(items.take::<Vec<i32>>().unwrap(), [1, 3]);
+    }
+
+    fn feeding() -> Then {
+        let continuation = Continuation {
+            branch: BranchId { scope: 0, index: 0 },
+            hop: 0,
+            lineage: 0,
+            clock: 1,
+            ctx: 0,
+            scopes: Arc::from([0]),
+            collect: Some(9),
+        };
+        let ctx = Arc::new(Node::root(0));
+        Then::Feed {
+            into: 1,
+            continuation,
+            ctx,
+        }
+    }
+
+    #[test]
+    fn windows_go_out_in_branch_order_and_the_last_one_partial() {
+        let feed = Feed {
+            size: 2,
+            op: 9,
+            start: 0,
+            windows: 0,
+        };
+        let mut scope = Scope::new(feeding(), Some(5)).with_feed(feed);
+        let ints = |items: Vec<Value>| -> Vec<i32> {
+            items.into_iter().map(|item| item.take().unwrap()).collect()
+        };
+        scope.end(1, Some(Value::new(1)));
+        assert!(scope.next_windows().is_empty(), "0 has not ended");
+        scope.end(0, Some(Value::new(0)));
+        let ready = scope.next_windows();
+        assert_eq!(ready.len(), 1);
+        assert_eq!((ready[0].0.windows, ready[0].0.start), (1, 2));
+        assert_eq!(ints(ready[0].1.clone()), [0, 1]);
+        // 2 was dropped: the next window takes 3 and 4.
+        scope.end(2, None);
+        scope.end(4, Some(Value::new(4)));
+        assert!(scope.next_windows().is_empty());
+        scope.end(3, Some(Value::new(3)));
+        let ready = scope.next_windows();
+        assert_eq!(ints(ready[0].1.clone()), [3, 4]);
+        assert!(scope.is_over());
+
+        // A last window short of the size goes out once every branch has ended.
+        let mut scope = Scope::new(feeding(), Some(3)).with_feed(feed);
+        for index in 0..3 {
+            scope.end(index, Some(Value::new(index as i32)));
+        }
+        let ready = scope.next_windows();
+        let windows: Vec<Vec<i32>> = ready.into_iter().map(|(_, items)| ints(items)).collect();
+        assert_eq!(windows, [vec![0, 1], vec![2]]);
+        assert!(scope.is_over());
     }
 
     #[test]

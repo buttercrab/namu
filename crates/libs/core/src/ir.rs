@@ -123,6 +123,16 @@ pub struct Collect {
     pub reduce: Option<Reduce>,
 }
 
+/// Windowing: closes the innermost fan-out scope like a collect, but continues once per `size`
+/// items rather than once for all of them: each window of items, in branch order, is a branch of
+/// a new scope, bound to `output`. A later collect closes that scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Window {
+    pub input: ValueId,
+    pub output: ValueId,
+    pub size: u64,
+}
+
 /// A fold: `task_id(accumulator, item)` gives the next accumulator, starting from `init`, a value
 /// of the scope's own context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -137,6 +147,7 @@ pub enum Action {
     Call(Call),
     FanOut(FanOut),
     Collect(Collect),
+    Window(Window),
 }
 
 impl Action {
@@ -149,6 +160,7 @@ impl Action {
                 std::slice::from_ref(&collect.input),
                 collect.reduce.as_ref().map(|reduce| reduce.init),
             ),
+            Action::Window(window) => (std::slice::from_ref(&window.input), None),
         };
         values.iter().copied().chain(init)
     }
@@ -158,6 +170,7 @@ impl Action {
             Action::Call(call) => &call.outputs,
             Action::FanOut(fan_out) => std::slice::from_ref(&fan_out.output),
             Action::Collect(collect) => std::slice::from_ref(&collect.output),
+            Action::Window(window) => std::slice::from_ref(&window.output),
         }
     }
 }
@@ -214,6 +227,13 @@ impl Operation {
     pub fn collect(&self) -> Option<&Collect> {
         match &self.action {
             Some(Action::Collect(collect)) => Some(collect),
+            _ => None,
+        }
+    }
+
+    pub fn window(&self) -> Option<&Window> {
+        match &self.action {
+            Some(Action::Window(window)) => Some(window),
             _ => None,
         }
     }

@@ -37,7 +37,7 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
         if op.fan_out().is_some() {
             scopes.push(op_id);
         }
-        if op.collect().is_some() {
+        if op.collect().is_some() || op.window().is_some() {
             let Some(fan_out) = scopes.pop() else {
                 bail!("op {op_id} collects outside of any fan-out");
             };
@@ -49,6 +49,10 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
                 }
                 _ => collect_of[fan_out] = Some(op_id),
             }
+        }
+        // A window closes the items' scope and opens its windows'.
+        if op.window().is_some() {
+            scopes.push(op_id);
         }
         after[op_id] = scopes.clone();
         for next in op.successors() {

@@ -19,7 +19,7 @@ use namu_core::value::Value;
 use super::scopes::record_report;
 use super::view::View;
 use super::{Inner, Run};
-use crate::ids::{RunId, WorkerId, owner};
+use crate::ids::{RunId, ScopeId, WorkerId, owner};
 use crate::log::{Record, ReportRecord, RunEstate, ScopeEstate};
 use crate::message::{Branch, End, FetchRun, Message, Reported};
 use crate::run::RunInfo;
@@ -110,12 +110,17 @@ impl Inner {
         let Some(run) = self.install(info).await else {
             return Ok(());
         };
+        let mut feeding = Vec::new();
         for scope in estate.scopes {
             let reports = match scope.continuation {
                 None => estate.reports.as_slice(),
                 Some(_) => &[],
             };
-            self.adopt_scope(&run, scope, reports).await?;
+            feeding.extend(self.adopt_scope(&run, scope, reports).await?);
+        }
+        // Once every scope is open here, the windows' scopes among them too.
+        for scope in feeding {
+            self.send_windows(&run, scope);
         }
         // A reported branch whose end may not have reached its scope: end it again. The scope's
         // owner counts it once.
@@ -128,18 +133,27 @@ impl Inner {
         Ok(())
     }
 
+    /// Adopts a scope; returns it if it feeds windows, which go out once every scope is adopted.
     async fn adopt_scope(
         self: &Arc<Self>,
         run: &Arc<Run>,
         estate: ScopeEstate,
         reports: &[ReportRecord],
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<ScopeId>> {
         let id = estate.scope;
         if run.scopes.lock().unwrap().contains_key(&id) {
-            return Ok(());
+            return Ok(None);
         }
         let mut fold = None;
         let then = match estate.continuation {
+            Some(continuation) if let Some((into, _)) = estate.feeds => {
+                let ctx = self.node(run, continuation.ctx).await?;
+                Then::Feed {
+                    into,
+                    continuation,
+                    ctx,
+                }
+            }
             Some(continuation) => {
                 let ctx = self.node(run, continuation.ctx).await?;
                 fold = self
@@ -161,22 +175,21 @@ impl Inner {
         for end in estate.ends {
             scope.end(end.index, end.item);
         }
-        // After the ends, so that the items it has folded already are dropped.
-        if let Some(fold) = fold {
-            scope = scope.with_fold(fold);
-        }
+        // After the ends, so that the items folded or sent out in windows already are dropped.
+        let feeds = estate.feeds.map(|(_, feed)| feed);
+        scope = scope.with(fold, feeds);
         if let Some(source) = estate.source
             && estate.count.is_none()
         {
             self.adopt_stream(run, id, scope, source);
-        } else if scope.is_over() {
+        } else if scope.is_over() && feeds.is_none() {
             self.scope_over(run, id, scope);
-            return Ok(());
+            return Ok(None);
         } else {
             run.open_scope(id, scope);
         }
         self.fold(run, id);
-        Ok(())
+        Ok(feeds.map(|_| id))
     }
 
     /// The fold of an adopted scope, if it folds: where its last logged step left it, or from its

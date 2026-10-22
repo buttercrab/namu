@@ -291,3 +291,20 @@ pub fn doc_stats_reduced() -> Summary {
     let stats = analyze(docs, cfg);
     merge_stats(empty, stats)
 }
+
+/// Windows over a stream: the documents arrive one by one, are analyzed as they come, and every 8
+/// of them are summarized together (a window), as a batch job over an endless feed would; the
+/// windows' summaries are then totalled.
+#[workflow(id = "stream_windows")]
+pub fn stream_windows() -> i64 {
+    let min_len = 6;
+    let rounds = 1;
+    let n = 48;
+    let delay_ms = 1;
+    let cfg = make_config(min_len, rounds);
+    let doc = each(stream_docs(n, delay_ms));
+    let stats = analyze(doc, cfg);
+    let batch = window(stats, 8);
+    let summary = summarize(batch);
+    total_words(summary)
+}
