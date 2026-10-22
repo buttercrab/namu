@@ -1,0 +1,5 @@
+error: this operator is not supported in workflows; move it into a task
+ --> tests/compile-fail/12-unsupported-operator.rs:7:7
+  |
+7 |     a & b
+  |       ^

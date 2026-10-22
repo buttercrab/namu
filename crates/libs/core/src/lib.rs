@@ -1,5 +1,6 @@
 //! The workflow IR shared by the compiler (macros, flow) and the engine.
 
+pub mod builtin;
 pub mod ir;
 pub mod liveness;
 pub mod parallel;

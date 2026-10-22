@@ -9,9 +9,9 @@ use std::collections::BTreeSet;
 use crate::ir::{Next, Operation, Workflow};
 use crate::{OpId, ValueId};
 
-/// Live values at the two points of each operation where nodes are created: after its literals
-/// and phis are applied, and after its action (a call's outputs, a fan-out's item, a collect's
-/// list). Each set is sorted.
+/// Live values at the two points of each operation where nodes are created: after its literals,
+/// phis and built-ins are applied, and after its action (a call's outputs, a fan-out's item, a
+/// collect's list). Each set is sorted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Liveness {
     after_enter: Vec<Vec<ValueId>>,
@@ -110,13 +110,16 @@ fn before_action(op: &Operation, after: &Set) -> Set {
     live
 }
 
-/// Live on entry to the op, before its literals and phis define anything.
+/// Live on entry to the op, before its literals, phis and built-ins define anything. Built-ins run
+/// in order, so each reads what is live after the ones before it.
 fn enter_live(op: &Operation, after: &Set) -> Set {
+    let mut live = before_action(op, after);
+    for builtin in op.builtins.iter().rev() {
+        live.remove(&builtin.output);
+        live.extend(builtin.inputs.iter().copied());
+    }
     let entered = entry_defs(op);
-    before_action(op, after)
-        .into_iter()
-        .filter(|v| !entered.contains(v))
-        .collect()
+    live.into_iter().filter(|v| !entered.contains(v)).collect()
 }
 
 fn entry_defs(op: &Operation) -> Set {
@@ -124,6 +127,7 @@ fn entry_defs(op: &Operation) -> Set {
         .iter()
         .map(|literal| literal.output)
         .chain(op.phis.iter().map(|phi| phi.output))
+        .chain(op.builtins.iter().map(|builtin| builtin.output))
         .collect()
 }
 
@@ -228,5 +232,36 @@ mod tests {
         assert_eq!(live.after_enter(0), [0]);
         assert_eq!(live.after_action(0), [0, 1, 2]);
         assert_eq!(live.after_enter(2), [0, 2]);
+    }
+
+    #[test]
+    fn a_built_in_reads_what_the_ones_before_it_made() {
+        // op 0: a = x + 1; b = a * 2; then call t(b, y), returning its output.
+        use crate::ir::{Builtin, BuiltinOp, ScalarType};
+        let builtin = |op, inputs: Vec<ValueId>, output| Builtin {
+            op,
+            ty: ScalarType::I64,
+            inputs,
+            output,
+        };
+        let workflow = Workflow::new(
+            "builtins".into(),
+            vec![
+                Operation::new(
+                    Vec::new(),
+                    Vec::new(),
+                    call("t", vec![11, 1], 12),
+                    Next::return_value(12),
+                )
+                .with_builtins(vec![
+                    builtin(BuiltinOp::Add, vec![0, 0], 10),
+                    builtin(BuiltinOp::Mul, vec![10, 10], 11),
+                ]),
+            ],
+        );
+        let live = liveness(&workflow);
+        // After the step, `a` is dead: only `b` and `y` reach the call.
+        assert_eq!(live.after_enter(0), [1, 11]);
+        assert_eq!(live.after_action(0), [12]);
     }
 }

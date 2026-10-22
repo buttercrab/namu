@@ -39,6 +39,25 @@ summarize(stats)                 // summarize(stats: Vec<Stats>): collect every 
 - Values from before the fan-out (like `cfg`) are shared by every branch.
 - A failed branch is dropped from the collect, and the run ends `partial_failed`.
 
+## Expressions
+Arithmetic, comparisons and logic on values are built-ins: the engine evaluates them itself,
+with no task call.
+
+```rust
+let mut tries = 0;
+while tries < 3 && !done {
+    tries += 1;
+}
+let score = hits * 100 / total;
+let label = exclaim(name) + "?";   // + on strings concatenates
+```
+
+- Operators: `+ - * / %`, unary `-`, `== != < <= > >=`, `&& || !`, and `+=` and the like.
+- Types: `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `String`. Both sides of an operator
+  have one type; rustc checks it.
+- Integer arithmetic is checked: an overflow or a division by zero fails the branch.
+- Not yet: field and index access, tuples built from values, `format!`. Use a task.
+
 ## Supported control flow
 - `if` / `if-else`
 - `while` loops, with `break` and `continue` (unlabeled; on the innermost loop)
@@ -47,7 +66,7 @@ summarize(stats)                 // summarize(stats: Vec<Stats>): collect every 
 
 ```rust
 let x = identity(xs);           // one branch per item
-if less_than(x, 25) { return; } // drops the small ones
+if x < 25 { return; }           // drops the small ones
 let y = double(x);
 sum(y)                          // collects the rest
 ```

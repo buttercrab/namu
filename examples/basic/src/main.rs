@@ -10,12 +10,6 @@ use namu_engine::{FnTasks, LocalCluster};
 
 // Tasks are declared by signature; the workflow is type-checked against these.
 #[task]
-fn add(a: i32, b: i32) -> Result<i32>;
-
-#[task]
-fn is_less(a: i32, b: i32) -> Result<bool>;
-
-#[task]
 fn range(from: i32, to: i32) -> Result<Vec<i32>>;
 
 #[task]
@@ -24,13 +18,14 @@ fn square(x: i32) -> Result<i32>;
 #[task]
 fn sum(xs: Vec<i32>) -> Result<i32>;
 
-/// The first Fibonacci number of at least 100.
+/// The first Fibonacci number of at least 100. Arithmetic and comparisons are built-ins: the
+/// engine evaluates them itself, with no task call, so this loop never leaves its worker.
 #[workflow]
 fn fibonacci() -> i32 {
     let mut a = 0;
     let mut b = 1;
-    while is_less(b, 100) {
-        let c = add(a, b);
+    while b < 100 {
+        let c = a + b;
         a = b;
         b = c;
     }
@@ -49,8 +44,6 @@ fn sum_of_squares() -> i32 {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let tasks = FnTasks::new()
-        .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
-        .with("is_less", |(a, b): (i32, i32)| Ok::<_, String>(a < b))
         .with("range", |(from, to): (i32, i32)| {
             Ok::<_, String>((from..to).collect::<Vec<_>>())
         })

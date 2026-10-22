@@ -4,6 +4,7 @@
 //! such as `Graph`, `Node`, `BasicBlock`, and `Terminator`.
 
 use namu_core::ValueId;
+use namu_core::ir::{BuiltinOp, ScalarType};
 
 pub type NodeId = usize;
 pub type BlockId = usize;
@@ -28,6 +29,12 @@ pub enum NodeKind {
     /// Collect `input` from every branch of the innermost fan-out scope into a list.
     Collect {
         input: ValueId,
+    },
+    /// An expression the engine evaluates itself.
+    Builtin {
+        op: BuiltinOp,
+        ty: ScalarType,
+        inputs: Vec<ValueId>,
     },
 }
 

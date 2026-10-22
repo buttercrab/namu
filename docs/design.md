@@ -75,6 +75,12 @@ The engine cannot run arbitrary Rust, so an expression in a workflow must be one
 
 Anything else is a compile error with a message that says "move this into a task".
 
+Built-ins are evaluated where the branch stands, in the step that applies the operation's phis,
+with no task call: a loop of arithmetic and comparisons never leaves its worker. Rust types them:
+`a + b` lowers to a generic helper over the operands' type, so `String - String` or `i32 < String`
+is a compile error, and the IR records the type, so the engine reads the operands exactly.
+Integer arithmetic is checked; an overflow or a division by zero fails the branch with a message.
+
 ### 4.4 Errors
 
 A task call that fails ends its branch only; sibling branches continue. A workflow that wants to
@@ -655,6 +661,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |
+| Expressions | ✅ Built-ins: `+ - * / %`, unary `-`, comparisons, `&& || !` and compound assignment on `bool`, integers, floats and strings (`+` concatenates), typed by rustc and evaluated in the kernel; checked integer arithmetic (§4.3) | Field and index access, tuples, string formatting |
 | Errors in DSL | ✅ `match attempt(task(..)) { Ok(..) => .., Err(e) => .. }`: the call gets an error edge in the IR (§4.4); a failure nobody attempts drops the branch and is recorded in run failures | Typed errors: a task's own error type, not only its message |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
 | Distributed path | ✅ Peer-to-peer TCP mesh with a reliable session per pair of workers (sequence numbers, replay on reconnect); the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |

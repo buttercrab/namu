@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use namu_core::ValueId;
 use namu_core::ir::{
-    Action, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Workflow,
+    Action, Builtin, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Workflow,
 };
 
 use crate::ir::{BasicBlock, NodeId};
@@ -144,6 +144,14 @@ impl<T> Graph<T> {
                             output: node.outputs[0],
                         }));
                     }
+                    NodeKind::Builtin { op, ty, inputs } => {
+                        pending.builtins.push(Builtin {
+                            op: *op,
+                            ty: *ty,
+                            inputs: inputs.clone(),
+                            output: node.outputs[0],
+                        });
+                    }
                 }
             }
 
@@ -257,6 +265,15 @@ impl<T> Graph<T> {
                     NodeKind::Collect { input } => {
                         format!("  let var{} = collect(var{});\n", node_id, input)
                     }
+                    NodeKind::Builtin { op, ty, inputs } => {
+                        let inputs: Vec<String> =
+                            inputs.iter().map(|v| format!("var{v}")).collect();
+                        format!(
+                            "  let var{} = {op:?}::<{ty:?}>({});\n",
+                            node_id,
+                            inputs.join(", ")
+                        )
+                    }
                     NodeKind::Phi { from } => {
                         let from_str: Vec<String> = from
                             .iter()
@@ -303,6 +320,7 @@ impl<T> Graph<T> {
 #[derive(Default)]
 struct PendingOp {
     phis: Vec<Phi>,
+    builtins: Vec<Builtin>,
     action: Option<Action>,
 }
 
@@ -312,18 +330,16 @@ impl PendingOp {
     }
 
     fn is_empty(&self) -> bool {
-        self.phis.is_empty() && !self.has_action()
+        self.phis.is_empty() && self.builtins.is_empty() && !self.has_action()
     }
 
     fn flush(&mut self, ops: &mut Vec<Operation>) -> usize {
         let taken = std::mem::take(self);
         // The terminator is linked in later.
-        ops.push(Operation::new(
-            Vec::new(),
-            taken.phis,
-            taken.action,
-            Next::return_unit(),
-        ));
+        ops.push(
+            Operation::new(Vec::new(), taken.phis, taken.action, Next::return_unit())
+                .with_builtins(taken.builtins),
+        );
         ops.len() - 1
     }
 }

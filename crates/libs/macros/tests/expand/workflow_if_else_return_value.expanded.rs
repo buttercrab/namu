@@ -28,7 +28,12 @@ pub fn if_else_return_value_workflow() -> ::namu::__macro_exports::Graph<i32> {
             let __if_merge_block_0 = __builder.new_block();
             let __if_then_block_0 = __builder.new_block();
             let __if_else_block_0 = __builder.new_block();
-            let __if_condition = x > ::namu::__macro_exports::literal(&__builder, 5);
+            let __if_condition = ::namu::__macro_exports::compare(
+                &__builder,
+                ::namu::__macro_exports::BuiltinOp::Gt,
+                x,
+                ::namu::__macro_exports::literal(&__builder, 5),
+            );
             let __if_parent_predecessor_0 = __builder.current_block_id();
             ::namu::__macro_exports::branch(
                 &__builder,

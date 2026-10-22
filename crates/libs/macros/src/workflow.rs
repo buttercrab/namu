@@ -143,6 +143,17 @@ impl VisitMut for WorkflowVisitor {
                 }
                 *i = self.handle_loop_exit(i.clone(), LoopExit::Continue);
             }
+            Expr::Binary(binary) => {
+                *i = self.handle_binary(binary);
+            }
+            // Grouping only: the expression inside is what is computed.
+            Expr::Paren(paren) => {
+                self.visit_expr_mut(&mut paren.expr);
+                *i = (*paren.expr).clone();
+            }
+            Expr::Unary(unary) => {
+                *i = self.handle_unary(unary);
+            }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
                 // Workflow values are owned, so string literals are `String`, matching task
@@ -216,6 +227,14 @@ impl VisitMut for WorkflowVisitor {
 
                 self.last_expr_has_value = false;
             }
+            // `x op= e` is `x = x op e`.
+            Stmt::Expr(Expr::Binary(binary), semi) if compound(&binary.op).is_some() => {
+                let op = compound(&binary.op).expect("checked by the guard");
+                let (left, right) = (&binary.left, &binary.right);
+                let assign: Expr = parse_quote! { #left = #left #op #right };
+                *i = Stmt::Expr(assign, *semi);
+                self.visit_stmt_mut(i);
+            }
             Stmt::Expr(Expr::Assign(assign_expr), _semi) => {
                 let Expr::Path(path) = &*assign_expr.left else {
                     let assign_expr = assign_expr.clone();
@@ -248,6 +267,76 @@ impl VisitMut for WorkflowVisitor {
 }
 
 impl WorkflowVisitor {
+    /// An operator on values: a built-in the engine evaluates where the branch stands. Rust picks
+    /// the operand type, so `a + b` must add two numbers (or strings) of one type.
+    fn handle_binary(&mut self, binary: &mut syn::ExprBinary) -> Expr {
+        use syn::BinOp;
+        let builtin = |name: &str| -> proc_macro2::TokenStream {
+            let name = format_ident!("{}", name);
+            quote! { ::namu::__macro_exports::BuiltinOp::#name }
+        };
+        let (helper, op) = match binary.op {
+            BinOp::Add(_) => ("plus", None),
+            BinOp::Sub(_) => ("arith", Some(builtin("Sub"))),
+            BinOp::Mul(_) => ("arith", Some(builtin("Mul"))),
+            BinOp::Div(_) => ("arith", Some(builtin("Div"))),
+            BinOp::Rem(_) => ("arith", Some(builtin("Rem"))),
+            BinOp::Eq(_) => ("compare", Some(builtin("Eq"))),
+            BinOp::Ne(_) => ("compare", Some(builtin("Ne"))),
+            BinOp::Lt(_) => ("compare", Some(builtin("Lt"))),
+            BinOp::Le(_) => ("compare", Some(builtin("Le"))),
+            BinOp::Gt(_) => ("compare", Some(builtin("Gt"))),
+            BinOp::Ge(_) => ("compare", Some(builtin("Ge"))),
+            BinOp::And(_) => ("logic", Some(builtin("And"))),
+            BinOp::Or(_) => ("logic", Some(builtin("Or"))),
+            _ => {
+                self.fail(
+                    &binary.op,
+                    "this operator is not supported in workflows; move it into a task",
+                );
+                return Expr::Binary(binary.clone());
+            }
+        };
+        self.visit_expr_mut(&mut binary.left);
+        self.visit_expr_mut(&mut binary.right);
+        self.last_expr_has_value = true;
+        let (builder, helper) = (&self.builder_ident, format_ident!("{}", helper));
+        let (left, right) = (&binary.left, &binary.right);
+        let op = op.map(|op| quote! { #op, });
+        parse_quote! { ::namu::__macro_exports::#helper(&#builder, #op #left, #right) }
+    }
+
+    fn handle_unary(&mut self, unary: &mut syn::ExprUnary) -> Expr {
+        let builder = self.builder_ident.clone();
+        let negative_number = matches!(
+            &*unary.expr,
+            Expr::Lit(lit) if matches!(lit.lit, syn::Lit::Int(_) | syn::Lit::Float(_))
+        );
+        match unary.op {
+            // A negative number is a literal, not an expression.
+            syn::UnOp::Neg(_) if negative_number => {
+                self.last_expr_has_value = true;
+                parse_quote! { ::namu::__macro_exports::literal(&#builder, #unary) }
+            }
+            syn::UnOp::Neg(_) => {
+                self.visit_expr_mut(&mut unary.expr);
+                self.last_expr_has_value = true;
+                let operand = &unary.expr;
+                parse_quote! { ::namu::__macro_exports::negate(&#builder, #operand) }
+            }
+            syn::UnOp::Not(_) => {
+                self.visit_expr_mut(&mut unary.expr);
+                self.last_expr_has_value = true;
+                let operand = &unary.expr;
+                parse_quote! { ::namu::__macro_exports::not(&#builder, #operand) }
+            }
+            _ => {
+                self.fail(&unary.op, "this operator is not supported in workflows");
+                Expr::Unary(unary.clone())
+            }
+        }
+    }
+
     /// `return` ends the branch: inside a fan-out it drops the item (design §4.2). What follows
     /// in the same block can never run, so it goes into a block nothing jumps to.
     fn handle_return(&mut self, return_expr: &mut syn::ExprReturn) -> Expr {
@@ -614,6 +703,19 @@ impl WorkflowVisitor {
             }
         }
     }
+}
+
+/// The operator of a compound assignment: `+` for `+=`, and so on.
+fn compound(op: &syn::BinOp) -> Option<syn::BinOp> {
+    use syn::BinOp;
+    Some(match op {
+        BinOp::AddAssign(_) => parse_quote!(+),
+        BinOp::SubAssign(_) => parse_quote!(-),
+        BinOp::MulAssign(_) => parse_quote!(*),
+        BinOp::DivAssign(_) => parse_quote!(/),
+        BinOp::RemAssign(_) => parse_quote!(%),
+        _ => return None,
+    })
 }
 
 enum LoopExit {

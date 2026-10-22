@@ -21,6 +21,50 @@ pub struct Literal {
     pub value: String,
 }
 
+/// An expression the engine evaluates itself, where it stands: arithmetic, a comparison, logic.
+/// `ty` is its operands' type, which says how to read them; see [`crate::builtin`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Builtin {
+    pub op: BuiltinOp,
+    pub ty: ScalarType,
+    pub inputs: Vec<ValueId>,
+    pub output: ValueId,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum BuiltinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Neg,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+    Not,
+}
+
+/// The types built-ins work on.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalarType {
+    Bool,
+    I32,
+    I64,
+    U32,
+    U64,
+    F32,
+    F64,
+    String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Phi {
     pub output: ValueId,
@@ -90,12 +134,14 @@ impl Action {
     }
 }
 
-/// One step of a workflow: literals, then phis (applied together), then at most one action, then
-/// a jump, a branch or a return.
+/// One step of a workflow: literals, then phis (applied together), then built-ins (in order),
+/// then at most one action, then a jump, a branch or a return.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Operation {
     pub literals: Vec<Literal>,
     pub phis: Vec<Phi>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builtins: Vec<Builtin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<Action>,
     pub next: Next,
@@ -106,9 +152,21 @@ impl Operation {
         Self {
             literals,
             phis,
+            builtins: Vec::new(),
             action,
             next,
         }
+    }
+
+    pub fn with_builtins(mut self, builtins: Vec<Builtin>) -> Self {
+        self.builtins = builtins;
+        self
+    }
+
+    /// Whether control enters it without computing anything first: no literals, phis or
+    /// built-ins.
+    pub fn entered_directly(&self) -> bool {
+        self.literals.is_empty() && self.phis.is_empty() && self.builtins.is_empty()
     }
 
     pub fn call(&self) -> Option<&Call> {

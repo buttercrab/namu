@@ -35,7 +35,17 @@ pub fn index_wikipedia() -> IndexReport {
     let article = articles(limit);              // a stream: a branch per article, as it arrives
     let chunks = chunk(article, words);         // Vec<Chunk>
     let embedded = embed(chunks);               // a branch per chunk; batched across all of them
-    let stored = store(embedded, collection);   // upsert by the chunk's own id
+    let mut tries = 0;
+    let mut stored = 0;
+    while tries < 3 {                           // a failed write is tried again
+        match attempt(store(embedded, collection)) {    // upsert by the chunk's own id
+            Ok(n) => {
+                stored = n;
+                break;
+            }
+            Err(_) => tries += 1,
+        }
+    }
     let per_article = count_stored(stored);     // fan-in: chunks per article
     index_report(per_article)                   // fan-in: articles
 }
