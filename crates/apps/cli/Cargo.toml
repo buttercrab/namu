@@ -24,4 +24,4 @@ tokio = { workspace = true }
 toml = "0.8"
 toml_edit = "0.24"
 walkdir = "2.5"
-zstd = "0.13"
+zstd = "0.14"
