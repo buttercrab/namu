@@ -342,3 +342,28 @@ pub fn doc_stats_py() -> Summary {
     let stats = analyze(docs, cfg);
     summarize_py(stats)
 }
+
+/// The documents given, yielded one at a time by a Python stream that, reopened after a crash,
+/// goes on where it stopped.
+#[task(stream)]
+pub fn replay_py(docs: Vec<String>) -> Result<impl Iterator<Item = Result<String>>>;
+
+/// `classify`, in Python: a dynamic batch task.
+#[task(batch)]
+pub fn classify_py(docs: Vec<String>) -> Vec<Result<String>>;
+
+/// `refine`, in Python: a continuous batch task.
+#[task(batch)]
+pub fn refine_py(labels: Vec<String>) -> Vec<Result<String>>;
+
+/// `label_stats` in Python: the documents streamed in, labeled by a model-like batch task and
+/// refined by a decoder-like continuous one, each in Python processes of their own. The same
+/// labels.
+#[workflow(id = "label_stats_py")]
+pub fn label_stats_py() -> std::collections::BTreeMap<String, usize> {
+    let n = 48;
+    let docs = replay_py(split_docs(n));
+    let topics = classify_py(docs);
+    let labels = refine_py(topics);
+    tally(labels)
+}

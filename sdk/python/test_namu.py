@@ -49,6 +49,10 @@ class Worker(unittest.TestCase):
             @namu.task
             def fails(x: int) -> int:
                 raise ValueError(f"bad {x}")
+
+            @namu.batch
+            def lengths(words: list[str]) -> list[int]:
+                return [len(w) for w in words]
         ''')
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "task.py"
@@ -57,18 +61,27 @@ class Worker(unittest.TestCase):
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.DEVNULL, cwd=HERE)
 
-            def call(task, key, value):
-                frame = _msgpack.dumps([task, key, _msgpack.dumps(value)])
+            def ask(*request):
+                frame = _msgpack.dumps(list(request))
                 process.stdin.write(struct.pack(">I", len(frame)) + frame)
                 process.stdin.flush()
                 (length,) = struct.unpack(">I", process.stdout.read(4))
-                ok, payload = _msgpack.loads(process.stdout.read(length))
+                return _msgpack.loads(process.stdout.read(length))
+
+            def call(task, key, value):
+                ok, payload = ask("call", task, key, _msgpack.dumps(value))
                 return ok, _msgpack.loads(payload) if ok else payload
 
             self.assertEqual(call("shift", "k1", [{"x": 1, "y": 2}, 10]), (True, {"x": 11, "y": 12}))
             self.assertEqual(call("whoami", "run/7/0/3", None), (True, "run/7/0/3"))
             self.assertEqual(call("fails", "k2", 4), (False, "ValueError: bad 4"))
             self.assertEqual(call("missing", "k3", None)[0], False)
+            self.assertEqual(ask("step", []), [False, "RuntimeError: no batch session is open"])
+            # From here on, the process serves a batch session.
+            self.assertEqual(ask("session", "lengths"), [True, None])
+            ok, finished = ask("step", [[1, "k4", _msgpack.dumps("abc")], [2, "k5", _msgpack.dumps("")]])
+            self.assertTrue(ok)
+            self.assertEqual([(id, _msgpack.loads(out)) for id, (_, out) in finished], [(1, 3), (2, 0)])
             process.stdin.close()
             self.assertEqual(process.wait(timeout=5), 0)
 

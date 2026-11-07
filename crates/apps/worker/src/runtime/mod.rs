@@ -42,42 +42,36 @@ impl Runtimes {
     /// Loads the task a manifest describes, as its runtime and kind say.
     pub async fn load(&self, manifest: &TaskManifest) -> anyhow::Result<Kind> {
         let path = self.fetch_artifact(manifest).await?;
-        if manifest.runtime == TaskRuntime::Python {
-            anyhow::ensure!(
-                matches!(manifest.task_kind, TaskKind::Single),
-                "a Python task is a single task for now, not a {:?} one",
-                manifest.task_kind
-            );
-            let task = python::PythonTask::load(&manifest.task_id, &path, &self.cache_dir)?;
-            return Ok(Kind::Async(task));
-        }
         let engine = self.engine.clone();
+        let cache_dir = self.cache_dir.clone();
+        let task_id = manifest.task_id.clone();
         let runtime = manifest.runtime;
         let kind = manifest.task_kind.clone();
         let window = manifest.window.unwrap_or(DEFAULT_WINDOW);
         let policy = batch_policy(manifest);
         tokio::task::spawn_blocking(move || -> anyhow::Result<Kind> {
-            Ok(match (kind, runtime) {
-                (TaskKind::Single, TaskRuntime::Wasm) => {
-                    Kind::Call(Arc::new(wasm::WasmTask::load(&engine, &path)?))
-                }
-                (TaskKind::Single, TaskRuntime::Native) => {
-                    Kind::Call(Arc::new(native::NativeTask::load(&path)?))
-                }
-                (_, TaskRuntime::Python) => unreachable!("loaded above"),
-                (TaskKind::Stream, runtime) => Kind::Stream(Stream {
+            let python = || python::PythonTask::load(&task_id, &path, &cache_dir);
+            Ok(match kind {
+                TaskKind::Single => match runtime {
+                    TaskRuntime::Wasm => {
+                        Kind::Call(Arc::new(wasm::WasmTask::load(&engine, &path)?))
+                    }
+                    TaskRuntime::Native => Kind::Call(Arc::new(native::NativeTask::load(&path)?)),
+                    TaskRuntime::Python => Kind::Async(python()?.calls()),
+                },
+                TaskKind::Stream => Kind::Stream(Stream {
                     task: match runtime {
                         TaskRuntime::Wasm => Arc::new(wasm::WasmStreamTask::load(&engine, &path)?),
                         TaskRuntime::Native => Arc::new(native::NativeStreamTask::load(&path)?),
-                        TaskRuntime::Python => unreachable!("loaded above"),
+                        TaskRuntime::Python => Arc::new(python()?),
                     },
                     window,
                 }),
-                (TaskKind::Batch, runtime) => Kind::Batch(Batch {
+                TaskKind::Batch => Kind::Batch(Batch {
                     task: match runtime {
                         TaskRuntime::Wasm => Arc::new(wasm::WasmBatchTask::load(&engine, &path)?),
                         TaskRuntime::Native => Arc::new(native::NativeBatchTask::load(&path)?),
-                        TaskRuntime::Python => unreachable!("loaded above"),
+                        TaskRuntime::Python => Arc::new(python()?),
                     },
                     policy,
                 }),

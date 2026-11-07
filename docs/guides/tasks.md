@@ -141,8 +141,38 @@ A worker that serves `python` (`NAMU_RUNTIMES=wasm,python`) runs it in a pool of
 time, awaited by the worker like an async task. Values cross as MessagePack: a struct is a map of
 its fields, and a parameter annotated with a dataclass gets one. `namu.call_key()` gives the
 call's key. The task runs in the worker's Python environment: install what it imports there. A
-process that crashes fails its call and is replaced. Single tasks only, for now. See
-`examples/distributed/tasks/summarize_py`.
+process that crashes fails its call and is replaced. See `examples/distributed/tasks/summarize_py`.
+
+Streams and batches are written in Python too, and declared as such in the manifest
+(`"task_kind": "stream"` or `"batch"`) and in the workflow (`#[task(stream)]`, `#[task(batch)]`).
+An open stream, or a batch session, gets a Python process of its own for as long as it lasts, so
+what the task loads once (a model, a connection) serves every item:
+
+```python
+@namu.stream
+def lines(path: str, *, cursor: str | None = None):
+    # Reopened after a crash, the stream is given the last cursor it yielded.
+    with open(path) as f:
+        f.seek(int(cursor or 0))
+        while line := f.readline():
+            yield namu.Item(line, cursor=str(f.tell()))
+
+@namu.batch
+def classify(texts: list[str]) -> list[str]:
+    # One output per input, in order; an exception in an output's place fails that item alone.
+    return model.predict(texts)
+
+@namu.continuous
+class Decoder:
+    # A session is one instance. Each step takes in new (id, input) pairs and returns the
+    # (id, output) pairs that are done, from this step or earlier ones.
+    def step(self, admit: list[tuple[int, Prompt]]) -> list[tuple[int, str]]:
+        ...
+```
+
+A stream that yields plain values (not `Item`s) has no cursor: reopened, it starts over and the
+engine skips what it had yielded. `namu.call_keys()` gives the keys of a batch step's calls. See
+`examples/distributed/tasks/{replay_py,classify_py,refine_py}` (workflow `label_stats_py`).
 
 ## Async tasks
 A task that mostly waits (on a model server, an API, another process) is registered as async:

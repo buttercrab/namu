@@ -44,6 +44,8 @@ check stream_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 
 check stream_windows '{"status": "succeeded", "failures": 0, "result": 30750}'
 # Two batch tasks (dynamic, then continuous) label each document; every label is counted.
 check label_stats '{"status": "succeeded", "failures": 0, "TREE": 4, "STREAM": 4, "BRANCH": 4, "A": 1, "WORKER": 2}'
+# The same in Python: a stream, a dynamic batch and a continuous one, each in processes of its own.
+check label_stats_py '{"status": "succeeded", "failures": 0, "TREE": 4, "STREAM": 4, "BRANCH": 4, "A": 1, "WORKER": 2}'
 check doc_stats_partial '{"status": "partial_failed", "failures": 14, "docs": 34}'
 # Tasks that crash (trap) fail their branch; the run carries on without it.
 check doc_stats_poison '{"status": "partial_failed", "failures": 14, "docs": 34}'

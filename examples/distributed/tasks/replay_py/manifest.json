@@ -1,0 +1,9 @@
+{
+  "task_id": "replay_py",
+  "version": "0.1.0",
+  "task_kind": "stream",
+  "runtime": "python",
+  "input_arity": 1,
+  "output_arity": 1,
+  "window": 8
+}
