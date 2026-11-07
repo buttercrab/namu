@@ -53,6 +53,29 @@ check doc_stats_poison '{"status": "partial_failed", "failures": 14, "docs": 34}
 # no branch fails.
 check retry_stats '{"status": "succeeded", "failures": 0, "docs": 48, "retries": 72, "most": 3}'
 
+# Task packages in S3 (moto's S3 server standing in), as on AWS: the orchestrator keeps them
+# there, and workers fetch them from it. Needs `uvx`; skipped without it.
+if command -v uvx >/dev/null; then
+  s3_port=$((${ORCH_PORT:-8090} + 200))
+  s3_url="http://127.0.0.1:$s3_port"
+  uvx --from 'moto[server]==5.1.22' moto_server -H 127.0.0.1 -p "$s3_port" \
+    >"$ROOT_DIR/data/e2e/s3.log" 2>&1 &
+  s3_pid=$!
+  until curl -sf -o /dev/null "$s3_url/moto-api/"; do sleep 0.5; done
+  export AWS_ACCESS_KEY_ID=namu AWS_SECRET_ACCESS_KEY=namu-secret AWS_REGION=us-east-1
+  s3() { curl -sf --aws-sigv4 "aws:amz:$AWS_REGION:s3" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" "$@"; }
+  s3 -X PUT "$s3_url/namu"
+  AWS_ENDPOINT=$s3_url AWS_ALLOW_HTTP=true ARTIFACTS_URL=s3://namu/artifacts \
+    check doc_stats_py '{"status": "succeeded", "failures": 0, "docs": 48, "checksum": 9482608591355693952}'
+  kept=$(s3 "$s3_url/namu?list-type=2&prefix=artifacts/" | grep -o "<Key>" | wc -l | tr -d ' ')
+  kill "$s3_pid"
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
+  [[ $kept -gt 0 ]] || { echo "no task packages in the bucket" >&2; exit 1; }
+  echo "   ok: $kept task packages kept in S3"
+else
+  echo "== S3 artifacts: skipped (no uvx)"
+fi
+
 # Recovery: kill -9 a worker in the middle of a run. Once its membership expires, its successor
 # takes over from the log, and the run must produce the result of an uninterrupted run.
 echo "== doc_stats_slow with a worker killed mid-run"

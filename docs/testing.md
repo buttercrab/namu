@@ -5,7 +5,7 @@ NAMU is tested in tiers, from the engine alone to real pipelines on a misbehavin
 | Tier | What | Where it runs |
 |---|---|---|
 | Unit and engine | Every workflow on one worker, three, three over TCP and three over mutual TLS, which must agree; recovery at every moment of a run; the control plane's rules over a memory store | `cargo test`, every PR |
-| End to end | A secured local cluster (Redis, the orchestrator, workers as processes): the distributed examples to their known checksums, in WASM, native code and Python (single tasks, a stream, dynamic and continuous batches); a worker killed, a worker drained, the orchestrator killed and restarted; results followed as a run goes; metrics scraped | `scripts/e2e.sh`, every PR |
+| End to end | A secured local cluster (Redis, the orchestrator, workers as processes): the distributed examples to their known checksums, in WASM, native code and Python (single tasks, a stream, dynamic and continuous batches); task packages in S3 (moto's S3 server); a token rotated while the orchestrator runs; a worker killed, a worker drained, the orchestrator killed and restarted; results followed as a run goes; metrics scraped | `scripts/e2e.sh`, every PR |
 | Kubernetes | The images and the Helm chart on a kind cluster, secured; a workflow of WASM and Python tasks; a worker's pod deleted mid-run | `scripts/kind.sh`, every PR |
 | Crawl | A crawler (Python tasks) on a fixture site with flaky pages (503, 429) and dead links: exactly the URLs within its depth, every page fetched once, dead links dropped | `scripts/crawl.sh`: small every PR, 3000 pages nightly |
 | RAG | Wikipedia articles chunked, embedded (MiniLM) and indexed (Qdrant), a worker killed mid-run: the same index, nothing doubled; recall@5 on golden questions at least 0.8 | `scripts/rag.sh`: 60 articles every PR, 300 nightly |
@@ -32,6 +32,8 @@ Each script runs on its own: see its header for its knobs (`PAGES`, `DEPTH`, `DO
   the soak let this through; it now requires the log to stay flat.)
 - The crawl found that the local cluster started a run before its workers had joined.
 - Kubernetes found that workers started before the orchestrator exited instead of waiting for it.
+- S3 (against moto's S3 server) found that task packages could not be kept in S3 at all: the
+  S3 client had no crypto to sign its requests with. It now signs with ring.
 
 ## Not covered yet
 

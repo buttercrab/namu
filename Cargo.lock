@@ -2477,6 +2477,8 @@ dependencies = [
  "quick-xml",
  "rand 0.10.3",
  "reqwest",
+ "ring",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_urlencoded",

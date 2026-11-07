@@ -22,7 +22,7 @@ namu-engine = { path = "../../libs/engine", version = "0.1.0", features = ["otel
 namu-proto = { path = "../../libs/proto", version = "0.1.0" }
 namu-telemetry = { path = "../../libs/telemetry", version = "0.1.0" }
 opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
-object_store = { version = "0.14", default-features = false, features = ["fs", "aws-base", "reqwest"] }
+object_store = { version = "0.14", default-features = false, features = ["fs", "aws-base", "reqwest", "ring"] }
 rmp-serde = { workspace = true }
 # The HTTP client object_store reaches S3 with; TLS by the process's provider (ring).
 reqwest = { version = "0.13", default-features = false, features = ["http2", "rustls-no-provider"] }

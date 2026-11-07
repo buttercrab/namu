@@ -57,6 +57,7 @@ jobs:
           rustup target add wasm32-wasip2
           sudo apt-get update && sudo apt-get install -y redis-server
           sudo systemctl stop redis-server || true
+      - uses: astral-sh/setup-uv@v6
       - uses: Swatinem/rust-cache@v2
       - name: Run e2e
         run: ./scripts/e2e.sh
