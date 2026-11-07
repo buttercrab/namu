@@ -28,6 +28,7 @@ Welcome to the NAMU docs. Start with Getting Started for a runnable local stack,
 
 ## Development
 - `development.md` - build, test, and verification workflow.
+- `testing.md` - the tiers of tests, from the engine to real pipelines on a misbehaving cluster.
 - `contributing.md` - PR expectations and coding standards.
 
 ## Examples

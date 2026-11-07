@@ -39,7 +39,14 @@ pub struct Scope {
     pub then: Then,
     /// For a scope fed by a stream: one per item the source may still put in flight.
     pub credits: Option<Arc<Semaphore>>,
+    /// Where the scope was last settled in the log: the ends of the branches before it are gone
+    /// from it (see [`Scope::settled_point`]).
+    pub settled: u64,
 }
+
+/// How many ends past its last settled point a scope lets the log hold before it settles again:
+/// the log keeps a scope's ends in flight, not all of them.
+pub const SETTLE_EVERY: u64 = 256;
 
 /// A scope's fold: `task(accumulator, item)` over its items in branch order.
 pub struct Fold {
@@ -157,7 +164,41 @@ impl Scope {
             feed: None,
             then,
             credits: None,
+            settled: 0,
         }
+    }
+
+    /// The branches before this point have ended, and whatever their ends brought is accounted
+    /// for: a scope that collects nothing needs nothing more of them, a fold has folded them, a
+    /// window has gone out with them. So their ends need not stay in the log. A scope that collects
+    /// keeps every item until it is over: nothing of it settles.
+    pub fn settled_point(&self) -> u64 {
+        let ended = self.ended.low;
+        match (&self.fold, &self.feed, &self.then) {
+            (Some(fold), _, _) => fold.next.min(ended),
+            (_, Some(feed), _) => feed.start.min(ended),
+            (_, _, Then::Continue { continuation, .. }) if continuation.collect.is_some() => 0,
+            _ => ended,
+        }
+    }
+
+    /// The point to settle the scope at in the log, if it has moved far enough on: then it counts
+    /// as settled there.
+    pub fn settle_next(&mut self) -> Option<(u64, u64)> {
+        let point = self.settled_point();
+        if point < self.settled + SETTLE_EVERY {
+            return None;
+        }
+        let from = std::mem::replace(&mut self.settled, point);
+        Some((from, point))
+    }
+
+    /// The scope was settled at `below` in the log: every branch before it has ended, and is
+    /// accounted for.
+    pub fn settle(&mut self, below: u64) {
+        self.ended.settle(below);
+        self.items = self.items.split_off(&below);
+        self.settled = self.settled.max(below);
     }
 
     /// With `fold` and `feed`, if given.
@@ -331,6 +372,18 @@ impl Indices {
 
     fn len(&self) -> u64 {
         self.low + self.above.len() as u64
+    }
+
+    /// Every index before `below` is in.
+    fn settle(&mut self, below: u64) {
+        if below > self.low {
+            self.above = self.above.split_off(&below);
+            self.low = below;
+            while self.above.first() == Some(&self.low) {
+                self.above.pop_first();
+                self.low += 1;
+            }
+        }
     }
 }
 

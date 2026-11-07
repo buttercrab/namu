@@ -202,3 +202,114 @@ async fn the_log_holds_reports_in_flight_not_every_result() {
         );
     }
 }
+
+/// A scope's ends leave the log once settled: a stream that never ends holds the ends in flight,
+/// not every one.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_log_holds_ends_in_flight_not_every_end() {
+    #[workflow]
+    fn many() -> i32 {
+        let n = 2000;
+        let delay = 0;
+        let pause = 0;
+        each(slow_numbers(n, delay, pause))
+    }
+
+    let cluster = LocalCluster::new(vec![tasks(); 3]);
+    let outcome = cluster
+        .run(many().to_serializable("many".into()))
+        .await
+        .unwrap();
+    assert_eq!(outcome.results.len(), 2000);
+    let peak = cluster.log().peak_ends();
+    assert!(
+        peak < 1000,
+        "a scope's log held {peak} of 2000 ends at once"
+    );
+}
+
+/// A successor takes a settled scope up from where it was settled: nothing before it is lost or
+/// done again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_settled_scope_survives_its_owner_dying() {
+    #[workflow]
+    fn many() -> i32 {
+        let n = 2000;
+        let delay = 1;
+        let pause = 0;
+        each(slow_numbers(n, delay, pause))
+    }
+
+    for delay in [600, 1500] {
+        let cluster = Arc::new(LocalCluster::new(vec![tasks(); 3]));
+        let run = tokio::spawn({
+            let cluster = cluster.clone();
+            async move { cluster.run(many().to_serializable("many".into())).await }
+        });
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        // The first run on a fresh cluster is owned by worker 1, which owns its stream's scope.
+        cluster.kill(1).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(30), run)
+            .await
+            .unwrap_or_else(|_| panic!("stuck after killing the owner at {delay} ms"))
+            .unwrap()
+            .unwrap();
+        let mut got: Vec<i64> = json(&outcome.results)
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            (0..2000).collect::<Vec<_>>(),
+            "killing the owner at {delay} ms"
+        );
+    }
+}
+
+/// An ordered fold over a long stream, settled as it goes, and its owner killed in the middle: the
+/// fold is exactly the one over every item, in order, each once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_fold_survives_its_owner_dying() {
+    #[task(reduce)]
+    fn join_in(list: String, x: i32) -> Result<String>;
+
+    #[workflow]
+    fn joined() -> String {
+        let n = 1000;
+        let delay = 1;
+        let pause = 0;
+        let x = each(slow_numbers(n, delay, pause));
+        join_in("", x)
+    }
+
+    let tasks: Arc<dyn Tasks> = Arc::new(
+        FnTasks::new()
+            .with_stream("slow_numbers", |(n, delay, _): (i32, u64, u64)| {
+                Ok::<_, String>((0..n).map(move |i| {
+                    std::thread::sleep(Duration::from_millis(delay));
+                    Ok::<_, String>(i)
+                }))
+            })
+            .with("join_in", |(list, x): (String, i32)| {
+                Ok::<_, String>(match list.is_empty() {
+                    true => x.to_string(),
+                    false => format!("{list},{x}"),
+                })
+            }),
+    );
+    let cluster = Arc::new(LocalCluster::new(vec![tasks; 3]));
+    let run = tokio::spawn({
+        let cluster = cluster.clone();
+        async move { cluster.run(joined().to_serializable("joined".into())).await }
+    });
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    cluster.kill(1).unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("the run finished")
+        .unwrap()
+        .unwrap();
+    let want: Vec<String> = (0..1000).map(|i| i.to_string()).collect();
+    assert_eq!(json(&outcome.results), [serde_json::json!(want.join(","))]);
+}

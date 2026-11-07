@@ -149,22 +149,24 @@ async fn main() -> anyhow::Result<()> {
         async move {
             while let Some(message) = inbox.recv().await {
                 match message {
+                    // What cannot be stored yet is tried again until it is, in order: a report
+                    // must not be lost, nor a run end before its reports.
                     Message::Recorded {
                         run,
                         branch,
                         report,
                         delivery,
                     } => {
-                        // Not stored, so not acknowledged: the owner keeps it, and its successor
-                        // sends it again.
-                        if let Err(err) = control.recorded(run, branch, report, delivery).await {
-                            tracing::error!(%run, "storing a report failed: {err:#}");
-                        }
+                        until_stored("a report", || {
+                            control.recorded(run, branch, report.clone(), delivery)
+                        })
+                        .await
                     }
                     Message::Finished { run, workers } => {
-                        if let Err(err) = control.finished(run, workers).await {
-                            tracing::error!(%run, "recording the end of the run failed: {err:#}");
-                        }
+                        until_stored("the end of a run", || {
+                            control.finished(run, workers.clone())
+                        })
+                        .await
                     }
                     other => tracing::warn!("unexpected message for the control plane: {other:?}"),
                 }
@@ -205,6 +207,20 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Tries `store` until it succeeds, backing off: the store may be restarting.
+async fn until_stored<F, Fut>(what: &str, mut store: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let mut backoff = Duration::from_millis(50);
+    while let Err(err) = store().await {
+        tracing::warn!("storing {what} failed, trying again in {backoff:?}: {err:#}");
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(2));
+    }
 }
 
 /// The API's HTTPS: this member's certificate. Clients prove who they are with tokens, not

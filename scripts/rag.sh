@@ -121,6 +121,28 @@ print(f"   {report['articles']} articles, {report['chunks']} chunks, {points} po
       f"{runs[-1]['elapsed_ms'] / 1000:.1f} s; calls by worker {dict(calls)}")
 PY
 
+if [[ ${CHECK:-0} == 1 ]]; then
+  # Retrieval quality: each golden question has the article that answers it. Of those whose
+  # article is in this corpus (Wikipedia's category changes), the article must be among the top 5
+  # hits for at least 80%.
+  echo "== recall@5 on golden questions"
+  "$QUERY" --top 5 --golden examples/rag/golden.json >"$RUN_DIR/golden.jsonl"
+  python3 - "$RUN_DIR/golden.jsonl" "$RAG_CORPUS" <<'PY'
+import json, sys
+cases = [json.loads(line) for line in open(sys.argv[1])]
+titles = {json.loads(line)["title"] for line in open(sys.argv[2])}
+present = [case for case in cases if case["title"] in titles]
+assert len(present) >= 8, f"only {len(present)} golden articles are in this corpus"
+hits = [case for case in present if case["title"] in case["found"]]
+recall = len(hits) / len(present)
+for case in present:
+    if case not in hits:
+        print(f"   miss: {case['question']!r} -> {case['found']}")
+assert recall >= 0.8, f"recall@5 {recall:.2f}"
+print(f"   ok: recall@5 {recall:.2f} ({len(hits)} of {len(present)} golden questions)")
+PY
+fi
+
 echo "== search"
 if (($# == 0)); then
   set -- "How do neural networks learn from data?" \

@@ -263,6 +263,10 @@ pub struct Member {
 /// successor takes over its work (design §7.4), and if it comes back, it registers anew.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Membership {
+    /// The control plane's incarnation: new each time it starts. One that restarted has forgotten
+    /// what it was sent and had not stored yet: members send it again what they keep for it.
+    #[serde(default)]
+    pub epoch: u64,
     pub members: Vec<Member>,
     /// Dead worker -> the worker that took over its work.
     pub successors: BTreeMap<u64, u64>,

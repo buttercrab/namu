@@ -2184,6 +2184,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "namu-crawl-workflows"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "namu",
+ "namu-core",
+ "namu-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "namu-distributed-workflows"
 version = "0.1.0"
 dependencies = [

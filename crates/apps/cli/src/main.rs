@@ -695,6 +695,22 @@ async fn run_workflow(
     }
 }
 
+/// Why a request to the orchestrator failed.
+enum Failed {
+    /// It answered no: waiting changes nothing (a wrong run id, a token it does not take).
+    Refused(anyhow::Error),
+    /// It did not answer, or failed itself: it may be restarting.
+    Unavailable(anyhow::Error),
+}
+
+impl From<Failed> for anyhow::Error {
+    fn from(failed: Failed) -> Self {
+        match failed {
+            Failed::Refused(err) | Failed::Unavailable(err) => err,
+        }
+    }
+}
+
 /// One page of a run's `what` (`results` or `failures`) from the `after`th on.
 async fn fetch_page(
     client: &reqwest::Client,
@@ -702,14 +718,61 @@ async fn fetch_page(
     run: &str,
     what: &str,
     after: u64,
-) -> anyhow::Result<Page<JsonValue>> {
+) -> Result<Page<JsonValue>, Failed> {
     let url = format!("{master_url}/runs/{run}/{what}?after={after}");
-    let response = client.get(url).send().await?;
-    if !response.status().is_success() {
-        let status = response.status();
-        anyhow::bail!("{status} {}", response.text().await.unwrap_or_default());
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| Failed::Unavailable(err.into()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        let err = anyhow::anyhow!("{status} {body}");
+        return Err(match status.is_client_error() {
+            true => Failed::Refused(err),
+            false => Failed::Unavailable(err),
+        });
     }
-    Ok(response.json().await?)
+    response
+        .json()
+        .await
+        .map_err(|err| Failed::Unavailable(err.into()))
+}
+
+/// [`fetch_page`], asked again while the orchestrator does not answer, for up to two minutes:
+/// a run goes on while it restarts.
+async fn fetch_page_patiently(
+    client: &reqwest::Client,
+    master_url: &str,
+    run: &str,
+    what: &str,
+    after: u64,
+) -> anyhow::Result<Page<JsonValue>> {
+    let patience = std::time::Duration::from_secs(120);
+    let started = std::time::Instant::now();
+    loop {
+        match fetch_page(client, master_url, run, what, after).await {
+            Ok(page) => return Ok(page),
+            Err(Failed::Unavailable(err)) if started.elapsed() < patience => {
+                say_waiting(&err);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(failed) => return Err(failed.into()),
+        }
+    }
+}
+
+/// Says, once a second at most, that the orchestrator is not answering.
+fn say_waiting(err: &anyhow::Error) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if LAST.swap(now, Ordering::Relaxed) != now {
+        eprintln!("waiting for the orchestrator: {err:#}");
+    }
 }
 
 /// Every one of a run's `what` so far.
@@ -721,7 +784,7 @@ async fn all_pages(
 ) -> anyhow::Result<Vec<JsonValue>> {
     let mut items = Vec::new();
     loop {
-        let page = fetch_page(client, master_url, run, what, items.len() as u64).await?;
+        let page = fetch_page_patiently(client, master_url, run, what, items.len() as u64).await?;
         if page.items.is_empty() {
             return Ok(items);
         }
@@ -737,7 +800,7 @@ async fn print_results(run: &str, what: &str, follow: bool) -> anyhow::Result<()
     let client = client();
     let mut after = 0;
     loop {
-        let page = fetch_page(&client, master_url, run, what, after).await?;
+        let page = fetch_page_patiently(&client, master_url, run, what, after).await?;
         for item in &page.items {
             println!("{item}");
         }

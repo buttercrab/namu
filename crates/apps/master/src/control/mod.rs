@@ -71,6 +71,12 @@ pub struct Control {
     mesh_addr: String,
     /// Workflow versions runs started, parsed once: they never change.
     versions: Mutex<HashMap<(String, String), Arc<Version>>>,
+    /// This incarnation of the control plane (see `Membership::epoch`).
+    epoch: u64,
+    /// Whether the last sweep failed: the store was unreachable, so nobody could renew a lease.
+    impaired: std::sync::atomic::AtomicBool,
+    /// One sweep at a time: a worker's leaving sweeps too, besides the periodic sweep.
+    sweeping: tokio::sync::Mutex<()>,
 }
 
 impl Control {
@@ -86,6 +92,9 @@ impl Control {
             mesh,
             mesh_addr,
             versions: Mutex::default(),
+            epoch: Uuid::new_v4().as_u64_pair().0,
+            impaired: std::sync::atomic::AtomicBool::new(false),
+            sweeping: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -466,6 +475,7 @@ impl Control {
         let mut members = vec![orchestrator];
         members.extend(self.store.members().await?);
         Ok(Membership {
+            epoch: self.epoch,
             members,
             successors: self.store.successors().await?,
         })
@@ -520,6 +530,25 @@ impl Control {
     /// successor every run whose owner died (the successor ignores a start for a run it can
     /// take over from the log, or that ended).
     pub async fn sweep(&self) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+        let _one = self.sweeping.lock().await;
+        let swept = self.sweep_once().await;
+        let was = self.impaired.swap(swept.is_err(), Ordering::Relaxed);
+        if was && swept.is_ok() {
+            tracing::info!("the store answers again");
+        }
+        swept
+    }
+
+    async fn sweep_once(&self) -> anyhow::Result<()> {
+        // A lease runs out only if it could have been renewed: while the store did not answer,
+        // no heartbeat was heard. On its return, every member gets a new lease, as on a restart.
+        if self.impaired.load(std::sync::atomic::Ordering::Relaxed) {
+            for id in self.store.alive().await? {
+                self.store.renew(id, LEASE).await?;
+            }
+            return Ok(());
+        }
         let members = self.store.members().await?;
         let Some(successor) = members.iter().map(|member| member.id).min() else {
             // Nobody to take over yet; decided once a worker joins.

@@ -38,7 +38,7 @@ impl Inner {
         let Some(state) = self.run_state(*run) else {
             return self.orphan(end.into());
         };
-        let (over, (folds, feeds)) = {
+        let (over, (folds, feeds), settle) = {
             let mut scopes = state.scopes.lock().unwrap();
             let Some(scope) = scopes.get_mut(scope_id) else {
                 drop(scopes);
@@ -56,19 +56,28 @@ impl Inner {
                     drop(scopes);
                     return self.ack(*delivery);
                 }
-                Ended::Open => (None, (folds, feeds)),
-                Ended::Over => (scopes.remove(scope_id), (false, false)),
+                Ended::Open => (None, (folds, feeds), scope.settle_next()),
+                Ended::Over => (scopes.remove(scope_id), (false, false), None),
             }
         };
         let record = EndRecord {
             index: branch.index,
             item: item.clone(),
         };
-        let durable = self.log.append(vec![Record::End {
+        let mut records = vec![Record::End {
             run: *run,
             scope: *scope_id,
             end: record,
-        }]);
+        }];
+        if let Some((from, below)) = settle {
+            records.push(Record::Settled {
+                run: *run,
+                scope: *scope_id,
+                from,
+                below,
+            });
+        }
+        let durable = self.log.append(records);
         self.ack_when(durable, *delivery);
         if let Some(scope) = over {
             self.scope_over(&state, *scope_id, scope);

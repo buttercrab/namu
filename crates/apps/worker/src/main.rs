@@ -102,6 +102,7 @@ async fn main() -> anyhow::Result<()> {
         runtime_keys.clone(),
         routes.clone(),
     ));
+    let epoch = registration.membership.epoch;
     apply(&mesh, &routes, &tasks, registration.membership);
     let worker = Worker::spawn(
         id,
@@ -120,6 +121,8 @@ async fn main() -> anyhow::Result<()> {
         mesh,
         routes,
         tasks,
+        worker: worker.clone(),
+        epoch: std::sync::atomic::AtomicU64::new(epoch),
     };
     let mut interval = tokio::time::interval(Duration::from_millis(HEARTBEAT_INTERVAL_MS));
     let stop = stop_signal();
@@ -251,6 +254,9 @@ struct Lease {
     mesh: Arc<TcpTransport>,
     routes: Arc<Routes>,
     tasks: Arc<tasks::RuntimeTasks>,
+    worker: Worker,
+    /// The control plane's incarnation, as last heard.
+    epoch: std::sync::atomic::AtomicU64,
 }
 
 impl Lease {
@@ -272,7 +278,15 @@ impl Lease {
         }
         match response.error_for_status() {
             Ok(response) => match response.json::<Membership>().await {
-                Ok(membership) => apply(&self.mesh, &self.routes, &self.tasks, membership),
+                Ok(membership) => {
+                    let epoch = membership.epoch;
+                    apply(&self.mesh, &self.routes, &self.tasks, membership);
+                    let before = self.epoch.swap(epoch, std::sync::atomic::Ordering::Relaxed);
+                    if before != epoch {
+                        info!(before, epoch, "the control plane restarted");
+                        self.worker.peer_restarted(0);
+                    }
+                }
                 Err(err) => error!("bad {what} response: {err}"),
             },
             Err(err) => error!("{what} failed: {err}"),

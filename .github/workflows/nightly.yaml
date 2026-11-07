@@ -1,0 +1,50 @@
+name: Nightly
+
+# Real pipelines, long and rough: what is too slow for every pull request.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  pipelines:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Chaos (kills, a drain, orchestrator and Redis restarts, a join)
+            run: DOCS=1000 DELAY_MS=20 ./scripts/chaos.sh
+          - name: Soak (30 minutes of a stream; memory and log stay flat)
+            run: DURATION=1800 EVERY=30 ./scripts/soak.sh
+          - name: Crawl (3000 pages, depth 7)
+            run: PAGES=3000 DEPTH=7 ./scripts/crawl.sh
+          - name: RAG (300 articles, a worker killed, recall@5)
+            run: ARTICLES=300 CHECK=1 ./scripts/rag.sh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain and Redis
+        run: |
+          rustup update --no-self-update
+          rustup target add wasm32-wasip2
+          sudo apt-get update && sudo apt-get install -y redis-server
+          sudo systemctl stop redis-server || true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            examples/rag/query
+      - uses: actions/cache@v4
+        with:
+          path: |
+            data/rag/corpus-*
+            data/rag/model
+            data/rag/bin
+          key: rag-${{ hashFiles('scripts/rag.sh', 'scripts/rag-fetch.py', 'examples/rag/model/src/lib.rs') }}
+      - name: Run
+        run: ${{ matrix.run }}
+      - name: Cluster logs
+        if: failure() || cancelled()
+        run: tail -n 60 data/*/logs/*.log data/*/*/logs/*.log 2>/dev/null || true

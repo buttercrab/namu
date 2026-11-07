@@ -275,6 +275,8 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 .ignore()
                 .hdel(key(*run, "feeds"), scope)
                 .ignore()
+                .hdel(key(*run, "settled"), scope)
+                .ignore()
                 .del(ends_key(*run, *scope))
                 .ignore();
         }
@@ -287,8 +289,22 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             let fold = encode(&(through, accumulator))?;
             pipe.hset(key(*run, "folds"), scope, fold).ignore();
         }
+        // A scope's ends, by branch index, so that settling it drops exactly those before a point.
         Record::End { run, scope, end } => {
-            pipe.rpush(ends_key(*run, *scope), encode(end)?).ignore();
+            pipe.hset(ends_key(*run, *scope), end.index, encode(end)?)
+                .ignore();
+        }
+        Record::Settled {
+            run,
+            scope,
+            from,
+            below,
+        } => {
+            let gone: Vec<u64> = (*from..*below).collect();
+            if !gone.is_empty() {
+                pipe.hdel(ends_key(*run, *scope), gone).ignore();
+            }
+            pipe.hset(key(*run, "settled"), scope, below).ignore();
         }
         Record::Report { run, report } => {
             pipe.hset(
@@ -315,6 +331,7 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 "positions",
                 "folds",
                 "feeds",
+                "settled",
                 "reports",
             ];
             let mut keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
@@ -404,9 +421,13 @@ impl Log for RedisLog {
                     feeds.insert(scope, rmp_serde::from_slice(&raw)?);
                 }
             }
+            let settled: HashMap<u64, u64> = match owned.is_empty() {
+                true => HashMap::new(),
+                false => redis.hgetall(key(run, "settled")).await?,
+            };
             let mut ends: HashMap<u64, Vec<EndRecord>> = HashMap::new();
             for &scope in owned.keys() {
-                let raw: Vec<Vec<u8>> = redis.lrange(ends_key(run, scope), 0, -1).await?;
+                let raw: Vec<Vec<u8>> = redis.hvals(ends_key(run, scope)).await?;
                 let records = raw
                     .iter()
                     .map(|raw| rmp_serde::from_slice(raw))
@@ -420,6 +441,7 @@ impl Log for RedisLog {
                     continuation,
                     source,
                     count: counts.get(&scope).copied(),
+                    settled: settled.get(&scope).copied().unwrap_or(0),
                     ends: ends.remove(&scope).unwrap_or_default(),
                     folded: folds.remove(&scope),
                     feeds: feeds.remove(&scope),

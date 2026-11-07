@@ -163,6 +163,7 @@ impl Inner {
             }
         };
         let mut scope = Scope::new(then, estate.count);
+        scope.settle(estate.settled);
         for end in estate.ends {
             scope.end(end.index, end.item);
         }

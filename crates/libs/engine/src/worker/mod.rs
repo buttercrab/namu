@@ -156,6 +156,12 @@ impl Worker {
         self.inner.id
     }
 
+    /// `peer` restarted (the control plane, which keeps its id): it is sent again what it had
+    /// not acknowledged.
+    pub fn peer_restarted(&self, peer: WorkerId) {
+        self.inner.resend_to(peer);
+    }
+
     /// One task call per CPU.
     pub fn default_task_slots() -> usize {
         std::thread::available_parallelism().map_or(4, |n| n.get())

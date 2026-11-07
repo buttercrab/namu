@@ -73,9 +73,23 @@ if redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; then
   echo "port $REDIS_PORT is already serving Redis; stop it or set REDIS_PORT" >&2
   exit 1
 fi
-redis-server --port "$REDIS_PORT" --save "" --appendonly no >"$POC_DIR/logs/redis.log" 2>&1 &
-PIDS+=($!)
+# How Redis starts: with REDIS_PERSIST=1, durable (an append-only file, synced every write), so
+# it can be stopped and started again with nothing lost, as MemoryDB is. Prints its pid.
+if [[ ${REDIS_PERSIST:-0} == 1 ]]; then
+  redis_opts="--appendonly yes --appendfsync always --dir $POC_DIR"
+else
+  redis_opts="--save '' --appendonly no"
+fi
+cat >"$POC_DIR/start-redis" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+redis-server --port "$REDIS_PORT" $redis_opts >>"$POC_DIR/logs/redis.log" 2>&1 &
+pid=\$!
 until redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; do sleep 0.1; done
+echo "\$pid"
+EOF
+chmod +x "$POC_DIR/start-redis"
+PIDS+=("$("$POC_DIR/start-redis")")
 
 # The cluster's CA, the certificate its members share, and a token for clients and one for workers.
 secrets="$POC_DIR/secrets"
@@ -109,19 +123,43 @@ EOF
 chmod +x "$POC_DIR/start-master"
 PIDS+=("$("$POC_DIR/start-master")")
 
+# How worker i starts, with the runtimes it serves: `start-worker 5 wasm,python` adds one to a
+# cluster left running. Other settings (NAMU_TASK_SLOTS, ...) come from its caller's environment.
+# Prints its pid.
+cat >"$POC_DIR/start-worker" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$POC_DIR/env"
+i=\$1
+RUST_LOG=${RUST_LOG:-info} WORKER_ID="worker-\$i" NAMU_RUNTIMES="\$2" ARTIFACT_CACHE="$POC_DIR/cache" \\
+  NAMU_TOKEN="$worker_token" NAMU_METRICS_ADDR="127.0.0.1:\$(($ORCH_PORT + 100 + i))" \\
+  NAMU_TLS_CERT="$secrets/member.pem" NAMU_TLS_KEY="$secrets/member.key" \\
+  REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/" "$BIN/namu-worker" >"$POC_DIR/logs/worker-\$i.log" 2>&1 &
+echo "\$!"
+EOF
+chmod +x "$POC_DIR/start-worker"
+
 i=0
 for runtimes in $WORKERS; do
   i=$((i + 1))
-  RUST_LOG=${RUST_LOG:-info} WORKER_ID="worker-$i" NAMU_RUNTIMES="$runtimes" ARTIFACT_CACHE="$POC_DIR/cache" \
-    NAMU_TOKEN="$worker_token" NAMU_METRICS_ADDR="127.0.0.1:$((ORCH_PORT + 100 + i))" \
-    "$BIN/namu-worker" >"$POC_DIR/logs/worker-$i.log" 2>&1 &
-  PIDS+=($!)
+  PIDS+=("$("$POC_DIR/start-worker" "$i" "$runtimes")")
   echo "worker-$i: $runtimes"
 done
 
 "$BIN/namu" build --tasks-dir "$TASKS_DIR" \
   --workflows-dir "$POC_DIR/workflows" --out-dir "$POC_DIR/dist" >"$POC_DIR/logs/build.log" 2>&1
 "$BIN/namu" publish --out-dir "$POC_DIR/dist" >"$POC_DIR/logs/publish.log"
+
+# Every worker has joined before the first run starts.
+expected=$(wc -w <<<"$WORKERS" | tr -d ' ')
+joined() {
+  curl -sf --cacert "$NAMU_TLS_CA" -H "Authorization: Bearer $NAMU_TOKEN" "$NAMU_ORCH_URL/workers" |
+    python3 -c 'import json,sys; print(sum(1 for w in json.load(sys.stdin)["workers"] if w["id"]))'
+}
+for _ in $(seq 100); do
+  [[ $(joined) -ge $expected ]] && break
+  sleep 0.1
+done
 
 for run in $(seq 1 "$RUNS"); do
   set +e
