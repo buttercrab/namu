@@ -209,4 +209,28 @@ assert not drained["failures"], drained["failures"]
 assert drained["results"] == baseline["results"], (drained["results"], baseline["results"])
 print(f"   ok: same result as the uninterrupted run, and worker-3 left")
 PY
+# The orchestrator restarts: kill -9 it in the middle of a run, and start it again only after
+# every lease has run out. The run goes on without it, peer to peer; its results wait on the
+# workers until it is back. The workers stay members, and every result arrives once.
+echo "== doc_ids_streamed with the orchestrator killed mid-run"
+restarted=$(namu run doc_ids_streamed 0.1.0 --input n=48 --input delay_ms=100 | sed -n 's/^Run created: //p')
+sleep 1.5
+kill -9 "${pids[1]}"
+echo "   killed the orchestrator"
+sleep 7
+pids[1]=$("$crash_dir/start-master")
+echo "   started it again"
+namu results "$restarted" --follow >"$crash_dir/restarted.jsonl"
+api "/runs/$restarted" >"$crash_dir/restarted.json"
+api "/workers" >"$crash_dir/workers.json"
+python3 - "$crash_dir/restarted.jsonl" "$crash_dir/restarted.json" "$crash_dir/workers.json" <<'PY'
+import json, sys
+ids = open(sys.argv[1]).read().split()
+status = json.load(open(sys.argv[2]))
+workers = [w["name"] for w in json.load(open(sys.argv[3]))["workers"]]
+assert status["status"] == "succeeded", status
+assert len(ids) == 48 and len(set(ids)) == 48, f"{len(ids)} results, {len(set(ids))} distinct"
+assert "worker-1" in workers, f"worker-1 is no longer a member: {workers}"
+print(f"   ok: all 48 results, each once; the workers stayed ({', '.join(w for w in workers if w != 'orchestrator')})")
+PY
 echo "e2e passed"

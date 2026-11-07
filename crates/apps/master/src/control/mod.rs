@@ -457,9 +457,54 @@ impl Control {
         })
     }
 
+    /// Takes up where a control plane that stopped left off: everything it knew is in the
+    /// store, but not who its mesh peers are, nor whether the runs it started last reached their
+    /// owners. It gives every member a new lease, reconnects to it, and sends every run that has
+    /// not ended its `Start` again: an owner that has the run, or had it and it ended, does
+    /// nothing.
+    pub async fn recover(&self) -> anyhow::Result<()> {
+        // Nobody could renew a lease while the control plane was down: every member gets a new
+        // one. One that died meanwhile is buried a lease after this, as any other.
+        for id in self.store.alive().await? {
+            self.store.renew(id, LEASE).await?;
+        }
+        let members = self.store.members().await?;
+        for member in &members {
+            match member.addr.parse() {
+                Ok(addr) => self.mesh.connect(member.id, addr),
+                Err(err) => tracing::warn!(member.id, member.addr, "bad member address: {err}"),
+            }
+        }
+        let successors = self.store.successors().await?;
+        let mut started = 0;
+        for (run, owner) in self.store.running().await? {
+            let heir = succeed(&successors, owner);
+            // An owner that died unnoticed is the sweep's: it names a successor and starts the
+            // run there.
+            let Some(member) = members.iter().find(|member| member.id == heir) else {
+                continue;
+            };
+            let Some(record) = self.store.run(run).await? else {
+                continue;
+            };
+            let spec = &record.spec;
+            let published = self
+                .version(&spec.workflow_id, &spec.version)
+                .await?
+                .with_context(|| format!("run {run}'s workflow is not published"))?;
+            if heir != owner {
+                self.store.set_owner(run, heir).await?;
+            }
+            self.send_start(run, spec, member, &published)?;
+            started += 1;
+        }
+        tracing::info!(members = members.len(), runs = started, "recovered");
+        Ok(())
+    }
+
     /// Buries the workers whose lease ran out, naming each a successor, and starts again on the
     /// successor every run whose owner died (the successor ignores a start for a run it can
-    /// take over from the log).
+    /// take over from the log, or that ended).
     pub async fn sweep(&self) -> anyhow::Result<()> {
         let members = self.store.members().await?;
         let Some(successor) = members.iter().map(|member| member.id).min() else {

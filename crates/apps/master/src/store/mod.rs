@@ -95,9 +95,11 @@ pub trait Store: Send + Sync + 'static {
     async fn next_worker_id(&self) -> anyhow::Result<u64>;
     /// Makes `member` a member, alive, with a lease of `ttl`.
     async fn join(&self, member: &Member, ttl: Duration) -> anyhow::Result<()>;
-    /// Renews member `id`'s lease; false if it is no longer a member.
+    /// Renews member `id`'s lease for `ttl`, even if it ran out, unless the member was buried:
+    /// then false. A lease that ran out while nobody could renew it (the control plane was down)
+    /// is not a death; a burial is.
     async fn renew(&self, id: u64, ttl: Duration) -> anyhow::Result<bool>;
-    /// Replaces a member's record, renewing its lease; false if it is no longer a member.
+    /// Replaces a member's record, renewing its lease; false if it was buried.
     async fn update_member(&self, member: &Member, ttl: Duration) -> anyhow::Result<bool>;
     /// Ends member `id`'s lease now.
     async fn end_lease(&self, id: u64) -> anyhow::Result<()>;
@@ -105,7 +107,7 @@ pub trait Store: Send + Sync + 'static {
     async fn members(&self) -> anyhow::Result<Vec<Member>>;
     /// Workers that joined and are not yet buried: those without a lease have died.
     async fn alive(&self) -> anyhow::Result<Vec<u64>>;
-    /// Worker `dead` is gone, and `successor` takes over what it held.
+    /// Worker `dead` is gone, and `successor` takes over what it held. Its record goes.
     async fn bury(&self, dead: u64, successor: u64) -> anyhow::Result<()>;
     /// Every dead worker, with the worker that took over from it.
     async fn successors(&self) -> anyhow::Result<BTreeMap<u64, u64>>;

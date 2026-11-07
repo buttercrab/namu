@@ -20,10 +20,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 
 use crate::ids::{NodeId, RunId, WorkerId};
-use crate::log::{Durable, Log, MemoryLog, Record, RunEstate};
+use crate::log::{Durable, Log, Logged, MemoryLog, Record, RunEstate};
 use crate::message::{BranchId, Message, Report};
 use crate::routes::Routes;
-use crate::run::{RunInfo, RunOutcome};
+use crate::run::RunOutcome;
 use crate::tasks::{TaskRef, Tasks};
 use crate::transport::{LocalTransport, MeshTls, TcpTransport, Transport};
 use crate::tree::Node;
@@ -437,11 +437,71 @@ impl Log for MortalLog {
         self.inner.node(run, id).await
     }
 
-    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>> {
+    async fn run(&self, run: RunId) -> anyhow::Result<Logged> {
         self.inner.run(run).await
     }
 
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>> {
         self.inner.estate(worker).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use namu_core::ir::{Action, Call, Literal, Next, Operation, Workflow};
+
+    use super::*;
+    use crate::FnTasks;
+
+    /// `count(1)`: one call of `count`, which counts its calls.
+    fn once() -> Workflow {
+        let call = Call {
+            task_id: "count".into(),
+            inputs: vec![0],
+            outputs: vec![1],
+            catch: None,
+        };
+        let literal = Literal {
+            output: 0,
+            value: "1".into(),
+        };
+        let op = Operation::new(
+            vec![literal],
+            Vec::new(),
+            Some(Action::Call(call)),
+            Next::return_value(1),
+        );
+        Workflow::new("once".into(), vec![op])
+    }
+
+    /// A control plane that restarted before it heard a run end, or a dead owner's successor,
+    /// may be sent its `Start` again: the run must not run again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_start_sent_again_after_the_run_ended_does_not_run_it_again() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let tasks = FnTasks::new().with("count", {
+            let calls = calls.clone();
+            move |x: i32| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>(x)
+            }
+        });
+        let cluster = LocalCluster::uniform(2, Arc::new(tasks));
+        cluster.run(once()).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let run = *cluster.recorded().keys().next().expect("the run reported");
+
+        for worker in [1, 2] {
+            let started = Started {
+                workflow: once(),
+                inputs: Vec::new(),
+            };
+            cluster.start(worker, run, started);
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the run ran again");
+        assert_eq!(cluster.recorded()[&run].len(), 1);
     }
 }

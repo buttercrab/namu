@@ -90,10 +90,21 @@ source "$POC_DIR/env"
 export NAMU_TLS_CERT="$secrets/member.pem" NAMU_TLS_KEY="$secrets/member.key"
 export REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/"
 
-BIND_ADDR="127.0.0.1:${ORCH_PORT}" ARTIFACTS_DIR="$POC_DIR/artifacts" NAMU_TOKENS="$secrets/tokens" \
-  "$BIN/namu-master" >"$POC_DIR/logs/master.log" 2>&1 &
-PIDS+=($!)
-until curl -sf --cacert "$NAMU_TLS_CA" "$NAMU_ORCH_URL/healthz" >/dev/null; do sleep 0.1; done
+# How the orchestrator starts, kept so it can be started again the same way (it keeps no state of
+# its own: a restart takes up from Redis). Prints its pid once it answers.
+cat >"$POC_DIR/start-master" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$POC_DIR/env"
+BIND_ADDR="127.0.0.1:${ORCH_PORT}" ARTIFACTS_DIR="$POC_DIR/artifacts" NAMU_TOKENS="$secrets/tokens" \\
+  NAMU_TLS_CERT="$secrets/member.pem" NAMU_TLS_KEY="$secrets/member.key" REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/" \\
+  "$BIN/namu-master" >>"$POC_DIR/logs/master.log" 2>&1 &
+pid=\$!
+until curl -sf --cacert "\$NAMU_TLS_CA" "\$NAMU_ORCH_URL/healthz" >/dev/null; do sleep 0.1; done
+echo "\$pid"
+EOF
+chmod +x "$POC_DIR/start-master"
+PIDS+=("$("$POC_DIR/start-master")")
 
 i=0
 for runtimes in $WORKERS; do

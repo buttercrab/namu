@@ -20,7 +20,7 @@ use namu_core::value::Value;
 use super::view::View;
 use super::{Inner, Run};
 use crate::ids::{RunId, ScopeId, WorkerId, owner};
-use crate::log::{Record, RunEstate, ScopeEstate};
+use crate::log::{Logged, Record, RunEstate, ScopeEstate};
 use crate::message::{Branch, End, FetchRun, Message, Reported};
 use crate::run::RunInfo;
 use crate::scope::{Continuation, Fold, Scope, Then};
@@ -243,8 +243,10 @@ impl Inner {
             Message::FetchRun(FetchRun { run, reply_to }) => {
                 let (run, reply_to) = (*run, *reply_to);
                 return match self.log.run(run).await {
-                    Ok(Some(info)) => self.deliver(reply_to, Message::Run { info }),
-                    Ok(None) => self.deliver(reply_to, Message::RunOver { run }),
+                    Ok(Logged::Running(info)) => self.deliver(reply_to, Message::Run { info }),
+                    Ok(Logged::Ended | Logged::Unknown) => {
+                        self.deliver(reply_to, Message::RunOver { run })
+                    }
                     Err(err) => self.retry(message, run, err),
                 };
             }
@@ -253,9 +255,9 @@ impl Inner {
         let info = match self.run_state(run) {
             Some(state) => state.spec.info.clone(),
             None => match self.log.run(run).await {
-                Ok(Some(info)) => info,
+                Ok(Logged::Running(info)) => info,
                 // The run is over.
-                Ok(None) => return self.drop_late(message),
+                Ok(Logged::Ended | Logged::Unknown) => return self.drop_late(message),
                 Err(err) => return self.retry(message, run, err),
             },
         };

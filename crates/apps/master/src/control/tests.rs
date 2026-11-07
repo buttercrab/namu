@@ -584,3 +584,67 @@ async fn start_runs(plane: &Plane, n: i32) -> Vec<Uuid> {
     }
     runs
 }
+
+/// A control plane that restarted knows its runs from the store, not whether their owners got
+/// them: it sends each that has not ended its `Start` again, to its owner or its owner's heir.
+#[tokio::test]
+async fn a_restarted_control_plane_starts_its_runs_again() {
+    let before = published().await;
+    for (name, port) in [("w1", 7001), ("w2", 7002)] {
+        before.control.register(worker(name, port)).await.unwrap();
+    }
+    let runs = start_runs(&before, 2).await;
+    before
+        .control
+        .finished(runs[0], BTreeMap::new())
+        .await
+        .unwrap();
+    // Worker 2 died, and the old control plane named worker 1 its successor.
+    before.store.end_lease(2).await.unwrap();
+    before.control.sweep().await.unwrap();
+
+    // A new control plane, on the same store.
+    let mesh = Arc::new(Recorder::default());
+    let after = Control::new(
+        before.store.clone(),
+        before.artifacts.clone(),
+        mesh.clone(),
+        "127.0.0.1:7000".into(),
+    );
+    after.recover().await.unwrap();
+    let starts = mesh.starts();
+    // Only the run that has not ended, on a live worker, with the inputs it was given.
+    assert_eq!(starts.len(), 1, "{starts:?}");
+    let (worker, run, inputs) = &starts[0];
+    assert_eq!((*worker, *run), (1, runs[1]));
+    assert_eq!(inputs, &[json!(1)]);
+    assert_eq!(before.store.run(runs[1]).await.unwrap().unwrap().owner, 1);
+}
+
+/// While the control plane is down, nobody can renew a lease. A restart that took longer than a
+/// lease must not bury every worker: leases that ran out unrenewed are renewed on the way up.
+#[tokio::test]
+async fn a_long_restart_buries_nobody() {
+    let before = published().await;
+    for (name, port) in [("w1", 7001), ("w2", 7002)] {
+        before.control.register(worker(name, port)).await.unwrap();
+    }
+    // Down for longer than a lease: every lease ran out.
+    for id in [1, 2] {
+        before.store.end_lease(id).await.unwrap();
+    }
+    let after = Control::new(
+        before.store.clone(),
+        before.artifacts.clone(),
+        Arc::new(Recorder::default()),
+        "127.0.0.1:7000".into(),
+    );
+    after.recover().await.unwrap();
+    after.sweep().await.unwrap();
+    let membership = after.membership().await.unwrap();
+    let ids: Vec<u64> = membership.members.iter().map(|m| m.id).collect();
+    assert_eq!(ids, [0, 1, 2]);
+    assert!(membership.successors.is_empty());
+    // And their heartbeats go on.
+    assert!(after.heartbeat(1).await.is_ok());
+}

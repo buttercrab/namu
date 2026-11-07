@@ -125,6 +125,8 @@ async fn main() -> anyhow::Result<()> {
         mesh_addr.clone(),
     ));
 
+    control.recover().await?;
+
     // Run owners send each report here as they record it, and say when the run is over.
     tokio::spawn({
         let control = control.clone();

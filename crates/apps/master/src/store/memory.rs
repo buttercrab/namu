@@ -19,7 +19,8 @@ struct State {
     tasks: HashMap<(String, String), TaskManifest>,
     workflows: HashMap<(String, String), WorkflowUploadRequest>,
     worker_seq: u64,
-    leases: BTreeMap<u64, (Member, Instant)>,
+    records: BTreeMap<u64, Member>,
+    leases: HashMap<u64, Instant>,
     alive: BTreeSet<u64>,
     successors: BTreeMap<u64, u64>,
     names: HashMap<u64, String>,
@@ -36,15 +37,10 @@ struct Reports {
 }
 
 impl State {
-    fn lease(&mut self, id: u64) -> Option<&mut (Member, Instant)> {
-        if self
-            .leases
+    fn leased(&self, id: u64) -> bool {
+        self.leases
             .get(&id)
-            .is_some_and(|(_, until)| *until <= Instant::now())
-        {
-            self.leases.remove(&id);
-        }
-        self.leases.get_mut(&id)
+            .is_some_and(|until| *until > Instant::now())
     }
 }
 
@@ -114,32 +110,30 @@ impl Store for MemoryStore {
 
     async fn join(&self, member: &Member, ttl: Duration) -> anyhow::Result<()> {
         let mut state = self.state();
-        state
-            .leases
-            .insert(member.id, (member.clone(), Instant::now() + ttl));
+        state.records.insert(member.id, member.clone());
+        state.leases.insert(member.id, Instant::now() + ttl);
         state.names.insert(member.id, member.name.clone());
         state.alive.insert(member.id);
         Ok(())
     }
 
     async fn renew(&self, id: u64, ttl: Duration) -> anyhow::Result<bool> {
-        Ok(match self.state().lease(id) {
-            Some((_, until)) => {
-                *until = Instant::now() + ttl;
-                true
-            }
-            None => false,
-        })
+        let mut state = self.state();
+        if !state.alive.contains(&id) {
+            return Ok(false);
+        }
+        state.leases.insert(id, Instant::now() + ttl);
+        Ok(true)
     }
 
     async fn update_member(&self, member: &Member, ttl: Duration) -> anyhow::Result<bool> {
-        Ok(match self.state().lease(member.id) {
-            Some(lease) => {
-                *lease = (member.clone(), Instant::now() + ttl);
-                true
-            }
-            None => false,
-        })
+        let mut state = self.state();
+        if !state.records.contains_key(&member.id) {
+            return Ok(false);
+        }
+        state.records.insert(member.id, member.clone());
+        state.leases.insert(member.id, Instant::now() + ttl);
+        Ok(true)
     }
 
     async fn end_lease(&self, id: u64) -> anyhow::Result<()> {
@@ -148,11 +142,12 @@ impl Store for MemoryStore {
     }
 
     async fn members(&self) -> anyhow::Result<Vec<Member>> {
-        let mut state = self.state();
-        let ids: Vec<u64> = state.alive.iter().copied().collect();
-        Ok(ids
-            .into_iter()
-            .filter_map(|id| state.lease(id).map(|(member, _)| member.clone()))
+        let state = self.state();
+        Ok(state
+            .alive
+            .iter()
+            .filter(|&&id| state.leased(id))
+            .filter_map(|id| state.records.get(id).cloned())
             .collect())
     }
 
@@ -163,6 +158,8 @@ impl Store for MemoryStore {
     async fn bury(&self, dead: u64, successor: u64) -> anyhow::Result<()> {
         let mut state = self.state();
         state.alive.remove(&dead);
+        state.records.remove(&dead);
+        state.leases.remove(&dead);
         state.successors.insert(dead, successor);
         Ok(())
     }

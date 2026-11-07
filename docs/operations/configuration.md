@@ -2,10 +2,22 @@
 
 All settings are environment variables.
 
-Redis holds the control plane's state (published tasks and workflows, members, run status) and the
-workers' durable log, which lets a successor take over a dead worker's work. Workers talk to each
-other directly over the mesh; Redis is only written behind the critical path. For runs to
-survive a Redis restart, run it with persistence (e.g. `appendonly yes`).
+Redis holds the control plane's state (published tasks and workflows, members, runs and their
+results) and the workers' durable log, which lets a successor take over a dead worker's work.
+Workers talk to each other directly over the mesh; Redis is only written behind the critical path.
+
+Redis must keep what it is told: run it with persistence (`appendonly yes`, `appendfsync
+everysec` or `always`). On AWS, use **Amazon MemoryDB**, whose writes are durable across a
+multi-AZ transaction log, rather than ElastiCache, which can lose recent writes on failover; a
+lost log record is a branch lost. Use TLS and an ACL user: `REDIS_URL=rediss://user:password@host:6379/`.
+NAMU uses one Redis database and does not need cluster mode; a MemoryDB cluster with one shard
+(and replicas for failover) fits.
+
+The orchestrator keeps no state of its own: restarted, it takes up from Redis, gives every member
+a new lease, and sends each unfinished run its `Start` again (an owner that has the run ignores
+it). Runs go on while it is down, peer to peer; their results wait on the workers until it is
+back. Run one orchestrator under a supervisor that restarts it (an ECS service, a Kubernetes
+Deployment).
 
 Every member of the mesh (the orchestrator and each worker) listens on one TCP address and
 advertises an address every other member can reach. On one machine the defaults work; across

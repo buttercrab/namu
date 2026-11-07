@@ -33,7 +33,7 @@ use self::delivery::Outgoing;
 use self::scopes::Ending;
 use crate::ids::{Minter, NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
-use crate::log::{Log, Record};
+use crate::log::{Log, Logged, Record};
 use crate::message::{Branch, BranchId, FetchRun, Message, Report, Resume};
 use crate::routes::{Load, Routes};
 use crate::run::{RunInfo, RunSpec, WorkerStats};
@@ -286,9 +286,17 @@ impl Inner {
         task_versions: BTreeMap<String, String>,
         reply_to: WorkerId,
     ) {
-        let known = self.run_state(id).is_some();
-        if known || matches!(self.log.run(id).await, Ok(Some(_))) {
-            return tracing::info!(%id, "run already started; its owner's successor carries it on");
+        if self.run_state(id).is_some() {
+            return tracing::info!(%id, "run already started here");
+        }
+        match self.log.run(id).await {
+            Ok(Logged::Unknown) => {}
+            Ok(Logged::Running(_)) => {
+                return tracing::info!(%id, "run already started; its owner's successor carries it on");
+            }
+            Ok(Logged::Ended) => return tracing::info!(%id, "run already ended; not started again"),
+            // Starting needs the log too: if it cannot be written, the run is not started.
+            Err(err) => tracing::warn!(%id, "the log cannot say whether the run started: {err:#}"),
         }
         let info = Arc::new(RunInfo {
             id,

@@ -15,6 +15,10 @@
 //! cluster before a byte of a session crosses (see `tls`). Without it, connections are plain TCP,
 //! for a cluster on one trusted machine.
 //!
+//! A receiver that restarts (the orchestrator, which keeps its id) has forgotten its sessions; the
+//! next connection of each takes up where its sender stands, and what was delivered but not yet
+//! acknowledged before the restart comes again.
+//!
 //! A worker can hear from a peer before it learns where the peer listens: a worker that just
 //! joined is in the membership the orchestrator gives it, but its peers learn of it only at their
 //! next heartbeat. Messages to such a peer wait in its session until its address arrives.
@@ -400,7 +404,11 @@ async fn receive(
         let message = rmp_serde::from_slice::<Message>(&frame);
         let count = {
             let mut delivered = delivered.lock().unwrap();
-            let count = delivered.entry(session).or_default();
+            // A session this receiver has never seen starts where its sender stands: at 0, or,
+            // if this receiver restarted, past what its last life acknowledged. Then messages it
+            // delivered but did not acknowledge before it died come again: across a restart, a
+            // session is at least once.
+            let count = delivered.entry(session).or_insert(seq);
             if seq == *count {
                 // Delivered under the lock, so two connections of one session cannot reorder.
                 match message {
@@ -582,5 +590,36 @@ mod tests {
             arrived.is_err(),
             "a stranger's message arrived: {arrived:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restarted_receiver_takes_up_a_session_where_it_stands() {
+        let (sender, _, _) = TcpTransport::bind(any(), None).await.unwrap();
+        let (receiver, addr, mut inbox) = TcpTransport::bind(any(), None).await.unwrap();
+        let proxy = Proxy::start(addr).await;
+        sender.set_peer(1, proxy.addr);
+        let first = uuid::Uuid::new_v4();
+        sender.send(1, Message::RunOver { run: first });
+        assert_eq!(received(&mut inbox).await, Some(first));
+
+        // The receiver dies: its connections go, and with them what it knew of the session.
+        drop((receiver, inbox));
+        proxy.cut();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let later: Vec<RunId> = (0..20).map(|_| uuid::Uuid::new_v4()).collect();
+        for &run in &later {
+            sender.send(1, Message::RunOver { run });
+        }
+
+        // A new receiver, where the old one was reached: everything sent since arrives, in order.
+        let (_, moved, mut inbox) = TcpTransport::bind(any(), None).await.unwrap();
+        sender.set_peer(1, moved);
+        let mut got = Vec::new();
+        while got.len() < later.len()
+            && let Some(run) = received(&mut inbox).await
+        {
+            got.push(run);
+        }
+        assert_eq!(got, later);
     }
 }

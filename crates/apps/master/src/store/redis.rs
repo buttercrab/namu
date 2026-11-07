@@ -2,8 +2,9 @@
 //!
 //! Keys:
 //! - `namu:task:{id}:{version}`, `namu:workflow:{id}:{version}`: JSON, set once (`SET NX`).
-//! - `namu:member:{id}`: a member's record, expiring with its lease; `namu:alive`, the set of
-//!   workers not yet buried; `namu:successors`, dead worker -> successor; `namu:worker_names`.
+//! - `namu:member:{id}`: a member's record, until it is buried; `namu:lease:{id}`, its lease, which
+//!   expires unless renewed; `namu:alive`, the set of workers not yet buried; `namu:successors`,
+//!   dead worker -> successor; `namu:worker_names`.
 //! - `namu:run:{id}:spec` (JSON, set once), `namu:run:{id}:owner`, `namu:run:{id}:end` (JSON, set
 //!   once), and `namu:running`, the set of runs that have not ended.
 //! - `namu:run:{id}:results` and `:failures`, lists in the order reports arrived, and `:reported`,
@@ -44,6 +45,10 @@ fn workflow_key(id: &str, version: &str) -> String {
 
 fn member_key(id: u64) -> String {
     format!("namu:member:{id}")
+}
+
+fn lease_key(id: u64) -> String {
+    format!("namu:lease:{id}")
 }
 
 fn run_key(id: Uuid, part: &str) -> String {
@@ -96,6 +101,16 @@ impl RedisStore {
             .transpose()
     }
 }
+
+/// Renews a member's lease, unless it was buried: `KEYS` are the alive set and the lease, `ARGV`
+/// the member's id and the lease's length in milliseconds.
+const RENEW: &str = r#"
+if redis.call('SISMEMBER', KEYS[1], ARGV[1]) == 1 then
+  redis.call('SET', KEYS[2], 1, 'PX', ARGV[2])
+  return 1
+end
+return 0
+"#;
 
 /// Adds a report to its list unless its branch's is in already: `KEYS` are the set of reported
 /// branches and the list, `ARGV` the branch and the report.
@@ -160,7 +175,9 @@ impl Store for RedisStore {
         let record = serde_json::to_string(member)?;
         redis::pipe()
             .atomic()
-            .pset_ex(member_key(member.id), record, millis(ttl))
+            .set(member_key(member.id), record)
+            .ignore()
+            .pset_ex(lease_key(member.id), 1, millis(ttl))
             .ignore()
             .hset(WORKER_NAMES, member.id, &member.name)
             .ignore()
@@ -172,10 +189,14 @@ impl Store for RedisStore {
     }
 
     async fn renew(&self, id: u64, ttl: Duration) -> anyhow::Result<bool> {
-        Ok(self
-            .conn()
-            .pexpire(member_key(id), millis(ttl) as i64)
-            .await?)
+        let renewed: u8 = redis::Script::new(RENEW)
+            .key(ALIVE)
+            .key(lease_key(id))
+            .arg(id)
+            .arg(millis(ttl))
+            .invoke_async(&mut self.conn())
+            .await?;
+        Ok(renewed == 1)
     }
 
     async fn update_member(&self, member: &Member, ttl: Duration) -> anyhow::Result<bool> {
@@ -183,15 +204,13 @@ impl Store for RedisStore {
             .arg(member_key(member.id))
             .arg(serde_json::to_string(member)?)
             .arg("XX")
-            .arg("PX")
-            .arg(millis(ttl))
             .query_async(&mut self.conn())
             .await?;
-        Ok(set.is_some())
+        Ok(set.is_some() && self.renew(member.id, ttl).await?)
     }
 
     async fn end_lease(&self, id: u64) -> anyhow::Result<()> {
-        let _: () = self.conn().del(member_key(id)).await?;
+        let _: () = self.conn().del(lease_key(id)).await?;
         Ok(())
     }
 
@@ -200,7 +219,17 @@ impl Store for RedisStore {
         if alive.is_empty() {
             return Ok(Vec::new());
         }
-        let keys: Vec<String> = alive.iter().map(|&id| member_key(id)).collect();
+        let leases: Vec<String> = alive.iter().map(|&id| lease_key(id)).collect();
+        let leased: Vec<Option<u8>> = self.conn().mget(&leases).await?;
+        let keys: Vec<String> = alive
+            .iter()
+            .zip(leased)
+            .filter(|(_, lease)| lease.is_some())
+            .map(|(&id, _)| member_key(id))
+            .collect();
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
         let records: Vec<Option<String>> = self.conn().mget(&keys).await?;
         let mut members = records
             .into_iter()
@@ -219,6 +248,8 @@ impl Store for RedisStore {
         redis::pipe()
             .atomic()
             .srem(ALIVE, dead)
+            .ignore()
+            .del(&[member_key(dead), lease_key(dead)])
             .ignore()
             .hset(SUCCESSORS, dead, successor)
             .ignore()

@@ -18,10 +18,10 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use namu_core::value::Value;
-use namu_engine::RunInfo;
 use namu_engine::ids::{NodeId, RunId, WorkerId, owner};
 use namu_engine::log::{
-    Durable, EndRecord, Log, Record, ReportRecord, RunEstate, SWEEP_FLOOR, ScopeEstate, dead_nodes,
+    Durable, ENDED_FOR, EndRecord, Log, Logged, Record, ReportRecord, RunEstate, SWEEP_FLOOR,
+    ScopeEstate, dead_nodes,
 };
 use namu_engine::message::{Branch, BranchId};
 use namu_engine::scope::{Continuation, Feed, Position, Source};
@@ -314,6 +314,9 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             let mut keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
             keys.push(ends_key(*run, *root_scope));
             pipe.del(keys).ignore().srem(RUNS, run.to_string()).ignore();
+            // What stays, for a while: that it ended, so a `Start` sent again is not acted on.
+            let ended_for = ENDED_FOR.as_millis() as u64;
+            pipe.pset_ex(key(*run, "ended"), 1, ended_for).ignore();
         }
     }
     Ok(())
@@ -333,10 +336,19 @@ impl Log for RedisLog {
             .transpose()
     }
 
-    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>> {
-        let raw: Option<Vec<u8>> = self.redis.clone().get(key(run, "info")).await?;
-        raw.map(|raw| rmp_serde::from_slice(&raw).context("bad run in the log"))
-            .transpose()
+    async fn run(&self, run: RunId) -> anyhow::Result<Logged> {
+        let (info, ended): (Option<Vec<u8>>, bool) = redis::pipe()
+            .get(key(run, "info"))
+            .exists(key(run, "ended"))
+            .query_async(&mut self.redis.clone())
+            .await?;
+        Ok(match (info, ended) {
+            (Some(raw), _) => {
+                Logged::Running(rmp_serde::from_slice(&raw).context("bad run in the log")?)
+            }
+            (None, true) => Logged::Ended,
+            (None, false) => Logged::Unknown,
+        })
     }
 
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>> {
@@ -345,7 +357,7 @@ impl Log for RedisLog {
         let mut estates = Vec::new();
         for run in runs {
             let run: RunId = run.parse()?;
-            let Some(info) = self.run(run).await? else {
+            let Logged::Running(info) = self.run(run).await? else {
                 continue;
             };
             let branches: HashMap<String, Vec<u8>> = redis.hgetall(key(run, "branches")).await?;

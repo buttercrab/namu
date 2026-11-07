@@ -191,17 +191,37 @@ pub trait Log: Send + Sync + 'static {
 
     async fn node(&self, run: RunId, id: NodeId) -> anyhow::Result<Option<Arc<Node>>>;
 
-    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>>;
+    /// What the log knows of `run`.
+    async fn run(&self, run: RunId) -> anyhow::Result<Logged>;
 
     /// Everything `worker` owned or held, per run, for its successor.
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>>;
 }
+
+/// What a log knows of a run.
+#[derive(Debug, Clone)]
+pub enum Logged {
+    /// It runs, as described.
+    Running(Arc<RunInfo>),
+    /// It ended, within [`ENDED_FOR`]: a `Start` for it comes from someone who has not heard,
+    /// and is not acted on.
+    Ended,
+    /// Never heard of, or ended long ago.
+    Unknown,
+}
+
+/// How long a log remembers that a run ended, once everything else about it is gone. A `Start`
+/// sent again (by a control plane that restarted, or to a dead owner's successor) must not run a
+/// run twice; it arrives within this, unless the control plane was down longer.
+pub const ENDED_FOR: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// A log in this process's memory: durable for as long as the process lives. It is what
 /// `LocalCluster` uses, which makes worker crashes testable in one process.
 #[derive(Debug, Default)]
 pub struct MemoryLog {
     runs: Mutex<HashMap<RunId, MemoryRun>>,
+    /// Runs that ended. Kept for as long as the process lives: it is for tests.
+    ended: Mutex<HashSet<RunId>>,
     /// The most nodes any run held at once.
     peak: std::sync::atomic::AtomicUsize,
     /// The most reports any run held at once.
@@ -378,6 +398,7 @@ impl MemoryLog {
                 }
                 Record::RunGone { run, .. } => {
                     runs.remove(&run);
+                    self.ended.lock().unwrap().insert(run);
                 }
             }
         }
@@ -398,9 +419,20 @@ impl Log for MemoryLog {
         Ok(runs.get(&run).and_then(|run| run.nodes.get(&id).cloned()))
     }
 
-    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>> {
-        let runs = self.runs.lock().unwrap();
-        Ok(runs.get(&run).and_then(|run| run.info.clone()))
+    async fn run(&self, run: RunId) -> anyhow::Result<Logged> {
+        if let Some(info) = self
+            .runs
+            .lock()
+            .unwrap()
+            .get(&run)
+            .and_then(|r| r.info.clone())
+        {
+            return Ok(Logged::Running(info));
+        }
+        Ok(match self.ended.lock().unwrap().contains(&run) {
+            true => Logged::Ended,
+            false => Logged::Unknown,
+        })
     }
 
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>> {

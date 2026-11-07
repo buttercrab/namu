@@ -648,14 +648,28 @@ async fn run_workflow(
 
     let run = created.run_id.to_string();
     let url = format!("{master_url}/runs/{run}");
+    // The run goes on while the orchestrator restarts: keep asking, for a while.
+    let patience = std::time::Duration::from_secs(120);
+    let mut failing_since: Option<std::time::Instant> = None;
     loop {
-        let mut status: JsonValue = match client.get(&url).send().await {
-            Ok(resp) => resp.json().await.unwrap_or_default(),
-            Err(err) => {
-                eprintln!("Failed to fetch status: {err}");
+        let fetched = match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => resp.json::<JsonValue>().await.ok(),
+            Ok(resp) if resp.status().is_client_error() => {
+                eprintln!("Failed to fetch status: {}", resp.status());
                 std::process::exit(1);
             }
+            _ => None,
         };
+        let Some(mut status) = fetched else {
+            let since = *failing_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() > patience {
+                eprintln!("The orchestrator has not answered for {patience:?}; giving up");
+                std::process::exit(1);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            continue;
+        };
+        failing_since = None;
         if status["status"] != "running" {
             // The status counts them; print them.
             for what in ["results", "failures"] {
