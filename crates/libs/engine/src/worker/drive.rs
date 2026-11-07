@@ -459,26 +459,38 @@ impl Inner {
         args: Args,
         key: CallKey,
     ) -> anyhow::Result<Result<Value, String>> {
-        let started = std::time::Instant::now();
-        let output = async {
-            match &task.kind {
-                Kind::Call(task) => self.call(task, args, key).await,
-                // Awaited, holding no task slot: it waits rather than computes.
-                Kind::Async(task) => task.call(args, key).await,
-                // Not feeding a fan-out: the stream is read to its end into a list.
-                Kind::Stream(stream) => self.read_stream(stream, args, key).await,
-                Kind::Batch(batch) => self.batch_call(task_ref, batch, args, key).await,
+        let mut tries = 0;
+        loop {
+            let started = std::time::Instant::now();
+            let args = args.clone();
+            let output = async {
+                match &task.kind {
+                    Kind::Call(task) => self.call(task, args, key).await,
+                    // Awaited, holding no task slot: it waits rather than computes.
+                    Kind::Async(task) => task.call(args, key).await,
+                    // Not feeding a fan-out: the stream is read to its end into a list.
+                    Kind::Stream(stream) => self.read_stream(stream, args, key).await,
+                    Kind::Batch(batch) => self.batch_call(task_ref, batch, args, key).await,
+                }
+            }
+            .instrument(telemetry::task_span(&key, task_ref))
+            .await;
+            let outcome = match &output {
+                Ok(Ok(_)) => Outcome::Ok,
+                Ok(Err(_)) => Outcome::Failed,
+                Err(_) => Outcome::Error,
+            };
+            telemetry::task_called(task_ref, outcome, started.elapsed());
+            match (&output, task.retry.wait(tries)) {
+                (Ok(Err(message)), Some(wait)) => {
+                    tracing::debug!(task = task_ref.id, %key, tries, ?wait, "trying again: {message}");
+                    telemetry::task_retried(task_ref);
+                    tokio::time::sleep(wait).await;
+                    tries += 1;
+                }
+                _ => return output,
             }
         }
-        .instrument(telemetry::task_span(&key, task_ref))
-        .await;
-        let outcome = match &output {
-            Ok(Ok(_)) => Outcome::Ok,
-            Ok(Err(_)) => Outcome::Failed,
-            Err(_) => Outcome::Error,
-        };
-        telemetry::task_called(task_ref, outcome, started.elapsed());
-        output
     }
 
     async fn call(

@@ -943,3 +943,61 @@ async fn no_items_make_no_windows() {
         [json!("none")]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_call_is_tried_again_under_its_key() {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use namu_engine::tasks::Retry;
+
+    #[workflow]
+    fn wf() -> i32 {
+        let x = identity(range(1, 4));
+        sum(maybe_fail(x))
+    }
+
+    // Each call fails its first two tries; every try of a call has the call's key.
+    let run_with = |retries| async move {
+        let tries: Arc<Mutex<HashMap<String, Vec<i32>>>> = Arc::default();
+        let tasks = tasks()
+            .with("maybe_fail", {
+                let tries = tries.clone();
+                move |v: i32| {
+                    let key = namu_engine::call_key().unwrap().to_string();
+                    let mut tries = tries.lock().unwrap();
+                    let seen = tries.entry(key).or_default();
+                    seen.push(v);
+                    match seen.len() {
+                        1 | 2 => Err(format!("busy ({})", seen.len())),
+                        _ => Ok(v),
+                    }
+                }
+            })
+            .retry(
+                "maybe_fail",
+                Retry::new(retries, std::time::Duration::from_millis(5)),
+            );
+        let cluster = LocalCluster::uniform(3, Arc::new(tasks));
+        let outcome = cluster
+            .run(wf().to_serializable("retried".into()))
+            .await
+            .unwrap();
+        let tries = tries.lock().unwrap().clone();
+        (outcome, tries)
+    };
+
+    let (outcome, tries) = run_with(2).await;
+    assert!(outcome.succeeded(), "{:?}", outcome.failures);
+    assert_eq!(json(&outcome.results), [json!(60)]);
+    assert_eq!(tries.len(), 3, "three calls, each its own key");
+    assert!(
+        tries
+            .values()
+            .all(|seen| seen.len() == 3 && seen.iter().all(|&v| v == seen[0]))
+    );
+
+    // One retry is not enough: every branch fails with its last try's error.
+    let (outcome, _) = run_with(1).await;
+    assert_eq!(outcome.failures, ["maybe_fail: busy (2)"; 3]);
+}

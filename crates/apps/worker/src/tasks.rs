@@ -7,11 +7,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
 use namu_engine::routes::Routes;
-use namu_engine::tasks::Task;
+use namu_engine::tasks::{Retry, Task};
 use namu_engine::{RunSpec, TaskRef, Tasks};
 use namu_proto::{Member, TaskManifest};
 
@@ -104,6 +105,10 @@ impl RuntimeTasks {
             task: Some(Task {
                 kind,
                 checkpoint: manifest.checkpoint,
+                retry: Retry::new(
+                    manifest.retries,
+                    Duration::from_millis(manifest.retry_backoff_ms.unwrap_or(100)),
+                ),
             }),
         })
     }

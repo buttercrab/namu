@@ -90,6 +90,13 @@ pub struct TaskManifest {
     /// Use for tasks with external side effects.
     #[serde(default)]
     pub checkpoint: bool,
+    /// How many more times a call that fails is tried, under the same call key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub retries: u32,
+    /// How long before the first retry; each next waits twice as long (up to 30 s). 100 ms if
+    /// unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_ms: Option<u64>,
     /// For a stream task: how many of its items may be in flight at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<usize>,
@@ -290,6 +297,10 @@ pub struct ErrorResponse {
 /// How often workers send heartbeats, and how long membership lasts without one.
 pub const HEARTBEAT_INTERVAL_MS: u64 = 1_000;
 pub const MEMBERSHIP_TTL_MS: u64 = 5_000;
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
 
 #[cfg(test)]
 mod tests {

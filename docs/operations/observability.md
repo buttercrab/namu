@@ -31,6 +31,7 @@ Metrics carry no run ids (a series per run would never stop growing); a task's i
 | Metric | Kind | What |
 |---|---|---|
 | `namu_task_calls_total{task, outcome}` | counter | Task calls; `outcome` is `ok`, `failed` (the task returned an error) or `error` (it could not be run) |
+| `namu_task_retries_total{task}` | counter | Failed calls tried again, by the task's retry policy |
 | `namu_task_call_seconds{task}` | histogram | How long calls took, slot wait included |
 | `namu_handoffs_sent_total`, `namu_handoffs_received_total` | counter | Branches moved between workers |
 | `namu_branches_ended_total` | counter | Branches ended in scopes this worker owns |

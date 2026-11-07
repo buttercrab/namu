@@ -28,6 +28,10 @@ pub fn describe() {
         "How long task calls took, by task"
     );
     describe_counter!(
+        "namu_task_retries_total",
+        "Failed task calls tried again, by task (see a task's retry policy)"
+    );
+    describe_counter!(
         "namu_handoffs_sent_total",
         "Branches handed to another worker"
     );
@@ -104,6 +108,10 @@ pub(crate) fn task_called(task: &TaskRef, outcome: Outcome, took: Duration) {
         .increment(1);
     metrics::histogram!("namu_task_call_seconds", "task" => task.id.clone())
         .record(took.as_secs_f64());
+}
+
+pub(crate) fn task_retried(task: &TaskRef) {
+    metrics::counter!("namu_task_retries_total", "task" => task.id.clone()).increment(1);
 }
 
 pub(crate) fn handoff_sent() {

@@ -208,6 +208,14 @@ engine) lists the keys of its items, in the order of the list a dynamic batch ta
 A task that must never run twice once it has returned is a checkpoint task instead (see
 `docs/design.md` §7.5); the key covers a crash during the call too.
 
+## Retries
+A task whose failures pass (a rate limit, a server restarting, a GPU out of memory once) gets a
+retry policy rather than a loop in every workflow: `"retries": 3` in its manifest (with
+`"retry_backoff_ms"`), or `.retry("fetch", Retry::new(3, Duration::from_millis(100)))` on
+`FnTasks`. The engine tries the call again under the same key, backing off, and counts each in
+`namu_task_retries_total`. A workflow that must decide what a failure means still matches on
+`attempt(..)`, which sees the last try's error.
+
 ## Task kinds
 - `single`: one input, one output
 - `batch`: written for a list of inputs, called per item; a session on each worker takes items

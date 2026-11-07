@@ -41,6 +41,8 @@ pub struct TaskConfig {
     pub runtime: TaskRuntime,
     pub trust: TaskTrust,
     pub checkpoint: bool,
+    pub retries: u32,
+    pub retry_backoff_ms: Option<u64>,
     pub window: Option<usize>,
     pub batch_size: Option<usize>,
     pub max_wait_ms: Option<u64>,
@@ -220,6 +222,8 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let integer = |field: &str| entry.get(field).and_then(|v| v.as_integer());
+        let retries = integer("retries").map_or(0, |v| v as u32);
+        let retry_backoff_ms = integer("retry_backoff_ms").map(|v| v as u64);
         let window = integer("window").map(|v| v as usize);
         let batch_size = integer("batch_size").map(|v| v as usize);
         let max_wait_ms = integer("max_wait_ms").map(|v| v as u64);
@@ -272,6 +276,8 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
                 runtime,
                 trust,
                 checkpoint,
+                retries,
+                retry_backoff_ms,
                 window,
                 batch_size,
                 max_wait_ms,
