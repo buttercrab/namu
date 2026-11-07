@@ -23,18 +23,11 @@ use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::types::{Defs, Type};
+use crate::types::Describe;
 
 /// A type the engine can hold as a value. Derive it for your own types with
 /// `#[derive(namu::Data)]`; it is implemented for the standard ones.
-pub trait Data: Clone + Send + Sync + Serialize + DeserializeOwned + 'static {
-    /// The type, as a workflow's IR records it; named types are defined in `defs`. A type that
-    /// does not say is named after its Rust type, with its shape unknown.
-    fn describe(defs: &mut Defs) -> Type {
-        let _ = defs;
-        Type::Named(type_name::<Self>().to_string())
-    }
-
+pub trait Data: Describe + Clone + Send + Sync + Serialize + DeserializeOwned + 'static {
     /// The elements of a list or tuple, which a fan-out or a task's several outputs split into.
     /// `None` for everything else.
     const ITEMS: Option<fn(&Self) -> Vec<Value>> = None;
@@ -269,7 +262,8 @@ impl Value {
     }
 
     /// This value as a `T`: moved out if nothing else shares it, cloned if something does,
-    /// built from its items if it is a collected list, decoded if it is encoded.
+    /// built from its items if it is a collected list, decoded if it is encoded, and read from
+    /// its MessagePack if it is another type.
     pub fn take<T: Data>(self) -> anyhow::Result<T> {
         if self.is::<T>() || self.is::<List>() {
             let this = ManuallyDrop::new(self);
@@ -285,8 +279,8 @@ impl Value {
     }
 
     /// A copy of this value as a `T`, built from its items if it is a collected list, decoded if
-    /// it is encoded. An encoded value keeps what it was first decoded into, so asking again is a
-    /// clone.
+    /// it is encoded, and read from its MessagePack if it is another type. An encoded value keeps
+    /// what it was first decoded into, so asking again is a clone.
     pub fn to<T: Data>(&self) -> anyhow::Result<T> {
         if let Some(value) = self.downcast_ref::<T>() {
             return Ok(value.clone());
@@ -296,11 +290,12 @@ impl Value {
             return from_list(unsafe { Stored::<List>::get(&self.payload) }.0.clone());
         }
         if !self.is_encoded() {
-            bail!(
-                "expected a {}, got a {}",
-                type_name::<T>(),
-                self.type_name()
-            );
+            // A value of another type, read as another worker would read it: from its
+            // MessagePack. So a value reads the same wherever it is, as its shape allows.
+            let bytes = self.encode()?;
+            return rmp_serde::from_slice(&bytes).with_context(|| {
+                format!("reading a {} as a {}", self.type_name(), type_name::<T>())
+            });
         }
         // SAFETY: the vtable says the payload holds an `Encoded`.
         let encoded = unsafe { Stored::<Encoded>::get(&self.payload) };
@@ -418,58 +413,28 @@ pub fn from_args<T: Data>(mut args: Vec<Value>) -> anyhow::Result<T> {
     }
 }
 
-macro_rules! scalars {
-    ($($t:ty => $type:expr),* $(,)?) => {$(
-        impl Data for $t {
-            fn describe(_: &mut Defs) -> Type {
-                $type
-            }
-        }
-    )*};
-}
-
-const fn int(bits: u8, signed: bool) -> Type {
-    Type::Int { bits, signed }
-}
-
-scalars!(
-    () => Type::Unit,
-    bool => Type::Bool,
-    char => Type::Char,
-    i8 => int(8, true),
-    i16 => int(16, true),
-    i32 => int(32, true),
-    i64 => int(64, true),
-    i128 => int(128, true),
-    isize => int(64, true),
-    u8 => int(8, false),
-    u16 => int(16, false),
-    u32 => int(32, false),
-    u64 => int(64, false),
-    u128 => int(128, false),
-    usize => int(64, false),
-    f32 => Type::Float { bits: 32 },
-    f64 => Type::Float { bits: 64 },
-    String => Type::String,
-);
-
-impl<T: Data> Data for Option<T> {
-    fn describe(defs: &mut Defs) -> Type {
-        Type::Option(Box::new(T::describe(defs)))
-    }
-}
-
-impl<T: Data> Data for Box<T> {
-    fn describe(defs: &mut Defs) -> Type {
-        T::describe(defs)
-    }
-}
+impl Data for () {}
+impl Data for bool {}
+impl Data for char {}
+impl Data for i8 {}
+impl Data for i16 {}
+impl Data for i32 {}
+impl Data for i64 {}
+impl Data for i128 {}
+impl Data for isize {}
+impl Data for u8 {}
+impl Data for u16 {}
+impl Data for u32 {}
+impl Data for u64 {}
+impl Data for u128 {}
+impl Data for usize {}
+impl Data for f32 {}
+impl Data for f64 {}
+impl Data for String {}
+impl<T: Data> Data for Option<T> {}
+impl<T: Data> Data for Box<T> {}
 
 impl<T: Data> Data for Vec<T> {
-    fn describe(defs: &mut Defs) -> Type {
-        Type::List(Box::new(T::describe(defs)))
-    }
-
     const ITEMS: Option<fn(&Self) -> Vec<Value>> =
         Some(|list| list.iter().cloned().map(Value::new).collect());
 
@@ -477,11 +442,7 @@ impl<T: Data> Data for Vec<T> {
         Some(|items| items.into_iter().map(Value::take).collect());
 }
 
-impl<K: Data + Ord, V: Data> Data for BTreeMap<K, V> {
-    fn describe(defs: &mut Defs) -> Type {
-        Type::Map(Box::new(K::describe(defs)), Box::new(V::describe(defs)))
-    }
-}
+impl<K: Data + Ord, V: Data> Data for BTreeMap<K, V> {}
 
 impl<K, V, S> Data for HashMap<K, V, S>
 where
@@ -489,18 +450,11 @@ where
     V: Data,
     S: BuildHasher + Default + Clone + Send + Sync + 'static,
 {
-    fn describe(defs: &mut Defs) -> Type {
-        Type::Map(Box::new(K::describe(defs)), Box::new(V::describe(defs)))
-    }
 }
 
 macro_rules! tuples {
     ($(($($name:ident $index:tt),+))*) => {$(
         impl<$($name: Data),+> Data for ($($name,)+) {
-            fn describe(defs: &mut Defs) -> Type {
-                Type::Tuple(vec![$($name::describe(defs)),+])
-            }
-
             const ITEMS: Option<fn(&Self) -> Vec<Value>> =
                 Some(|tuple| vec![$(Value::new(tuple.$index.clone())),+]);
 
@@ -671,6 +625,7 @@ mod tests {
         words: Vec<String>,
     }
 
+    impl crate::types::Describe for Doc {}
     impl Data for Doc {}
 
     fn doc(title: &str) -> Doc {
@@ -678,6 +633,29 @@ mod tests {
             title: title.into(),
             words: vec!["a".into(), "b".into()],
         }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct Title {
+        title: String,
+    }
+
+    impl crate::types::Describe for Title {}
+    impl Data for Title {}
+
+    #[test]
+    fn a_value_of_another_type_is_read_as_its_shape_allows() {
+        // As on another worker, from its MessagePack: a narrower struct, a wider integer.
+        let title = Value::new(doc("t")).take::<Title>().unwrap();
+        assert_eq!(title, Title { title: "t".into() });
+        assert_eq!(Value::new(7i32).to::<i64>().unwrap(), 7);
+        let err = Value::new(Title { title: "t".into() })
+            .to::<Doc>()
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("missing field `words`"),
+            "{err:#}"
+        );
     }
 
     #[test]
@@ -702,6 +680,7 @@ mod tests {
                 Counted(self.0.clone())
             }
         }
+        impl crate::types::Describe for Counted {}
         impl Data for Counted {}
 
         let value = Value::new(Counted("x".into()));

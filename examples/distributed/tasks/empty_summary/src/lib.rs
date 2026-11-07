@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, namu_guest::Describe)]
 pub struct Summary {
     pub docs: usize,
     pub words: usize,

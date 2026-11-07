@@ -3,7 +3,7 @@
 //! every chunk: it is context the text alone often lacks.
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, namu_guest::Describe)]
 pub struct Article {
     pub id: u64,
     pub title: String,
@@ -11,7 +11,7 @@ pub struct Article {
     pub text: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, namu_guest::Describe)]
 pub struct Chunk {
     pub doc_id: u64,
     pub title: String,

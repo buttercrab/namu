@@ -508,6 +508,7 @@ class Countdown:
         top: String,
     }
 
+    impl namu_core::types::Describe for Stats {}
     impl namu_core::value::Data for Stats {}
 
     #[tokio::test]

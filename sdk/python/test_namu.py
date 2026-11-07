@@ -88,3 +88,69 @@ class Worker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Signatures(unittest.TestCase):
+    def signature(self, source: str, task: str) -> dict:
+        from namu.signature import Module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tasks.py"
+            path.write_text(textwrap.dedent(source))
+            return Module(path).signature(task)
+
+    def test_annotations_are_read_without_running_the_module(self):
+        source = """
+            import torch  # Not installed where it is built: never imported.
+            from dataclasses import dataclass
+            from typing import Iterator, Optional
+            import namu
+
+            @dataclass
+            class Page:
+                url: str
+                words: int
+                lang: Optional[str] = None
+
+            @namu.task
+            def score(page: Page, weights: dict[str, float]) -> tuple[float, bool]:
+                ...
+
+            @namu.stream
+            def pages(site: str, *, cursor: str | None = None) -> Iterator[namu.Item[Page]]:
+                ...
+
+            @namu.batch
+            def embed(texts: list[str]) -> list[list[float]]:
+                ...
+
+            @namu.continuous
+            class Decoder:
+                def step(self, admit: list[tuple[int, str]]) -> list[tuple[int, bytes]]:
+                    ...
+
+            @namu.task
+            def loose(x, y: "Page") -> Unknown:
+                ...
+        """
+        i64, f64 = {"int": {"bits": 64, "signed": True}}, {"float": {"bits": 64}}
+        page = {"named": "tasks.Page"}
+        defs = {"tasks.Page": {"struct": [["url", "string"], ["words", i64], ["lang", {"option": "string"}]]}}
+        self.assertEqual(
+            self.signature(source, "score"),
+            {
+                "input": {"tuple": [page, {"map": ["string", f64]}]},
+                "output": {"tuple": [f64, "bool"]},
+                "defs": defs,
+            },
+        )
+        self.assertEqual(
+            self.signature(source, "pages"), {"input": "string", "output": {"list": page}, "defs": defs}
+        )
+        self.assertEqual(self.signature(source, "embed"), {"input": "string", "output": {"list": f64}})
+        self.assertEqual(self.signature(source, "Decoder"), {"input": "string", "output": "bytes"})
+        # What is not annotated, or not known here, is left unknown.
+        self.assertEqual(
+            self.signature(source, "loose"),
+            {"input": {"tuple": [{"named": ""}, page]}, "output": {"named": "Unknown"}, "defs": defs},
+        )

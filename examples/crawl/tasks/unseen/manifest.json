@@ -2,7 +2,5 @@
   "task_id": "unseen",
   "version": "0.1.0",
   "task_kind": "single",
-  "runtime": "python",
-  "input_arity": 2,
-  "output_arity": 1
+  "runtime": "python"
 }

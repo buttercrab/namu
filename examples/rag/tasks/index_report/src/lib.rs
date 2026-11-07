@@ -1,7 +1,7 @@
 //! Fan-in over the articles: how many were indexed, in how many chunks.
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Serialize, namu_guest::Describe)]
 pub struct IndexReport {
     pub articles: usize,
     pub chunks: i64,

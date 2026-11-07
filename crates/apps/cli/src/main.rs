@@ -1,5 +1,6 @@
 mod config;
 mod exporter;
+mod signature;
 mod sync;
 
 use std::fs;
@@ -7,10 +8,11 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use namu_proto::{
-    Page, PageQuery, RunCreateRequest, RunCreateResponse, RunStatus, TaskManifest, TaskRuntime,
-    WorkflowUploadRequest,
+    Page, PageQuery, Published, RunCreateRequest, RunCreateResponse, RunStatus, TaskManifest,
+    TaskRuntime, WorkflowUploadRequest,
 };
 use reqwest::multipart;
 use serde_json::Value as JsonValue;
@@ -223,35 +225,9 @@ fn build_tasks(tasks_dir: &Path, out_dir: &Path) -> anyhow::Result<()> {
         .filter(|e| e.file_name() == "manifest.json")
     {
         let task_dir = entry.path().parent().unwrap();
-        let manifest_path = entry.path();
-        let manifest_raw = fs::read_to_string(manifest_path)?;
-        let mut manifest: namu_proto::TaskManifest = serde_json::from_str(&manifest_raw)?;
-
-        if task_dir.join("Cargo.toml").exists() {
-            let mut cmd = Command::new("cargo");
-            cmd.args(["build", "--release", "--manifest-path"])
-                .arg(task_dir.join("Cargo.toml"));
-            if manifest.runtime == TaskRuntime::Wasm {
-                cmd.args(["--target", WASM_TARGET]);
-            }
-            let status = cmd.status()?;
-            if !status.success() {
-                return Err(anyhow::anyhow!(
-                    "cargo build failed for {}",
-                    task_dir.display()
-                ));
-            }
-        }
-
-        let artifact_path = find_artifact(task_dir, &manifest.runtime)?;
-        let artifact_bytes = fs::read(&artifact_path)?;
-        let checksum = sha2::Sha256::digest(&artifact_bytes);
-        manifest.checksum = format!("sha256:{:x}", checksum);
-        set_build_info(&mut manifest);
-
-        let tar_path = out_dir.join(format!("{}-{}.tar.zst", manifest.task_id, manifest.version));
-        package_task(&tar_path, &manifest, &artifact_path)?;
-        println!("Built {}", tar_path.display());
+        let manifest: TaskManifest = serde_json::from_str(&fs::read_to_string(entry.path())?)
+            .with_context(|| format!("reading {}", entry.path().display()))?;
+        build_task(task_dir, manifest, out_dir)?;
     }
     Ok(())
 }
@@ -262,34 +238,60 @@ fn build_tasks_from_config(cfg: &config::NamuConfig, out_dir: &Path) -> anyhow::
             .path
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("task {} missing path", task.id))?;
-        let mut manifest = task_manifest_from_config(task);
-
-        if task_dir.join("Cargo.toml").exists() {
-            let mut cmd = Command::new("cargo");
-            cmd.args(["build", "--release", "--manifest-path"])
-                .arg(task_dir.join("Cargo.toml"));
-            if task.runtime == TaskRuntime::Wasm {
-                cmd.args(["--target", WASM_TARGET]);
-            }
-            let status = cmd.status()?;
-            if !status.success() {
-                return Err(anyhow::anyhow!(
-                    "cargo build failed for {}",
-                    task_dir.display()
-                ));
-            }
-        }
-
-        let artifact_path = find_artifact(task_dir, &task.runtime)?;
-        let artifact_bytes = fs::read(&artifact_path)?;
-        let checksum = sha2::Sha256::digest(&artifact_bytes);
-        manifest.checksum = format!("sha256:{:x}", checksum);
-        set_build_info(&mut manifest);
-
-        let tar_path = out_dir.join(format!("{}-{}.tar.zst", task.id, task.version));
-        package_task(&tar_path, &manifest, &artifact_path)?;
-        println!("Built {}", tar_path.display());
+        build_task(task_dir, task_manifest_from_config(task), out_dir)?;
     }
+    Ok(())
+}
+
+/// Builds the task in `task_dir` (a crate is compiled; a Python module is taken as it is), records
+/// its checksum and signature in `manifest`, and packages both in `out_dir`.
+fn build_task(task_dir: &Path, mut manifest: TaskManifest, out_dir: &Path) -> anyhow::Result<()> {
+    let id = format!("{}@{}", manifest.task_id, manifest.version);
+    let crate_dir = task_dir.join("Cargo.toml").exists().then_some(task_dir);
+    if let Some(task_dir) = crate_dir {
+        let target = (manifest.runtime == TaskRuntime::Wasm).then_some(WASM_TARGET);
+        cargo_build(task_dir, target)?;
+    }
+
+    let artifact_path = find_artifact(task_dir, &manifest.runtime)?;
+    let artifact_bytes = fs::read(&artifact_path)?;
+    let checksum = sha2::Sha256::digest(&artifact_bytes);
+    manifest.checksum = format!("sha256:{:x}", checksum);
+    set_build_info(&mut manifest);
+    manifest.signature = match (manifest.runtime, crate_dir) {
+        (TaskRuntime::Native, Some(_)) => Some(signature::native(&artifact_path)?),
+        // The same crate, built for this machine, says what the component takes.
+        (TaskRuntime::Wasm, Some(task_dir)) => {
+            cargo_build(task_dir, None)?;
+            Some(signature::native(&find_library(task_dir)?)?)
+        }
+        (TaskRuntime::Python, _) => signature::python(&artifact_path, &manifest.task_id)?,
+        (_, None) => None,
+    };
+    if manifest.signature.is_none() {
+        eprintln!("warning: no signature recorded for {id}; calls of it will not be checked");
+    }
+
+    let tar_path = out_dir.join(format!("{}-{}.tar.zst", manifest.task_id, manifest.version));
+    package_task(&tar_path, &manifest, &artifact_path)?;
+    println!("Built {}", tar_path.display());
+    Ok(())
+}
+
+/// `cargo build --release` of the crate in `task_dir`, for `target` or this machine.
+fn cargo_build(task_dir: &Path, target: Option<&str>) -> anyhow::Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["build", "--release", "--manifest-path"])
+        .arg(task_dir.join("Cargo.toml"));
+    if let Some(target) = target {
+        cmd.args(["--target", target]);
+    }
+    let status = cmd.status()?;
+    anyhow::ensure!(
+        status.success(),
+        "cargo build failed for {}",
+        task_dir.display()
+    );
     Ok(())
 }
 
@@ -323,10 +325,7 @@ fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
         requires_gpu: task.requires_gpu,
         resource_class: task.resource_class.clone(),
         capabilities: task.capabilities.clone(),
-        input_arity: task.input_arity,
-        output_arity: task.output_arity,
-        input_schema: task.input_schema.clone(),
-        output_schema: task.output_schema.clone(),
+        signature: None,
         checksum: String::new(),
         abi_version: namu_proto::TASK_ABI_VERSION.to_string(),
         build_toolchain: "unknown".to_string(),
@@ -566,6 +565,13 @@ async fn publish(out_dir: &Path) -> bool {
             match resp {
                 Ok(resp) if resp.status().is_success() => {
                     println!("Published workflow: {}", path.display());
+                    let published: Published = resp.json().await.unwrap_or_default();
+                    for task in published.unchecked {
+                        eprintln!(
+                            "warning: calls of {task} are not checked: it was built without a \
+                             signature"
+                        );
+                    }
                 }
                 Ok(resp) => {
                     ok = false;

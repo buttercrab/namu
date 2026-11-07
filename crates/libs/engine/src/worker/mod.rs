@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use namu_core::ValueId;
 use namu_core::ir::Workflow;
+use namu_core::signature::Signature;
 use namu_core::value::Value;
 use tokio::sync::{Notify, Semaphore, mpsc, oneshot, watch};
 
@@ -197,6 +198,11 @@ impl Worker {
 
     pub fn serves(&self, task: &TaskRef) -> bool {
         self.inner.tasks.task(task).is_some()
+    }
+
+    /// What `task` takes and gives, if this worker knows.
+    pub fn signature(&self, task: &TaskRef) -> Option<Signature> {
+        self.inner.tasks.signature(task)
     }
 }
 

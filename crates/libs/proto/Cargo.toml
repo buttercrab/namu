@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Wire types shared by the NAMU CLI, orchestrator and workers"
 
 [dependencies]
+namu-core = { path = "../core", version = "0.1.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 uuid = { version = "1.17", features = ["v4", "serde"] }

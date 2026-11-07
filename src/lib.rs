@@ -34,7 +34,7 @@ pub mod __macro_exports {
     pub use inventory;
     pub use namu_core::ir::{ScalarOp, Workflow};
     pub use namu_core::registry::WorkflowEntry;
-    pub use namu_core::types::{Def, Defs, Type, named};
+    pub use namu_core::types::{Def, Defs, Describe, Type, named};
     pub use namu_flow::{
         Builder, Graph, IntoArg, Node, NodeKind, TracedValue, arith, branch, call, call0, call1,
         call2, call3, call4, call5, call6, call7, call8, call9, catch, compare, field, format,
@@ -44,5 +44,6 @@ pub mod __macro_exports {
 }
 
 pub use namu_core::inputs::Inputs;
+pub use namu_core::types::Describe;
 pub use namu_core::value::{Data, Value};
-pub use namu_macros::{Data, task, workflow};
+pub use namu_macros::{Data, Describe, task, workflow};

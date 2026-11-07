@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, anyhow};
 use cargo_metadata::MetadataCommand;
 use namu_proto::{TaskKind, TaskRuntime, TaskTrust};
-use serde_json::Value as JsonValue;
 
 #[derive(Clone, Debug)]
 pub struct NamuConfig {
@@ -50,10 +49,6 @@ pub struct TaskConfig {
     pub requires_gpu: bool,
     pub resource_class: String,
     pub capabilities: Vec<String>,
-    pub input_arity: usize,
-    pub output_arity: usize,
-    pub input_schema: JsonValue,
-    pub output_schema: JsonValue,
 }
 
 #[derive(Clone, Debug)]
@@ -246,23 +241,6 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| vec!["cpu".to_string()]);
-        let input_arity = entry
-            .get("input_arity")
-            .and_then(|v| v.as_integer())
-            .unwrap_or(0) as usize;
-        let output_arity = entry
-            .get("output_arity")
-            .and_then(|v| v.as_integer())
-            .unwrap_or(0) as usize;
-        let input_schema = entry
-            .get("input_schema")
-            .map(toml_value_to_json)
-            .unwrap_or(JsonValue::Null);
-        let output_schema = entry
-            .get("output_schema")
-            .map(toml_value_to_json)
-            .unwrap_or(JsonValue::Null);
-
         tasks.insert(
             id.to_string(),
             TaskConfig {
@@ -284,10 +262,6 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
                 requires_gpu,
                 resource_class,
                 capabilities,
-                input_arity,
-                output_arity,
-                input_schema,
-                output_schema,
             },
         );
     }
@@ -398,10 +372,6 @@ fn get_string(table: &toml::value::Table, key: &str) -> anyhow::Result<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("missing {key}"))
-}
-
-fn toml_value_to_json(value: &toml::Value) -> JsonValue {
-    serde_json::to_value(value).unwrap_or(JsonValue::Null)
 }
 
 #[cfg(test)]

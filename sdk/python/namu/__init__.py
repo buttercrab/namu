@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import contextvars
 from dataclasses import dataclass
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Generic, TypeVar
 
 __all__ = ["task", "stream", "batch", "continuous", "Item", "call_key", "call_keys"]
 
@@ -92,10 +92,11 @@ def continuous(cls: T) -> T:
 
 
 @dataclass(frozen=True)
-class Item:
-    """An item of a stream, with where the stream can be reopened to continue after it."""
+class Item(Generic[T]):
+    """An item of a stream, with where the stream can be reopened to continue after it. A stream
+    of them is annotated `Iterator[Item[T]]`."""
 
-    value: Any
+    value: T
     cursor: str | None = None
 
 

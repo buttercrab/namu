@@ -5,14 +5,14 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, namu_guest::Describe)]
 pub struct Config {
     pub min_len: usize,
     pub rounds: u32,
     pub stopwords: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, namu_guest::Describe)]
 pub struct Stats {
     pub words: usize,
     pub long_words: usize,

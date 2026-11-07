@@ -396,6 +396,7 @@ mod tests {
                 self.0.serialize(serializer)
             }
         }
+        impl namu_core::types::Describe for Counted {}
         impl namu_core::value::Data for Counted {}
 
         let root = Arc::new(Node::root(1, Vec::new()));

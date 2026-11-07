@@ -30,6 +30,22 @@
 //! ```
 //!
 //! One task per crate: the exported symbols have fixed names.
+//!
+//! A task's types derive [`Describe`] (or `namu::Data`, which describes too), so `namu build` can
+//! record its signature, and a workflow that calls it with the wrong types is refused when it is
+//! published rather than failing its runs:
+//!
+//! ```ignore
+//! #[derive(Serialize, Deserialize, namu_guest::Describe)]
+//! pub struct Stats { words: usize, top_word: String }
+//! ```
+//!
+//! A native build of the crate exports `namu_signature`, which `namu build` reads (it builds a
+//! WASM task for the host too, for that).
+
+pub use namu_core::types::Describe;
+/// Describes a type's shape, as it crosses: `#[derive(Serialize, Deserialize, Describe)]`.
+pub use namu_macros::GuestDescribe as Describe;
 
 #[cfg(target_family = "wasm")]
 pub mod bindings {
@@ -104,6 +120,8 @@ pub mod __private {
     use std::any::Any;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    pub use namu_core::signature::Signature;
+    pub use namu_core::types::{Def, Defs, Describe, Type, named};
     pub use rmp_serde;
 
     /// Runs `f` with `key` as the current call's key.
@@ -278,6 +296,66 @@ pub mod __private {
                 Err(panic) => Err(format!("task panicked: {}", panic_message(&panic))),
             })
         })))
+    }
+
+    /// What a single task gives: the `T` of its `Result<T, E>`. Read off its decoder, whose type
+    /// is the task's.
+    pub fn single_output<F, T, E>(_decode: F, defs: &mut Defs) -> Type
+    where
+        F: FnOnce(Bytes) -> Result<Result<T, E>, rmp_serde::decode::Error>,
+        T: Describe,
+    {
+        T::describe(defs)
+    }
+
+    /// What a stream gives, as a workflow sees it: the list of its items.
+    pub fn stream_output<F, I, T, E, E2>(_decode: F, defs: &mut Defs) -> Type
+    where
+        F: FnOnce(Bytes) -> Result<Result<I, E>, rmp_serde::decode::Error>,
+        I: Iterator<Item = Result<T, E2>>,
+        T: Describe,
+    {
+        Type::List(Box::new(T::describe(defs)))
+    }
+
+    /// A dynamic batch task's signature, per item, as a workflow calls it.
+    pub fn batch_signature<T: Describe, R: Describe, E>(
+        _task: fn(Vec<T>) -> Vec<Result<R, E>>,
+    ) -> Signature {
+        let mut defs = Defs::new();
+        let input = T::describe(&mut defs);
+        let output = R::describe(&mut defs);
+        Signature::new(vec![input], output, defs)
+    }
+
+    /// A continuous batch task's signature, per item.
+    pub fn continuous_signature<C>() -> Signature
+    where
+        C: crate::Continuous,
+        C::In: Describe,
+        C::Out: Describe,
+    {
+        let mut defs = Defs::new();
+        let input = C::In::describe(&mut defs);
+        let output = C::Out::describe(&mut defs);
+        Signature::new(vec![input], output, defs)
+    }
+
+    /// Hands the task's signature, as MessagePack, to `namu build`.
+    ///
+    /// # Safety
+    /// `out_ptr` and `out_len` must be writable.
+    pub unsafe fn native_signature(
+        out_ptr: *mut *mut u8,
+        out_len: *mut usize,
+        signature: fn() -> Signature,
+    ) -> i32 {
+        let (code, payload) = match rmp_serde::to_vec_named(&signature()) {
+            Ok(bytes) => (0, bytes),
+            Err(err) => (1, err.to_string().into_bytes()),
+        };
+        unsafe { hand_over(payload, out_ptr, out_len) };
+        code
     }
 
     fn panic_message(panic: &Box<dyn Any + Send>) -> String {
@@ -480,6 +558,7 @@ macro_rules! task {
     (fn $name:ident($($args:tt)*) -> $ret:ty $body:block) => {
         fn $name($($args)*) -> $ret $body
         $crate::__decoder!(__namu_decode, $name($($args)*) -> $ret);
+        $crate::__signature!(single_output, $name($($args)*));
         $crate::__export_task!();
     };
 }
@@ -491,6 +570,7 @@ macro_rules! stream {
     (fn $name:ident($($args:tt)*) -> $ret:ty $body:block) => {
         fn $name($($args)*) -> $ret $body
         $crate::__decoder!(__namu_decode, $name($($args)*) -> $ret);
+        $crate::__signature!(stream_output, $name($($args)*));
         $crate::__export_stream!();
     };
 }
@@ -504,6 +584,9 @@ macro_rules! batch {
         fn __namu_open_batch() -> ::std::result::Result<$crate::__private::Session, String> {
             Ok($crate::__private::dynamic($name))
         }
+        fn __namu_signature() -> $crate::__private::Signature {
+            $crate::__private::batch_signature($name)
+        }
         $crate::__export_batch!();
     };
 }
@@ -515,6 +598,9 @@ macro_rules! continuous {
     ($session:ty) => {
         fn __namu_open_batch() -> ::std::result::Result<$crate::__private::Session, String> {
             Ok($crate::__private::continuous::<$session>())
+        }
+        fn __namu_signature() -> $crate::__private::Signature {
+            $crate::__private::continuous_signature::<$session>()
         }
         $crate::__export_batch!();
     };
@@ -547,6 +633,23 @@ macro_rules! __decoder {
         ) -> ::std::result::Result<$ret, $crate::__private::rmp_serde::decode::Error> {
             let ($($arg,)+): ($($ty,)+) = $crate::__private::rmp_serde::from_slice(&input)?;
             Ok($name($($arg),+))
+        }
+    };
+}
+
+/// Defines `__namu_signature()`: the task's parameters, described, and its output, read off its
+/// decoder by `$output`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __signature {
+    ($output:ident, $name:ident($($arg:ident : $ty:ty),* $(,)?)) => {
+        fn __namu_signature() -> $crate::__private::Signature {
+            let mut defs = $crate::__private::Defs::new();
+            let params = ::std::vec![
+                $(<$ty as $crate::__private::Describe>::describe(&mut defs)),*
+            ];
+            let output = $crate::__private::$output(__namu_decode, &mut defs);
+            $crate::__private::Signature::new(params, output, defs)
         }
     };
 }
@@ -764,6 +867,16 @@ macro_rules! __export_native_common {
         pub extern "C" fn namu_abi_version() -> u32 {
             $crate::NATIVE_ABI_VERSION
         }
+
+        /// The task's signature, as MessagePack, for `namu build`.
+        #[cfg(not(target_family = "wasm"))]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn namu_signature(out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
+            unsafe { $crate::__private::native_signature(out_ptr, out_len, __namu_signature) }
+        }
+
+        #[cfg(target_family = "wasm")]
+        const _: fn() -> $crate::__private::Signature = __namu_signature;
 
         #[cfg(not(target_family = "wasm"))]
         #[unsafe(no_mangle)]

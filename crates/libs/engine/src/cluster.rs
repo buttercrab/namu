@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use namu_core::ValueId;
 use namu_core::inputs::Inputs;
 use namu_core::ir::{Operation, Workflow};
+use namu_core::signature::Signature;
 use namu_core::value::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
@@ -289,6 +290,7 @@ impl LocalCluster {
             });
         self.tasks.lock().unwrap().extend(tasks);
         self.reroute()?;
+        self.check(&workflow)?;
 
         let live = self.live();
         let i = self.next_owner.fetch_add(1, Ordering::Relaxed);
@@ -303,6 +305,33 @@ impl LocalCluster {
             .insert(run, (owner, started.clone()));
         self.start(owner, run, started);
         outcome.await.context("run abandoned")
+    }
+
+    /// Checks `workflow`'s calls against the signatures of the tasks the workers serve, as the
+    /// orchestrator does when a workflow is published.
+    fn check(&self, workflow: &Workflow) -> anyhow::Result<()> {
+        let live = self.live();
+        let signatures: HashMap<&str, Signature> = workflow
+            .operations
+            .iter()
+            .filter_map(Operation::task_id)
+            .filter_map(|id| {
+                let task = TaskRef {
+                    id: id.to_string(),
+                    version: String::new(),
+                };
+                let signature = live.iter().find_map(|worker| worker.signature(&task))?;
+                Some((id, signature))
+            })
+            .collect();
+        let report = namu_core::signature::check(workflow, |task| signatures.get(task));
+        anyhow::ensure!(
+            report.problems.is_empty(),
+            "workflow {} does not fit its tasks:\n{}",
+            workflow.name,
+            report.problems.join("\n")
+        );
+        Ok(())
     }
 
     fn start(&self, owner: WorkerId, run: RunId, started: Started) {

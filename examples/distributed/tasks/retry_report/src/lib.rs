@@ -1,7 +1,7 @@
 //! Fan-in over each document's number of retries.
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Serialize, namu_guest::Describe)]
 pub struct RetryReport {
     pub docs: usize,
     pub retries: i64,

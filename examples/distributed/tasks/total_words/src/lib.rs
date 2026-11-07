@@ -1,7 +1,7 @@
 //! Outer fan-in over per-document summaries.
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, namu_guest::Describe)]
 pub struct Summary {
     pub words: usize,
 }

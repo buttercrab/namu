@@ -2153,10 +2153,12 @@ dependencies = [
  "clap",
  "dirs",
  "getrandom 0.4.3",
+ "libloading",
  "namu-core",
  "namu-engine",
  "namu-proto",
  "reqwest",
+ "rmp-serde",
  "rustls",
  "serde",
  "serde_json",
@@ -2244,6 +2246,8 @@ dependencies = [
 name = "namu-guest"
 version = "0.1.0"
 dependencies = [
+ "namu-core",
+ "namu-macros",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -2299,6 +2303,7 @@ dependencies = [
 name = "namu-proto"
 version = "0.1.0"
 dependencies = [
+ "namu-core",
  "serde",
  "serde_json",
  "uuid",
