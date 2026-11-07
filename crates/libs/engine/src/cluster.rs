@@ -25,7 +25,7 @@ use crate::message::{BranchId, Message, Report};
 use crate::routes::Routes;
 use crate::run::{RunInfo, RunOutcome};
 use crate::tasks::{TaskRef, Tasks};
-use crate::transport::{LocalTransport, TcpTransport, Transport};
+use crate::transport::{LocalTransport, MeshTls, TcpTransport, Transport};
 use crate::tree::Node;
 use crate::worker::Worker;
 
@@ -98,9 +98,18 @@ impl LocalCluster {
     /// Like [`LocalCluster::new`], but the workers talk over TCP on localhost, so every message
     /// is encoded, sent and decoded exactly as between machines.
     pub async fn tcp(task_sets: Vec<Arc<dyn Tasks>>) -> std::io::Result<Self> {
+        Self::tcp_with(task_sets, None).await
+    }
+
+    /// Like [`LocalCluster::tcp`], with mutual TLS between every member if `tls` is given.
+    pub async fn tcp_with(
+        task_sets: Vec<Arc<dyn Tasks>>,
+        tls: Option<MeshTls>,
+    ) -> std::io::Result<Self> {
         let mut transports = Vec::new();
         for _ in 0..=task_sets.len() {
-            transports.push(TcpTransport::bind(([127, 0, 0, 1], 0).into()).await?);
+            let localhost = ([127, 0, 0, 1], 0).into();
+            transports.push(TcpTransport::bind(localhost, tls.clone()).await?);
         }
         for (transport, _, _) in &transports {
             for (id, (_, addr, _)) in (0..).zip(&transports) {

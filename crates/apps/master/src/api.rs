@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Json, Router, middleware};
 use bytes::Bytes;
 use namu_proto::{
     Membership, Page, PageQuery, Published, RunCreateRequest, RunCreateResponse, RunStatusResponse,
@@ -16,6 +16,7 @@ use serde_json::json;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+use crate::auth::{self, Require, Role, Tokens};
 use crate::control::Control;
 use crate::error::ApiError;
 
@@ -24,22 +25,42 @@ type Api<T> = Result<Json<T>, ApiError>;
 /// Task artifacts carry compiled code and, for some, a model: allow them to be large.
 const MAX_BODY: usize = 256 * 1024 * 1024;
 
-pub fn router(control: Arc<Control>) -> Router {
-    Router::new()
-        .route("/healthz", get(healthz))
+/// The API, each route open to the roles that need it (all of them, if `tokens` is `None`).
+pub fn router(control: Arc<Control>, tokens: Option<Arc<Tokens>>) -> Router {
+    let only = |roles: &'static [Role]| {
+        let require = Require {
+            tokens: tokens.clone(),
+            roles,
+        };
+        middleware::from_fn_with_state(require, auth::require)
+    };
+    // Publishing, running and reading runs.
+    let clients = Router::new()
         .route("/tasks", post(publish_task))
-        .route("/tasks/{task_id}/{version}", get(task))
-        .route("/tasks/{task_id}/{version}/artifact", get(artifact))
         .route("/workflows", post(publish_workflow))
         .route("/runs", post(start_run))
         .route("/runs/{run_id}", get(run_status))
         .route("/runs/{run_id}/results", get(results))
         .route("/runs/{run_id}/failures", get(failures))
         .route("/workers", get(workers))
+        .route_layer(only(&[Role::Client]));
+    // Joining the mesh and staying in it.
+    let workers = Router::new()
         .route("/workers/register", post(register))
         .route("/workers/{worker_id}/heartbeat", post(heartbeat))
         .route("/workers/{worker_id}/drain", post(drain))
         .route("/workers/{worker_id}/leave", post(leave))
+        .route_layer(only(&[Role::Worker]));
+    // What tasks are: workers load them, clients look them up.
+    let both = Router::new()
+        .route("/tasks/{task_id}/{version}", get(task))
+        .route("/tasks/{task_id}/{version}/artifact", get(artifact))
+        .route_layer(only(&[Role::Client, Role::Worker]));
+    Router::new()
+        .route("/healthz", get(healthz))
+        .merge(clients)
+        .merge(workers)
+        .merge(both)
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(TraceLayer::new_for_http())
         .with_state(control)

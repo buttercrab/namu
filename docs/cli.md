@@ -26,6 +26,12 @@ Run `namu --help` for the full command list. When working from source, use `carg
     `GET /runs/{id}/results?after=N&limit=M` (and `/failures`), pages with a `next` cursor.
 - `namu workers`
   - Lists registered workers.
+- `namu token --role client|worker [--tokens FILE]`
+  - Makes an API token: prints it, and appends its hash to the orchestrator's tokens file.
+- `namu certs --out DIR [--host NAME]...`
+  - Makes a cluster CA and a member certificate, for development (`docs/operations/security.md`).
+
+Every command that reaches the orchestrator sends `NAMU_TOKEN`, and trusts `NAMU_TLS_CA` if set.
 - `namu login`
   - Stores orchestrator URL after a health check.
 

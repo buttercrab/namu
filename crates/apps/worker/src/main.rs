@@ -18,7 +18,7 @@ use std::time::Duration;
 use anyhow::Context;
 use namu_engine::Worker;
 use namu_engine::routes::Routes;
-use namu_engine::transport::TcpTransport;
+use namu_engine::transport::{MeshTls, TcpTransport};
 use namu_proto::{
     HEARTBEAT_INTERVAL_MS, Membership, TaskRuntime, WorkerRegisterRequest, WorkerRegisterResponse,
     host_platform,
@@ -73,13 +73,15 @@ async fn main() -> anyhow::Result<()> {
     .join(&name);
     tokio::fs::create_dir_all(&cache_dir).await?;
 
+    let security = Security::from_env()?;
     let redis = ConnectionManager::new(redis::Client::open(redis_url)?).await?;
     let log = log::RedisLog::spawn(redis);
-    let (mesh, mesh_local, inbox) = TcpTransport::bind(mesh_bind).await?;
+    let mesh_tls = security.as_ref().map(|s| s.mesh.clone());
+    let (mesh, mesh_local, inbox) = TcpTransport::bind(mesh_bind, mesh_tls).await?;
     let addr = std::env::var("NAMU_ADVERTISE_ADDR")
         .unwrap_or_else(|_| format!("127.0.0.1:{}", mesh_local.port()));
 
-    let http = reqwest::Client::new();
+    let http = http_client(security.as_ref())?;
     let registration: WorkerRegisterResponse = http
         .post(format!("{orchestrator_url}/workers/register"))
         .json(&WorkerRegisterRequest {
@@ -153,6 +155,65 @@ async fn main() -> anyhow::Result<()> {
         .context("leaving the membership")?;
     info!(id, "drained and left");
     Ok(())
+}
+
+/// How this worker proves it is one: its identity in the cluster (for the mesh, and to trust the
+/// orchestrator's HTTPS), and its token for the orchestrator's API.
+struct Security {
+    mesh: MeshTls,
+    ca: Vec<u8>,
+    token: String,
+}
+
+impl Security {
+    /// From `NAMU_TLS_CA`, `NAMU_TLS_CERT`, `NAMU_TLS_KEY` and `NAMU_TOKEN`; `None` if run with
+    /// `NAMU_INSECURE=1` and none of them.
+    fn from_env() -> anyhow::Result<Option<Self>> {
+        let var = |name: &str| std::env::var(name).ok();
+        let insecure = var("NAMU_INSECURE").is_some_and(|v| v == "1");
+        match (
+            var("NAMU_TLS_CA"),
+            var("NAMU_TLS_CERT"),
+            var("NAMU_TLS_KEY"),
+            var("NAMU_TOKEN"),
+        ) {
+            (Some(ca), Some(cert), Some(key), Some(token)) => {
+                let read =
+                    |path: &str| std::fs::read(path).with_context(|| format!("reading {path}"));
+                let ca = read(&ca)?;
+                let mesh = MeshTls::from_pem(&ca, &read(&cert)?, &read(&key)?)?;
+                Ok(Some(Self { mesh, ca, token }))
+            }
+            (None, None, None, None) if insecure => {
+                tracing::warn!(
+                    "NAMU_INSECURE=1: the mesh is plaintext and the API unauthenticated"
+                );
+                Ok(None)
+            }
+            _ => anyhow::bail!(
+                "set NAMU_TLS_CA, NAMU_TLS_CERT, NAMU_TLS_KEY and NAMU_TOKEN (or NAMU_INSECURE=1 \
+                 for a cluster on a machine nobody else reaches)"
+            ),
+        }
+    }
+}
+
+/// The client for the orchestrator's API: it sends this worker's token, and trusts the
+/// cluster's CA for HTTPS.
+fn http_client(security: Option<&Security>) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(security) = security {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let mut auth =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", security.token))
+                .context("NAMU_TOKEN")?;
+        auth.set_sensitive(true);
+        headers.insert(reqwest::header::AUTHORIZATION, auth);
+        builder = builder
+            .default_headers(headers)
+            .add_root_certificate(reqwest::Certificate::from_pem(&security.ca)?);
+    }
+    Ok(builder.build()?)
 }
 
 /// This worker's membership lease with the orchestrator.

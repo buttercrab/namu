@@ -14,12 +14,14 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { version = "0.8", features = ["multipart"] }
+axum-server = { version = "0.9", default-features = false, features = ["tls-rustls-no-provider"] }
 bytes = "1.10"
 namu-core = { path = "../../libs/core", version = "0.1.0" }
 namu-engine = { path = "../../libs/engine", version = "0.1.0" }
 namu-proto = { path = "../../libs/proto", version = "0.1.0" }
 rmp-serde = { workspace = true }
-redis = { version = "1.0", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.0", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

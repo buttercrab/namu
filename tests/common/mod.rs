@@ -129,8 +129,8 @@ impl Outcome {
     }
 }
 
-/// Runs `workflow` on one worker, on three, and on three talking over TCP, checks that all give
-/// the same outcome, and returns it.
+/// Runs `workflow` on one worker, on three, on three talking over TCP, and on three talking over
+/// mutual TLS, checks that all give the same outcome, and returns it.
 pub async fn run(workflow: Workflow) -> Outcome {
     run_with(workflow, Inputs::new()).await
 }
@@ -140,7 +140,11 @@ pub async fn run_with(workflow: Workflow, inputs: Inputs) -> Outcome {
     let tasks: Arc<dyn Tasks> = Arc::new(tasks());
     let one = LocalCluster::uniform(1, tasks.clone());
     let three = LocalCluster::uniform(3, tasks.clone());
-    let tcp = LocalCluster::tcp(vec![tasks; 3])
+    let tcp = LocalCluster::tcp(vec![tasks.clone(); 3])
+        .await
+        .expect("bind localhost");
+    let ca = namu_engine::transport::certs::ClusterCa::new().expect("a cluster CA");
+    let tls = LocalCluster::tcp_with(vec![tasks; 3], Some(ca.mesh_tls().expect("certificates")))
         .await
         .expect("bind localhost");
     let alone = sorted(
@@ -154,9 +158,19 @@ pub async fn run_with(workflow: Workflow, inputs: Inputs) -> Outcome {
             .await
             .expect("run on three workers"),
     );
-    let networked = sorted(tcp.run_with(workflow, inputs).await.expect("run over TCP"));
+    let networked = sorted(
+        tcp.run_with(workflow.clone(), inputs.clone())
+            .await
+            .expect("run over TCP"),
+    );
+    let secured = sorted(
+        tls.run_with(workflow, inputs)
+            .await
+            .expect("run over mutual TLS"),
+    );
     assert_eq!(alone, spread, "one worker and three workers disagree");
     assert_eq!(alone, networked, "in-process and TCP workers disagree");
+    assert_eq!(alone, secured, "plain and TLS workers disagree");
     alone
 }
 

@@ -10,7 +10,11 @@
 #   HOST_WORKERS="native" WORKFLOW=bench_handoff RUNS=5 ./scripts/poc-cross.sh
 #
 # HOST_WORKERS: space-separated list of host workers, each a comma-separated runtime list.
+#
+# It runs insecure (NAMU_INSECURE=1: an open API, a plaintext mesh), to show the platforms mixing
+# with nothing else in the way; scripts/poc-local.sh runs a cluster secured as in production.
 set -euo pipefail
+export NAMU_INSECURE=1
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT_DIR"

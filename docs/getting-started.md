@@ -23,29 +23,44 @@ WORKERS="wasm native" WORKFLOW=bench_handoff ./scripts/poc-local.sh
 ```
 
 ## Manual run (step-by-step)
-### 1) Start Redis and the orchestrator
+A cluster runs secured: HTTPS and tokens for the API, mutual TLS for the mesh
+(`docs/operations/security.md`). For a quick try on one machine, `NAMU_INSECURE=1` on the
+orchestrator and workers skips step 1 and the TLS and token settings below.
+
+### 1) Make a CA, a member certificate and tokens
+```bash
+cargo build --release -p namu-cli -p namu-master -p namu-worker
+./target/release/namu certs --out ./secrets --host 127.0.0.1 --host localhost
+CLIENT=$(./target/release/namu token --role client --tokens ./secrets/tokens)
+WORKER=$(./target/release/namu token --role worker --tokens ./secrets/tokens)
+export NAMU_TLS_CA=./secrets/ca.pem NAMU_TLS_CERT=./secrets/member.pem NAMU_TLS_KEY=./secrets/member.key
+```
+
+### 2) Start Redis and the orchestrator
 ```bash
 redis-server --port 6379 &
-REDIS_URL=redis://127.0.0.1:6379/ BIND_ADDR=127.0.0.1:8080 cargo run --release -p namu-master
+REDIS_URL=redis://127.0.0.1:6379/ BIND_ADDR=127.0.0.1:8080 NAMU_TOKENS=./secrets/tokens \
+  ./target/release/namu-master
 ```
 
-### 2) Start workers (as many as you like; on other machines, set `NAMU_ADVERTISE_ADDR`)
+### 3) Start workers (as many as you like; on other machines, set `NAMU_ADVERTISE_ADDR`)
 ```bash
-NAMU_ORCH_URL=http://127.0.0.1:8080 REDIS_URL=redis://127.0.0.1:6379/ \
-NAMU_RUNTIMES=wasm,native cargo run --release -p namu-worker
+NAMU_ORCH_URL=https://127.0.0.1:8080 REDIS_URL=redis://127.0.0.1:6379/ NAMU_TOKEN=$WORKER \
+  NAMU_RUNTIMES=wasm,native ./target/release/namu-worker
 ```
 
-### 3) Build and publish tasks and workflows
+### 4) Build and publish tasks and workflows
 ```bash
+export NAMU_ORCH_URL=https://127.0.0.1:8080 NAMU_TOKEN=$CLIENT
 cargo run -p namu-distributed-workflows --bin export -- examples/distributed/dist/workflows
-cargo run -p namu-cli -- build --tasks-dir examples/distributed/tasks \
+./target/release/namu build --tasks-dir examples/distributed/tasks \
   --workflows-dir examples/distributed/dist/workflows --out-dir examples/distributed/dist
-NAMU_ORCH_URL=http://127.0.0.1:8080 cargo run -p namu-cli -- publish --out-dir examples/distributed/dist
+./target/release/namu publish --out-dir examples/distributed/dist
 ```
 
-### 4) Run a workflow
+### 5) Run a workflow
 ```bash
-NAMU_ORCH_URL=http://127.0.0.1:8080 cargo run -p namu-cli -- run doc_stats 0.1.0 --wait
+./target/release/namu run doc_stats 0.1.0 --wait
 ```
 
 ## Next steps

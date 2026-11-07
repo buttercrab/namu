@@ -22,6 +22,7 @@ Welcome to the NAMU docs. Start with Getting Started for a runnable local stack,
 
 ## Operations
 - `operations/configuration.md` - environment variables and runtime knobs.
+- `operations/security.md` - tokens, TLS and mutual TLS: what is protected and how.
 
 ## Development
 - `development.md` - build, test, and verification workflow.

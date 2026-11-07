@@ -25,6 +25,7 @@ services:
     image: namu-poc
     command: ["namu-master"]
     environment:
+      NAMU_INSECURE: "1"
       REDIS_URL: redis://redis:6379/
       BIND_ADDR: 0.0.0.0:8080
       ARTIFACTS_DIR: /data/artifacts
@@ -39,6 +40,7 @@ services:
   linux-worker-1:
     <<: *worker
     environment:
+      NAMU_INSECURE: "1"
       WORKER_ID: linux-1
       NAMU_ORCH_URL: http://master:8080
       NAMU_RUNTIMES: wasm
@@ -51,6 +53,7 @@ services:
   linux-worker-2:
     <<: *worker
     environment:
+      NAMU_INSECURE: "1"
       WORKER_ID: linux-2
       NAMU_ORCH_URL: http://master:8080
       NAMU_RUNTIMES: wasm

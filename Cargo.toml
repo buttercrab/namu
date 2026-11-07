@@ -61,7 +61,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false }
-namu-engine = { path = "crates/libs/engine", version = "0.1.0" }
+namu-engine = { path = "crates/libs/engine", version = "0.1.0", features = ["certs"] }
 rmp-serde = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

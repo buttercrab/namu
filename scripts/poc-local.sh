@@ -10,6 +10,10 @@
 # TASKS_DIR=examples/rag/tasks WORKFLOWS=namu-rag-workflows. RUNS=N runs the workflow N times (the first run includes cold start: artifact download
 # and WASM compilation). KEEP=1 leaves everything running afterwards. INPUTS gives the workflow's
 # inputs, space-separated `name=value` pairs (as `namu run --input` takes them).
+#
+# The cluster runs as a production one does: its API over HTTPS with tokens, its mesh over mutual
+# TLS, with a CA and tokens made for it in $POC_DIR/secrets. $POC_DIR/env sets what a client needs
+# to reach it (`source` it, then use `namu` or curl).
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -71,19 +75,31 @@ redis-server --port "$REDIS_PORT" --save "" --appendonly no >"$POC_DIR/logs/redi
 PIDS+=($!)
 until redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; do sleep 0.1; done
 
+# The cluster's CA, the certificate its members share, and a token for clients and one for workers.
+secrets="$POC_DIR/secrets"
+"$BIN/namu" certs --out "$secrets" --host 127.0.0.1 --host localhost >/dev/null
+client_token=$("$BIN/namu" token --role client --tokens "$secrets/tokens")
+worker_token=$("$BIN/namu" token --role worker --tokens "$secrets/tokens")
+cat >"$POC_DIR/env" <<EOF
+export NAMU_ORCH_URL="https://127.0.0.1:${ORCH_PORT}"
+export NAMU_TLS_CA="$secrets/ca.pem"
+export NAMU_TOKEN="$client_token"
+EOF
+# shellcheck source=/dev/null
+source "$POC_DIR/env"
+export NAMU_TLS_CERT="$secrets/member.pem" NAMU_TLS_KEY="$secrets/member.key"
 export REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/"
-export NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT}"
 
-BIND_ADDR="127.0.0.1:${ORCH_PORT}" ARTIFACTS_DIR="$POC_DIR/artifacts" \
+BIND_ADDR="127.0.0.1:${ORCH_PORT}" ARTIFACTS_DIR="$POC_DIR/artifacts" NAMU_TOKENS="$secrets/tokens" \
   "$BIN/namu-master" >"$POC_DIR/logs/master.log" 2>&1 &
 PIDS+=($!)
-until curl -sf "$NAMU_ORCH_URL/healthz" >/dev/null; do sleep 0.1; done
+until curl -sf --cacert "$NAMU_TLS_CA" "$NAMU_ORCH_URL/healthz" >/dev/null; do sleep 0.1; done
 
 i=0
 for runtimes in $WORKERS; do
   i=$((i + 1))
   RUST_LOG=${RUST_LOG:-info} WORKER_ID="worker-$i" NAMU_RUNTIMES="$runtimes" ARTIFACT_CACHE="$POC_DIR/cache" \
-    "$BIN/namu-worker" >"$POC_DIR/logs/worker-$i.log" 2>&1 &
+    NAMU_TOKEN="$worker_token" "$BIN/namu-worker" >"$POC_DIR/logs/worker-$i.log" 2>&1 &
   PIDS+=($!)
   echo "worker-$i: $runtimes"
 done

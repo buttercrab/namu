@@ -84,7 +84,9 @@ if [[ ${CHECK:-0} == 1 ]]; then
   # and store chunks again; stored by their own ids, they are not doubled.
   KEEP=1 RUNS=1 cluster ./scripts/poc-local.sh >"$RUN_DIR.log" 2>&1
   read -r -a cluster_pids <<<"$(sed -n 's/^left running (pids: \(.*\))$/\1/p' "$RUN_DIR.log")"
-  NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+  # shellcheck source=/dev/null
+  source "$RUN_DIR/env"
+  "$ROOT_DIR/target/release/namu" \
     run index_wikipedia 0.1.0 --input "limit=$ARTICLES" --input words=200 \
     --input collection=wikipedia --wait >"$RUN_DIR/crashed.json" &
   run_pid=$!

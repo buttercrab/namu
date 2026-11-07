@@ -84,6 +84,25 @@ enum Commands {
     Login,
     /// Show version information
     Version,
+    /// Make an API token: prints it, and adds its hash to the orchestrator's tokens file
+    Token {
+        /// `client` (publish, run, read results) or `worker` (join the mesh)
+        #[arg(long)]
+        role: String,
+        /// The orchestrator's tokens file (`NAMU_TOKENS`); without it, the line is printed
+        #[arg(long)]
+        tokens: Option<PathBuf>,
+    },
+    /// Make a cluster CA and a member certificate, for development: a production cluster gets
+    /// them from its own PKI
+    Certs {
+        /// Where to write ca.pem, member.pem and member.key
+        #[arg(long)]
+        out: PathBuf,
+        /// A name or address the orchestrator's HTTPS is reached by; repeat for each
+        #[arg(long = "host")]
+        hosts: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -143,6 +162,18 @@ async fn main() {
         }
         Commands::Version => {
             show_version();
+        }
+        Commands::Token { role, tokens } => {
+            if let Err(err) = make_token(&role, tokens.as_deref()) {
+                eprintln!("Error: {err:#}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Certs { out, hosts } => {
+            if let Err(err) = make_certs(&out, &hosts) {
+                eprintln!("Error: {err:#}");
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -469,7 +500,7 @@ async fn publish(out_dir: &Path) -> bool {
         }
     };
 
-    let client = reqwest::Client::new();
+    let client = client();
     let mut ok = true;
 
     let tasks_dir = out_dir.join("tasks");
@@ -577,7 +608,7 @@ async fn run_workflow(
     };
     let master_url = master_url.trim_end_matches('/').to_string();
 
-    let client = reqwest::Client::new();
+    let client = client();
     let req = RunCreateRequest {
         workflow_id: workflow_id.to_string(),
         version: version.to_string(),
@@ -688,7 +719,7 @@ async fn all_pages(
 async fn print_results(run: &str, what: &str, follow: bool) -> anyhow::Result<()> {
     let master_url = get_master_url().map_err(anyhow::Error::msg)?;
     let master_url = master_url.trim_end_matches('/');
-    let client = reqwest::Client::new();
+    let client = client();
     let mut after = 0;
     loop {
         let page = fetch_page(&client, master_url, run, what, after).await?;
@@ -714,7 +745,7 @@ async fn run_status(run_id: &str) {
             std::process::exit(1);
         }
     };
-    let client = reqwest::Client::new();
+    let client = client();
     let url = format!("{}/runs/{}", master_url.trim_end_matches('/'), run_id);
     match client.get(url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -741,7 +772,7 @@ async fn list_workers() {
             std::process::exit(1);
         }
     };
-    let client = reqwest::Client::new();
+    let client = client();
     let url = format!("{}/workers", master_url.trim_end_matches('/'));
     match client.get(url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -829,7 +860,7 @@ async fn perform_health_check(url: &str) -> Result<(), String> {
         return Err("Invalid URL format - must start with http:// or https://".to_string());
     }
 
-    let client = reqwest::Client::new();
+    let client = client();
     let health_url = format!("{}/healthz", url.trim_end_matches('/'));
 
     match client.get(&health_url).send().await {
@@ -856,6 +887,84 @@ pub fn get_master_url() -> Result<String, String> {
     let config_path = get_config_path();
     get_saved_master_url(&config_path)
         .ok_or_else(|| "No orchestrator URL configured. Run 'namu login' first.".to_string())
+}
+
+/// The client for the orchestrator's API: with the token in `NAMU_TOKEN`, trusting the CA in
+/// `NAMU_TLS_CA` too, if set (a cluster's own CA; otherwise the system's roots).
+fn client() -> reqwest::Client {
+    let build = || -> anyhow::Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder();
+        if let Ok(token) = std::env::var("NAMU_TOKEN") {
+            let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|_| anyhow::anyhow!("NAMU_TOKEN is not a valid header value"))?;
+            auth.set_sensitive(true);
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(reqwest::header::AUTHORIZATION, auth);
+            builder = builder.default_headers(headers);
+        }
+        if let Ok(ca) = std::env::var("NAMU_TLS_CA") {
+            let pem =
+                fs::read(&ca).map_err(|err| anyhow::anyhow!("reading NAMU_TLS_CA {ca}: {err}"))?;
+            builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
+        }
+        Ok(builder.build()?)
+    };
+    build().unwrap_or_else(|err| {
+        eprintln!("Error: {err:#}");
+        std::process::exit(1);
+    })
+}
+
+/// A new token for `role`: printed, and its hash added to `tokens` (or printed, if not given).
+fn make_token(role: &str, tokens: Option<&Path>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(role, "client" | "worker"),
+        "the role is `client` or `worker`, not {role:?}"
+    );
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).map_err(|err| anyhow::anyhow!("no randomness: {err}"))?;
+    let token: String = std::iter::once("namu_".to_string())
+        .chain(secret.iter().map(|b| format!("{b:02x}")))
+        .collect();
+    let line = format!(
+        "{role} sha256:{:x}\n",
+        sha2::Sha256::digest(token.as_bytes())
+    );
+    match tokens {
+        Some(path) => {
+            use std::io::Write as _;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            file.write_all(line.as_bytes())?;
+        }
+        None => eprint!("{line}"),
+    }
+    println!("{token}");
+    Ok(())
+}
+
+/// A cluster CA, and one member certificate for every member, in `out`.
+fn make_certs(out: &Path, hosts: &[String]) -> anyhow::Result<()> {
+    use namu_engine::transport::certs::ClusterCa;
+    fs::create_dir_all(out)?;
+    let ca = ClusterCa::new()?;
+    let member = ca.member(hosts)?;
+    fs::write(out.join("ca.pem"), ca.pem())?;
+    fs::write(out.join("member.pem"), member.cert)?;
+    let key = out.join("member.key");
+    fs::write(&key, member.key)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600))?;
+    }
+    println!(
+        "wrote ca.pem, member.pem and member.key to {}",
+        out.display()
+    );
+    Ok(())
 }
 
 fn show_version() {

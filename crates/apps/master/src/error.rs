@@ -9,6 +9,10 @@ use namu_proto::ErrorResponse;
 pub enum ApiError {
     /// The request is wrong: fix it and try again.
     BadRequest(String),
+    /// No valid token.
+    Unauthorized(String),
+    /// A token whose role may not do this.
+    Forbidden(String),
     NotFound(String),
     /// A version is already published, differently.
     Conflict(String),
@@ -36,6 +40,8 @@ impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BadRequest(message)
+            | Self::Unauthorized(message)
+            | Self::Forbidden(message)
             | Self::NotFound(message)
             | Self::Conflict(message)
             | Self::Gone(message)
@@ -49,6 +55,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Gone(_) => StatusCode::GONE,

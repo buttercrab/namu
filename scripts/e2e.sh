@@ -62,6 +62,9 @@ KEEP=1 POC_DIR="$crash_dir" NAMU_TASK_SLOTS=2 WORKFLOW=doc_stats_slow \
   WORKERS="wasm,native wasm,native wasm" NAMU_DELIVERIES="$deliveries" \
   ./scripts/poc-local.sh >"$crash_dir.log" 2>&1
 read -r -a pids <<<"$(sed -n 's/^left running (pids: \(.*\))$/\1/p' "$crash_dir.log")"
+# The cluster's address, CA and a client token.
+# shellcheck source=/dev/null
+source "$crash_dir/env"
 teardown() {
   # Workers first, so they can drain while the orchestrator and Redis are up; then the rest.
   kill "${pids[@]:2}" >/dev/null 2>&1 || true
@@ -81,7 +84,7 @@ trap teardown EXIT
 # pids: redis, orchestrator, worker-1, worker-2, worker-3
 
 # Inputs that do not fit the workflow are refused before a run starts.
-if refused=$(NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+if refused=$("$ROOT_DIR/target/release/namu" \
   run doc_stats_of 0.1.0 --input n=lots --input min_len=6 2>&1); then
   echo "a run with wrong inputs started: $refused" >&2
   exit 1
@@ -94,12 +97,27 @@ for problem in "400" "\`n\`: expected i32, got a string" "\`rounds\` (i32) is mi
 done
 echo "   ok: wrong inputs refused ($refused)"
 
+# Nobody without a token reaches the API, a client's token opens no worker route, and nothing is
+# served in the clear.
+status() { curl -s -o /dev/null -w '%{http_code}' --cacert "$NAMU_TLS_CA" "$@"; }
+anonymous=$(status -X POST -H 'Content-Type: application/json' -d '{}' "$NAMU_ORCH_URL/runs")
+as_client=$(status -X POST -H "Authorization: Bearer $NAMU_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"w","addr":"127.0.0.1:1","runtimes":[],"platform":"x"}' "$NAMU_ORCH_URL/workers/register")
+forged=$(status -H "Authorization: Bearer namu_$(printf '0%.0s' $(seq 64))" "$NAMU_ORCH_URL/runs/$(uuidgen 2>/dev/null || echo 00000000-0000-0000-0000-000000000000)")
+plain=$(curl -s -o /dev/null -w '%{http_code}' "${NAMU_ORCH_URL/https:/http:}/healthz" || true)
+if [[ $anonymous != 401 || $as_client != 403 || $forged != 401 || $plain != 000 ]]; then
+  echo "expected 401, 403, 401 and no plain HTTP; got $anonymous, $as_client, $forged, $plain" >&2
+  exit 1
+fi
+echo "   ok: no token 401, a client's token on a worker route 403, a forged token 401, no plain HTTP"
+
 # Results arrive as the run goes: a stream of 48 documents, one every 100 ms, each its own result.
-namu() { NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" "$@"; }
+namu() { "$ROOT_DIR/target/release/namu" "$@"; }
+api() { curl -sf --cacert "$NAMU_TLS_CA" -H "Authorization: Bearer $NAMU_TOKEN" "$NAMU_ORCH_URL$1"; }
 streamed=$(namu run doc_ids_streamed 0.1.0 --input n=48 --input delay_ms=100 | sed -n 's/^Run created: //p')
 early=0
 for _ in $(seq 100); do
-  early=$(curl -sf "http://127.0.0.1:${ORCH_PORT:-8090}/runs/$streamed" | python3 -c '
+  early=$(api "/runs/$streamed" | python3 -c '
 import json, sys
 status = json.load(sys.stdin)
 print(status["results"] if status["status"] == "running" else 0)')
@@ -118,10 +136,10 @@ assert len(ids) == 48 and len(set(ids)) == 48, f"{len(ids)} results, {len(set(id
 print(f"   ok: {sys.argv[2]} results while the run went on, then all 48 with --follow, each once")
 PY
 # Alongside it, a run that delivers a side effect per document, keyed by the call.
-NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+"$ROOT_DIR/target/release/namu" \
   run doc_stats_slow 0.1.0 --wait >"$crash_dir/crashed.json" &
 run_pid=$!
-NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+"$ROOT_DIR/target/release/namu" \
   run deliveries_slow 0.1.0 --wait >"$crash_dir/deliveries.json" &
 deliveries_pid=$!
 # Killed as soon as it has delivered something: it dies waiting for the acknowledgement. However
@@ -165,7 +183,7 @@ PY
 # run gives the same result. (That nothing runs twice is checked by the engine's drain tests,
 # which count every call; a worker that left takes its run statistics with it.)
 echo "== doc_stats_slow with a worker drained mid-run"
-NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+"$ROOT_DIR/target/release/namu" \
   run doc_stats_slow 0.1.0 --wait >"$crash_dir/drained.json" &
 run_pid=$!
 sleep 2
