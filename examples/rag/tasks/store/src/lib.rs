@@ -4,7 +4,7 @@
 use serde::Deserialize;
 use serde_json::json;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, namu_guest::Describe)]
 pub struct Chunk {
     pub doc_id: u64,
     pub title: String,
@@ -13,7 +13,7 @@ pub struct Chunk {
     pub text: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, namu_guest::Describe)]
 pub struct Embedded {
     pub chunk: Chunk,
     pub vector: Vec<f32>,

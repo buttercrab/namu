@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use namu_rag_model::Embedder;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, namu_guest::Describe)]
 pub struct Chunk {
     pub doc_id: u64,
     pub title: String,
@@ -15,7 +15,7 @@ pub struct Chunk {
     pub text: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, namu_guest::Describe)]
 pub struct Embedded {
     pub chunk: Chunk,
     pub vector: Vec<f32>,

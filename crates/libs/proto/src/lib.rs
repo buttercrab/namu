@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use namu_core::signature::Signature;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
@@ -79,8 +80,6 @@ pub struct TaskManifest {
     pub version: String,
     pub task_kind: TaskKind,
     pub runtime: TaskRuntime,
-    pub input_arity: usize,
-    pub output_arity: usize,
     /// Platform of a native artifact (`<os>-<arch>`, e.g. `macos-aarch64`). WASM tasks have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
@@ -116,10 +115,10 @@ pub struct TaskManifest {
     pub resource_class: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
-    #[serde(default)]
-    pub input_schema: JsonValue,
-    #[serde(default)]
-    pub output_schema: JsonValue,
+    /// What the task takes and gives, as a workflow calls it; recorded by `namu build`. A
+    /// workflow's calls of it are checked against it when the workflow is published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Signature>,
     /// `sha256:<hex>` of the task binary; filled in by `namu build`.
     #[serde(default)]
     pub checksum: String,
@@ -167,12 +166,16 @@ pub struct WorkflowUploadRequest {
 }
 
 /// A task or workflow version, published. `unchanged` if it already was, identically.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Published {
     pub id: String,
     pub version: String,
     #[serde(default)]
     pub unchanged: bool,
+    /// The tasks a published workflow calls that have no signature, so their calls were not
+    /// checked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unchecked: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,7 +313,7 @@ mod tests {
     fn native_tasks_are_placed_by_platform() {
         let mut manifest: TaskManifest = serde_json::from_value(serde_json::json!({
             "task_id": "t", "version": "1", "task_kind": "single", "runtime": "native",
-            "input_arity": 1, "output_arity": 1, "platform": "linux-x86_64"
+            "platform": "linux-x86_64"
         }))
         .unwrap();
         assert_eq!(manifest.runtime_key(), "native:linux-x86_64");

@@ -9,6 +9,7 @@ pub mod msgpack;
 pub mod parallel;
 pub mod registry;
 pub mod scopes;
+pub mod signature;
 pub mod types;
 pub mod value;
 

@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use namu_core::ValueId;
 use namu_core::inputs::Inputs;
 use namu_core::ir::{Operation, Workflow};
+use namu_core::signature::Signature;
 use namu_core::value::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
@@ -289,6 +290,7 @@ impl LocalCluster {
             });
         self.tasks.lock().unwrap().extend(tasks);
         self.reroute()?;
+        self.check(&workflow)?;
 
         let live = self.live();
         let i = self.next_owner.fetch_add(1, Ordering::Relaxed);
@@ -303,6 +305,39 @@ impl LocalCluster {
             .insert(run, (owner, started.clone()));
         self.start(owner, run, started);
         outcome.await.context("run abandoned")
+    }
+
+    /// Checks `workflow`'s calls against the signatures of the tasks the workers serve, as the
+    /// orchestrator does when a workflow is published. A call may be routed to any worker that
+    /// serves its task, so it must fit each one's.
+    fn check(&self, workflow: &Workflow) -> anyhow::Result<()> {
+        let tasks: BTreeSet<&str> = workflow
+            .operations
+            .iter()
+            .filter_map(Operation::task_id)
+            .collect();
+        let mut problems = BTreeSet::new();
+        for worker in self.live() {
+            let signatures: HashMap<&str, Signature> = tasks
+                .iter()
+                .filter_map(|&id| {
+                    let task = TaskRef {
+                        id: id.to_string(),
+                        version: String::new(),
+                    };
+                    Some((id, worker.signature(&task)?))
+                })
+                .collect();
+            let report = namu_core::signature::check(workflow, |task| signatures.get(task));
+            problems.extend(report.problems);
+        }
+        anyhow::ensure!(
+            problems.is_empty(),
+            "workflow {} does not fit its tasks:\n{}",
+            workflow.name,
+            problems.into_iter().collect::<Vec<_>>().join("\n")
+        );
+        Ok(())
     }
 
     fn start(&self, owner: WorkerId, run: RunId, started: Started) {

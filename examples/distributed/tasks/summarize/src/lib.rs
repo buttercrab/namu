@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, namu_guest::Describe)]
 pub struct Stats {
     pub words: usize,
     pub long_words: usize,
@@ -13,7 +13,7 @@ pub struct Stats {
     pub checksum: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, namu_guest::Describe)]
 pub struct Summary {
     pub docs: usize,
     pub words: usize,

@@ -30,6 +30,29 @@ The workflow crate declares the task's signature without a body, so it never lin
 pub fn analyze(doc: String, min_len: i32) -> Result<Stats>;
 ```
 
+## Signatures
+A task's own types say what it takes and gives. In a task crate they derive
+`namu_guest::Describe` (types shared with a workflow crate can derive `namu::Data` instead, which
+describes too):
+
+```rust
+#[derive(Serialize, Deserialize, namu_guest::Describe)]
+pub struct Stats { words: usize, top_word: String }
+```
+
+`namu build` records the signature in the task's manifest, and a workflow is checked against the
+signatures of the task versions it pins when it is published, so a call with the wrong types is
+refused then, not when it runs. In process, `FnTasks` knows each task's from its Rust types, and
+`LocalCluster` checks a workflow before it runs it.
+
+What is compared is what crosses, MessagePack, so types match by shape, not by name: a workflow's
+`Page` and a task's `Doc` match if the task's fields are among the page's (the task ignores the
+rest, and a field it has that the page lacks must be an `Option`). Enum variants match by name,
+and every variant a value may be must be one the reader has. Integers of any width match each
+other, and a float reads an integer: a value that does not fit fails its call. Field and variant
+names are serde's (`rename`, `rename_all`); a type whose shape serde changes in a way not modelled
+(`flatten`, `tag`, `untagged`, `default` on a field that is not an `Option`, ...) is not checked.
+
 ## Stream tasks
 A stream task yields its outputs one at a time, like a crawler or a reader over a large file:
 
@@ -173,6 +196,14 @@ class Decoder:
 A stream that yields plain values (not `Item`s) has no cursor: reopened, it starts over and the
 engine skips what it had yielded. `namu.call_keys()` gives the keys of a batch step's calls. See
 `examples/distributed/tasks/{replay_py,classify_py,refine_py}` (workflow `label_stats_py`).
+
+A Python task's signature is read from its annotations by parsing the module, so nothing it
+imports needs to be installed where it is built: `int` is `i64`, `float` `f64`, `list[T]` a list,
+`dict[K, V]` a map, `tuple[A, B]` a tuple, `T | None` an option, and a dataclass or `TypedDict`
+defined in the module a struct of its fields. A stream is annotated `Iterator[T]` (or
+`Iterator[namu.Item[T]]` with cursors), a batch task `list[T] -> list[R]`, and a continuous one by
+its `step`. What is not annotated, or is imported from elsewhere, is not checked.
+`python -m namu.signature module.py task` prints what `namu build` records.
 
 ## Async tasks
 A task that mostly waits (on a model server, an API, another process) is registered as async:

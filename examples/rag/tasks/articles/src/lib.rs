@@ -4,7 +4,7 @@ use std::io::BufRead;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, namu_guest::Describe)]
 pub struct Article {
     pub id: u64,
     pub title: String,

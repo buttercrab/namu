@@ -25,8 +25,6 @@ kind = "single"
 runtime = "wasm"
 trust = "trusted"
 resource_class = "cpu.small"
-input_arity = 2
-output_arity = 1
 
 [workflows]
 export = "auto"
@@ -47,9 +45,7 @@ Minimal example:
   "task_id": "analyze",
   "version": "0.1.0",
   "task_kind": "single",
-  "runtime": "wasm",
-  "input_arity": 2,
-  "output_arity": 1
+  "runtime": "wasm"
 }
 ```
 
@@ -67,6 +63,24 @@ For a batch task, `"batch_size"` is how many items a session holds at once (defa
 native tasks, `platform`. The orchestrator rejects artifacts whose binary does not match the
 checksum, and treats versions as immutable: republishing the same version with a different
 artifact is refused.
+
+`namu build` also records the task's `signature`: what a call of it takes and gives, in the IR's
+types. A Rust task says it itself: its types derive `namu_guest::Describe`, and `namu build`
+reads the signature from a build of the crate for the machine it runs on (for a WASM task, that
+is a second build). A Python task's is read from its annotations, by parsing the module without
+running it (see [Tasks](tasks.md#signatures)). It is not written by hand.
+
+When a workflow is published, every call in it is checked against the signature of the task
+version it pins, so a workflow that gives a task the wrong types is refused then, with where and
+why, rather than failing its runs:
+
+```text
+workflow doc_stats@0.1.0 does not fit its tasks:
+call to `analyze` (op 4): argument 2: field `min_len`: `String` is read as `u64`
+```
+
+A task built without a signature (an artifact built elsewhere, or by an older `namu`) is not
+checked; `namu publish` names the tasks whose calls were not.
 
 ## Workflow upload payload
 `namu build` copies workflow IR JSON files into `dist/workflows/`. `namu publish` uploads them as:

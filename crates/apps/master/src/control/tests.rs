@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use namu::prelude::*;
+use namu_core::signature::Signature;
+use namu_core::types::{Defs, Type};
 use namu_core::value::Value;
 use namu_engine::message::{BranchId, Delivery, Message, Report};
 use namu_engine::run::WorkerStats;
@@ -97,7 +99,6 @@ fn plane() -> Plane {
 fn manifest(id: &str, version: &str, code: &[u8]) -> TaskManifest {
     serde_json::from_value(json!({
         "task_id": id, "version": version, "task_kind": "single", "runtime": "wasm",
-        "input_arity": 1, "output_arity": 1,
         "checksum": format!("sha256:{:x}", sha2::Sha256::digest(code)),
     }))
     .unwrap()
@@ -161,6 +162,52 @@ async fn published() -> Plane {
 }
 
 #[tokio::test]
+async fn a_workflow_is_checked_against_its_tasks_signatures() {
+    let plane = plane();
+    let code = b"\0asm double";
+    let int = Type::Int {
+        bits: 64,
+        signed: true,
+    };
+    let publish = |version: &'static str, signature: Option<Signature>| {
+        let mut manifest = manifest("double", version, code);
+        manifest.signature = signature;
+        plane.control.publish_task(package(&manifest, code))
+    };
+    // `double` as built three times: taking a string, taking an integer, and saying nothing.
+    let takes = |input: Type| Some(Signature::new(vec![input], int.clone(), Defs::new()));
+    publish("text", takes(Type::String)).await.unwrap();
+    publish("int", takes(int.clone())).await.unwrap();
+    publish("old", None).await.unwrap();
+
+    let refused = plane
+        .control
+        .publish_workflow(upload("1", "text"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        ApiError::bad_request(
+            "workflow doubled@1 does not fit its tasks:\n\
+             call to `double` (op 0): argument 1: `i32` is read as `String`"
+        )
+        .to_string()
+    );
+    let fits = plane
+        .control
+        .publish_workflow(upload("2", "int"))
+        .await
+        .unwrap();
+    assert!(fits.unchecked.is_empty());
+    let unchecked = plane
+        .control
+        .publish_workflow(upload("3", "old"))
+        .await
+        .unwrap();
+    assert_eq!(unchecked.unchecked, ["double"]);
+}
+
+#[tokio::test]
 async fn a_task_version_is_published_once() {
     let plane = plane();
     let code = b"\0asm one";
@@ -171,7 +218,8 @@ async fn a_task_version_is_published_once() {
         Published {
             id: "double".into(),
             version: "1".into(),
-            unchanged: false
+            unchanged: false,
+            unchecked: Vec::new(),
         }
     );
     assert_eq!(plane.control.artifact("double", "1").await.unwrap(), first);

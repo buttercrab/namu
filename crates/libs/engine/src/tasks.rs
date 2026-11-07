@@ -15,6 +15,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use namu_core::OpId;
+use namu_core::signature::Signature;
+use namu_core::types::{Defs, Type};
 use namu_core::value::{Data, Value, from_args};
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +119,11 @@ pub trait Tasks: Send + Sync + 'static {
 
     /// How this worker runs `task`, or `None` if it does not serve it.
     fn task(&self, task: &TaskRef) -> Option<Task>;
+
+    /// What `task` takes and gives, if it is known, to check a workflow's calls of it against.
+    fn signature(&self, _task: &TaskRef) -> Option<Signature> {
+        None
+    }
 }
 
 /// How a worker runs a task.
@@ -338,6 +345,8 @@ pub fn unpack_output(output: Value, arity: usize) -> anyhow::Result<Vec<Value>> 
 #[derive(Default)]
 pub struct FnTasks {
     tasks: HashMap<String, Task>,
+    /// Each task's, from its Rust types.
+    signatures: HashMap<String, Signature>,
 }
 
 impl FnTasks {
@@ -345,8 +354,9 @@ impl FnTasks {
         Self::default()
     }
 
-    fn register(mut self, task: &str, kind: Kind) -> Self {
+    fn register(mut self, task: &str, kind: Kind, signature: Signature) -> Self {
         self.tasks.insert(task.to_string(), Task::new(kind));
+        self.signatures.insert(task.to_string(), signature);
         self
     }
 
@@ -372,12 +382,16 @@ impl FnTasks {
             let input = from_args(args).map_err(|err| format!("bad input: {err:#}"))?;
             f(input).map(Value::new).map_err(|err| err.to_string())
         };
-        self.register(task, Kind::Call(Arc::new(FnCall(call))))
+        self.register(
+            task,
+            Kind::Call(Arc::new(FnCall(call))),
+            signature::<I, O>(|o| o),
+        )
     }
 
     /// Registers an async task: `f` returns a future, which the worker awaits.
     pub fn with_async<I, O, E, Fut>(
-        mut self,
+        self,
         task: &str,
         f: impl Fn(I) -> Fut + Send + Sync + 'static,
     ) -> Self
@@ -395,8 +409,7 @@ impl FnTasks {
             }
         });
         let kind = Kind::Async(Async::new(Arc::new(call)));
-        self.tasks.insert(task.to_string(), Task::new(kind));
-        self
+        self.register(task, kind, signature::<I, O>(|o| o))
     }
 
     /// Lets at most `limit` calls of the async task `task` be in flight on a worker at once.
@@ -432,7 +445,9 @@ impl FnTasks {
             task: Arc::new(FnStreamTask(open)),
             window: DEFAULT_WINDOW,
         });
-        self.register(task, kind)
+        // A workflow sees a stream's items as a list.
+        let items = signature::<I, O>(|item| Type::List(Box::new(item)));
+        self.register(task, kind, items)
     }
 
     /// Registers a batch task run by dynamic batching: each step calls `f` on the items given.
@@ -454,7 +469,7 @@ impl FnTasks {
                 types: PhantomData,
             })
         };
-        self.with_sessions(task, open)
+        self.with_sessions(task, open, signature::<I, O>(|o| o))
     }
 
     /// Registers a batch task run by continuous batching: each session is made by `make`.
@@ -463,21 +478,21 @@ impl FnTasks {
         task: &str,
         make: impl Fn() -> C + Send + Sync + 'static,
     ) -> Self {
-        self.with_sessions(task, move || -> Box<dyn BatchSession> {
-            Box::new(ContinuousSession(make()))
-        })
+        let open = move || -> Box<dyn BatchSession> { Box::new(ContinuousSession(make())) };
+        self.with_sessions(task, open, signature::<C::In, C::Out>(|o| o))
     }
 
     fn with_sessions(
         self,
         task: &str,
         open: impl Fn() -> Box<dyn BatchSession> + Send + Sync + 'static,
+        signature: Signature,
     ) -> Self {
         let kind = Kind::Batch(Batch {
             task: Arc::new(FnBatchTask(open)),
             policy: BatchPolicy::default(),
         });
-        self.register(task, kind)
+        self.register(task, kind, signature)
     }
 
     /// Sets how the batch task `task`'s sessions run.
@@ -515,6 +530,23 @@ impl FnTasks {
 impl Tasks for FnTasks {
     fn task(&self, task: &TaskRef) -> Option<Task> {
         self.tasks.get(&task.id).cloned()
+    }
+
+    fn signature(&self, task: &TaskRef) -> Option<Signature> {
+        self.signatures.get(&task.id).cloned()
+    }
+}
+
+/// The signature of a task taking `I` (its arguments, packed as they cross) and giving what
+/// `output` makes of `O`.
+fn signature<I: Data, O: Data>(output: impl FnOnce(Type) -> Type) -> Signature {
+    let mut defs = Defs::new();
+    let input = I::describe(&mut defs);
+    let output = output(O::describe(&mut defs));
+    Signature {
+        input,
+        output,
+        defs,
     }
 }
 

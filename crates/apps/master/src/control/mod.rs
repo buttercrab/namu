@@ -127,6 +127,7 @@ impl Control {
             id,
             version,
             unchanged,
+            unchecked: Vec::new(),
         })
     }
 
@@ -160,15 +161,31 @@ impl Control {
             .iter()
             .filter_map(|op| op.task_id())
             .collect();
+        let mut tasks = BTreeMap::new();
         for task in called {
             let version = upload.task_versions.get(task).ok_or_else(|| {
                 ApiError::bad_request(format!("no version is given for task {task}"))
             })?;
-            if self.store.task(task, version).await?.is_none() {
+            let Some(manifest) = self.store.task(task, version).await? else {
                 return Err(ApiError::bad_request(format!(
                     "task {task}@{version} is not published"
                 )));
-            }
+            };
+            tasks.insert(task, manifest);
+        }
+        // A workflow pins its tasks' versions, so checked here, its calls fit in every run.
+        let report = namu_core::signature::check(&workflow, |task| {
+            tasks
+                .get(task)
+                .and_then(|manifest| manifest.signature.as_ref())
+        });
+        if !report.problems.is_empty() {
+            return Err(ApiError::bad_request(format!(
+                "workflow {}@{} does not fit its tasks:\n{}",
+                upload.id,
+                upload.version,
+                report.problems.join("\n")
+            )));
         }
         let (id, version) = (upload.id.clone(), upload.version.clone());
         let unchanged = match self.store.insert_workflow(&upload).await? {
@@ -188,6 +205,7 @@ impl Control {
             id,
             version,
             unchanged,
+            unchecked: report.unchecked.into_iter().collect(),
         })
     }
 

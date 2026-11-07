@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Serialize, namu_guest::Describe)]
 pub struct Config {
     pub min_len: usize,
     pub rounds: u32,

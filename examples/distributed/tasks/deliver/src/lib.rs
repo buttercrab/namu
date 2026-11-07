@@ -7,7 +7,7 @@ use std::io::Write;
 
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, namu_guest::Describe)]
 pub struct Stats {
     pub checksum: u64,
 }

@@ -19,6 +19,7 @@ What a task prints goes to stderr, out of the protocol's way.
 
 from __future__ import annotations
 
+import collections.abc
 import contextlib
 import contextvars
 import dataclasses
@@ -26,6 +27,7 @@ import importlib.util
 import inspect
 import struct
 import sys
+import types
 import typing
 from typing import Any, Callable, Iterator
 
@@ -209,32 +211,50 @@ def element(hint: Any) -> Any:
     return args[0] if typing.get_origin(hint) in (list, typing.List) and args else None
 
 
+#: Annotations a list is read as (Python's `typing` names give these origins too), sets, and maps.
+LISTS = (list, collections.abc.Sequence, collections.abc.MutableSequence)
+SETS = (set, frozenset)
+MAPS = (dict, collections.abc.Mapping, collections.abc.MutableMapping)
+
+
 def from_value(hint: Any, value: Any) -> Any:
-    """`value` as `hint` says: dataclasses from maps, element by element through lists, tuples
-    and dicts."""
+    """`value` as `hint` says: dataclasses from maps, sets from lists, and element by element
+    through lists, tuples, dicts and options. Each annotation `namu.signature` describes is read
+    here as it describes it."""
     if hint is None or value is None:
         return value
     if dataclasses.is_dataclass(hint) and isinstance(value, dict):
         hints = typing.get_type_hints(hint)
         fields = {f.name: from_value(hints.get(f.name), value.get(f.name)) for f in dataclasses.fields(hint)}
         return hint(**fields)
+    if hint is bytearray and isinstance(value, bytes):
+        return bytearray(value)
+    if hint in SETS and isinstance(value, list):
+        return hint(value)
     origin, args = typing.get_origin(hint), typing.get_args(hint)
-    if origin in (list, typing.List) and args and isinstance(value, list):
+    if origin is typing.Annotated:
+        return from_value(args[0], value)
+    if origin in (typing.Union, types.UnionType):
+        rest = [arg for arg in args if arg is not type(None)]
+        return from_value(rest[0], value) if len(rest) == 1 else value
+    if origin in LISTS and args and isinstance(value, list):
         return [from_value(args[0], item) for item in value]
-    if origin in (tuple, typing.Tuple) and args and isinstance(value, list):
+    if origin in SETS and args and isinstance(value, list):
+        return origin(from_value(args[0], item) for item in value)
+    if origin is tuple and args and isinstance(value, list):
         if len(args) == 2 and args[1] is Ellipsis:
             return tuple(from_value(args[0], item) for item in value)
         return tuple(from_value(arg, item) for arg, item in zip(args, value))
-    if origin in (dict, typing.Dict) and len(args) == 2 and isinstance(value, dict):
+    if origin in MAPS and len(args) == 2 and isinstance(value, dict):
         return {key: from_value(args[1], item) for key, item in value.items()}
     return value
 
 
 def to_value(output: Any) -> Any:
-    """`output` as MessagePack takes it: dataclasses as maps of their fields."""
+    """`output` as MessagePack takes it: dataclasses as maps of their fields, sets as lists."""
     if dataclasses.is_dataclass(output) and not isinstance(output, type):
         return {f.name: to_value(getattr(output, f.name)) for f in dataclasses.fields(output)}
-    if isinstance(output, (list, tuple)):
+    if isinstance(output, (list, tuple, set, frozenset)):
         return [to_value(item) for item in output]
     if isinstance(output, dict):
         return {key: to_value(item) for key, item in output.items()}
