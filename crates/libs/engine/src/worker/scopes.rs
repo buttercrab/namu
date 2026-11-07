@@ -121,17 +121,19 @@ impl Inner {
         }
     }
 
-    /// The stream feeding scope `id` has ended: the scope has `count` branches.
+    /// The stream feeding scope `id` has ended: the scope has `count` branches. Knowing its count
+    /// can make it over, or, if every item has ended already, let its last window go out.
     pub(super) fn close(self: &Arc<Self>, run: &Arc<Run>, id: ScopeId, count: u64) {
-        let over = {
+        let (over, feeds) = {
             let mut scopes = run.scopes.lock().unwrap();
             let Some(scope) = scopes.get_mut(&id) else {
                 // Abandoned, after its source restarted elsewhere.
                 return;
             };
+            let feeds = scope.feed.is_some();
             match scope.close(count) {
-                Ended::Over => scopes.remove(&id),
-                _ => None,
+                Ended::Over => (scopes.remove(&id), false),
+                _ => (None, feeds),
             }
         };
         self.log.record(vec![Record::Closed {
@@ -141,6 +143,9 @@ impl Inner {
         }]);
         if let Some(scope) = over {
             self.scope_over(run, id, scope);
+        }
+        if feeds {
+            self.send_windows(run, id);
         }
     }
 

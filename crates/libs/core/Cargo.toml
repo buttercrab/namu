@@ -1,8 +1,10 @@
 [package]
 name = "namu-core"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The NAMU workflow IR, its values, and the analyses the engine runs on it"
 
 [dependencies]
 anyhow = { workspace = true }

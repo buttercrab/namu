@@ -1,8 +1,10 @@
 [package]
 name = "namu-cli"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The NAMU command line: build task artifacts, publish workflows, and start runs"
 
 [[bin]]
 name = "namu"
@@ -24,4 +26,4 @@ tokio = { workspace = true }
 toml = "0.8"
 toml_edit = "0.24"
 walkdir = "2.5"
-zstd = "0.13"
+zstd = "0.13.4"

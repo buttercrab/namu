@@ -1,8 +1,10 @@
 [package]
 name = "namu-engine"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The NAMU engine: workers that drive workflow IR, with handoffs, scopes and recovery"
 
 [dependencies]
 anyhow = { workspace = true }

@@ -1,8 +1,10 @@
 [package]
 name = "namu-worker"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A NAMU worker: runs the engine on the mesh and serves WASM, native and Python tasks"
 
 [[bin]]
 name = "namu-worker"
@@ -27,6 +29,6 @@ tokio = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
 uuid = { version = "1.17", features = ["v4", "serde"] }
-wasmtime = "49.0.4"
-wasmtime-wasi = { version = "49.0.4", default-features = false, features = ["p2"] }
-zstd = "0.13"
+wasmtime = "49.0.5"
+wasmtime-wasi = { version = "49.0.5", default-features = false, features = ["p2"] }
+zstd = "0.13.4"
