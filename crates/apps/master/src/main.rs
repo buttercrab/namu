@@ -3,105 +3,108 @@
 //! path: it joins the workers' mesh as peer 0 only to send a run to its owner and to hear back
 //! when it is over.
 //!
-//! Registry state lives in Redis (see `namu_proto::keys`); task artifacts live on disk.
+//! - [`control`]: the rules, apart from HTTP and storage.
+//! - [`api`]: the HTTP API over them.
+//! - [`store`]: registry, membership and runs (Redis); [`artifacts`]: task packages (disk).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
-use axum::Router;
-use axum::routing::{get, post};
 use namu_engine::message::Message;
 use namu_engine::transport::TcpTransport;
-use redis::aio::ConnectionManager;
-use tower_http::trace::TraceLayer;
-use tracing::info;
 
-mod routes;
-mod storage;
+mod api;
+mod artifacts;
+mod control;
+mod error;
+mod store;
 
-#[derive(Clone)]
-pub struct AppState {
-    pub redis: ConnectionManager,
-    pub artifacts_dir: PathBuf,
-    pub mesh: Arc<TcpTransport>,
-    /// Where workers reach the orchestrator in the mesh.
-    pub mesh_addr: String,
+use crate::artifacts::DiskArtifacts;
+use crate::control::Control;
+use crate::store::RedisStore;
+
+/// Settings, from the environment (`docs/operations/configuration.md`).
+struct Config {
+    redis_url: String,
+    artifacts_dir: PathBuf,
+    bind_addr: SocketAddr,
+    mesh_addr: SocketAddr,
+    /// Where workers reach the control plane in the mesh, if not on this host.
+    advertise_addr: Option<String>,
+}
+
+impl Config {
+    fn from_env() -> anyhow::Result<Self> {
+        let var =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
+        Ok(Self {
+            redis_url: var("REDIS_URL", "redis://127.0.0.1/"),
+            artifacts_dir: var("ARTIFACTS_DIR", "./data/artifacts").into(),
+            bind_addr: var("BIND_ADDR", "0.0.0.0:8080")
+                .parse()
+                .context("BIND_ADDR")?,
+            mesh_addr: var("NAMU_MESH_ADDR", "0.0.0.0:0")
+                .parse()
+                .context("NAMU_MESH_ADDR")?,
+            advertise_addr: std::env::var("NAMU_ADVERTISE_ADDR").ok(),
+        })
+    }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+    let config = Config::from_env()?;
 
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string());
-    let artifacts_dir =
-        std::env::var("ARTIFACTS_DIR").unwrap_or_else(|_| "./data/artifacts".to_string());
-    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
-    let mesh_bind: SocketAddr = std::env::var("NAMU_MESH_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:0".to_string())
-        .parse()
-        .context("invalid NAMU_MESH_ADDR")?;
-
-    let redis = ConnectionManager::new(redis::Client::open(redis_url)?).await?;
-    let (mesh, mesh_local, mut inbox) = TcpTransport::bind(mesh_bind).await?;
-    let mesh_addr = std::env::var("NAMU_ADVERTISE_ADDR")
-        .unwrap_or_else(|_| format!("127.0.0.1:{}", mesh_local.port()));
-    let state = AppState {
-        redis,
-        artifacts_dir: PathBuf::from(artifacts_dir),
+    let store = RedisStore::connect(&config.redis_url).await?;
+    let (mesh, mesh_local, mut inbox) = TcpTransport::bind(config.mesh_addr).await?;
+    let mesh_addr = config
+        .advertise_addr
+        .unwrap_or_else(|| format!("127.0.0.1:{}", mesh_local.port()));
+    let control = Arc::new(Control::new(
+        Arc::new(store),
+        Arc::new(DiskArtifacts::new(config.artifacts_dir)),
         mesh,
-        mesh_addr,
-    };
+        mesh_addr.clone(),
+    ));
 
-    let outcomes = state.clone();
-    tokio::spawn(async move {
-        while let Some(message) = inbox.recv().await {
-            match message {
-                Message::Finished { run, outcome } => {
-                    if let Err(err) = routes::record_outcome(&outcomes, run, outcome).await {
-                        tracing::error!(%run, "recording the outcome failed: {err:#}");
+    // Run owners report here when their runs end.
+    tokio::spawn({
+        let control = control.clone();
+        async move {
+            while let Some(message) = inbox.recv().await {
+                match message {
+                    Message::Finished { run, outcome } => {
+                        if let Err(err) = control.finished(run, outcome).await {
+                            tracing::error!(%run, "recording the outcome failed: {err:#}");
+                        }
                     }
+                    other => tracing::warn!("unexpected message for the control plane: {other:?}"),
                 }
-                other => tracing::warn!("unexpected message for the control plane: {other:?}"),
             }
         }
     });
 
-    let sweeper = state.clone();
-    tokio::spawn(async move {
-        let period = std::time::Duration::from_millis(namu_proto::HEARTBEAT_INTERVAL_MS);
-        let mut interval = tokio::time::interval(period);
-        loop {
-            interval.tick().await;
-            if let Err(err) = routes::sweep(&sweeper).await {
-                tracing::error!("membership sweep failed: {err:#}");
+    // Workers whose leases ran out are found here, at the pace of heartbeats.
+    tokio::spawn({
+        let control = control.clone();
+        async move {
+            let period = Duration::from_millis(namu_proto::HEARTBEAT_INTERVAL_MS);
+            let mut interval = tokio::time::interval(period);
+            loop {
+                interval.tick().await;
+                if let Err(err) = control.sweep().await {
+                    tracing::error!("membership sweep failed: {err:#}");
+                }
             }
         }
     });
 
-    let app = Router::new()
-        .route("/healthz", get(routes::healthz))
-        .route("/tasks", post(routes::upload_task))
-        .route("/tasks/{task_id}/{version}", get(routes::get_task_manifest))
-        .route(
-            "/tasks/{task_id}/{version}/artifact",
-            get(routes::get_artifact),
-        )
-        .route("/workflows", post(routes::upload_workflow))
-        .route("/runs", post(routes::create_run))
-        .route("/runs/{run_id}", get(routes::get_run_status))
-        .route("/workers", get(routes::list_workers))
-        .route("/workers/register", post(routes::register_worker))
-        .route("/workers/{worker_id}/heartbeat", post(routes::heartbeat))
-        .route("/workers/{worker_id}/drain", post(routes::drain_worker))
-        .route("/workers/{worker_id}/leave", post(routes::leave))
-        .layer(axum::extract::DefaultBodyLimit::max(256 * 1024 * 1024))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state.clone());
-
-    let addr: SocketAddr = bind_addr.parse()?;
-    info!(%addr, mesh = state.mesh_addr, "orchestrator listening");
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
+    tracing::info!(addr = %config.bind_addr, mesh = mesh_addr, "orchestrator listening");
+    axum::serve(listener, api::router(control)).await?;
     Ok(())
 }

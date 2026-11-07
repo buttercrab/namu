@@ -159,6 +159,15 @@ pub struct WorkflowUploadRequest {
     pub task_versions: HashMap<String, String>,
 }
 
+/// A task or workflow version, published. `unchanged` if it already was, identically.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Published {
+    pub id: String,
+    pub version: String,
+    #[serde(default)]
+    pub unchanged: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunCreateRequest {
     pub workflow_id: String,
@@ -173,10 +182,19 @@ pub struct RunCreateResponse {
     pub run_id: Uuid,
 }
 
+/// Where a run is.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Running,
+    Succeeded,
+    /// It ended, but some branches failed.
+    PartialFailed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunStatusResponse {
-    /// `running`, `succeeded`, or `partial_failed` (some branches failed).
-    pub status: String,
+    pub status: RunStatus,
     pub results: Vec<JsonValue>,
     pub failures: Vec<String>,
     pub elapsed_ms: Option<u64>,
@@ -229,64 +247,20 @@ pub struct Membership {
     pub successors: BTreeMap<u64, u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkersResponse {
+    pub workers: Vec<Member>,
+}
+
+/// What the API answers when a request fails.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub error: String,
+}
+
 /// How often workers send heartbeats, and how long membership lasts without one.
 pub const HEARTBEAT_INTERVAL_MS: u64 = 1_000;
 pub const MEMBERSHIP_TTL_MS: u64 = 5_000;
-
-/// Redis key layout of the control plane.
-pub mod keys {
-    use uuid::Uuid;
-
-    pub const WORKER_SEQ: &str = "namu:worker_seq";
-    /// Hash: worker id -> name, kept after the worker leaves so run stats stay readable.
-    pub const WORKER_NAMES: &str = "namu:worker_names";
-    /// Round-robin cursor for choosing the owner of a new run.
-    pub const OWNER_CURSOR: &str = "namu:owner_cursor";
-    /// Set: workers believed alive. One that is here but has no member record has died.
-    pub const ALIVE: &str = "namu:alive";
-    /// Hash: dead worker -> the worker that took over its work.
-    pub const SUCCESSORS: &str = "namu:successors";
-    /// Set: runs that have not finished.
-    pub const RUNNING: &str = "namu:running";
-
-    /// A live member's record; expires unless renewed by heartbeats.
-    pub fn member(id: u64) -> String {
-        format!("namu:member:{id}")
-    }
-
-    pub const MEMBER_PATTERN: &str = "namu:member:*";
-
-    pub fn task(task_id: &str, version: &str) -> String {
-        format!("namu:task:{task_id}:{version}")
-    }
-
-    pub fn workflow(id: &str, version: &str) -> String {
-        format!("namu:workflow:{id}:{version}")
-    }
-
-    /// Hash: status, owner, workflow_id, version, created_at_ms, finished_at_ms.
-    pub fn run_state(run: Uuid) -> String {
-        format!("namu:run:{run}:state")
-    }
-
-    pub fn run_results(run: Uuid) -> String {
-        format!("namu:run:{run}:results")
-    }
-
-    pub fn run_failures(run: Uuid) -> String {
-        format!("namu:run:{run}:failures")
-    }
-
-    /// Hash: worker name -> task calls.
-    pub fn run_calls(run: Uuid) -> String {
-        format!("namu:run:{run}:calls")
-    }
-
-    /// Hash: worker name -> nodes fetched from other workers.
-    pub fn run_remote_fetches(run: Uuid) -> String {
-        format!("namu:run:{run}:remote_fetches")
-    }
-}
 
 #[cfg(test)]
 mod tests {

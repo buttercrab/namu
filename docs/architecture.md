@@ -15,7 +15,12 @@ runtime each task declares. See `design.md` for the target design and `poc.md` f
 - **namu-guest**: SDK for writing tasks once and building them as WASM components (`namu:task`
   WIT world) or native libraries (C ABI).
 - **namu-master** (orchestrator, control plane): task and workflow registry, membership, starting
-  runs, run status. It is a member of the mesh (id 0) but never on the per-step path.
+  runs, run status. It is a member of the mesh (id 0) but never on the per-step path. In layers:
+  `control` holds the rules (versions are immutable, inputs are checked before a run starts, a
+  dead worker's lowest live peer succeeds it); `api` is HTTP over them; a `Store` keeps the
+  registry, members and runs (Redis; in memory for tests), and `Artifacts` the task packages
+  (a directory; an object store goes behind the same trait). Errors are a status with
+  `{"error": ".."}`.
 - **namu-worker** (data plane): an engine worker on the TCP mesh, with the WASM and native task
   runtimes.
 - **Redis**: the control plane's store (registry, members, run status), and the workers' durable
