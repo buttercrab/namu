@@ -2168,7 +2168,7 @@ dependencies = [
  "toml 0.8.23",
  "toml_edit 0.24.1+spec-1.1.0",
  "walkdir",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -2296,7 +2296,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -2365,7 +2365,7 @@ dependencies = [
  "uuid",
  "wasmtime",
  "wasmtime-wasi",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -4453,7 +4453,7 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "wasmtime-environ",
  "windows-sys 0.61.2",
- "zstd",
+ "zstd 0.13.4",
 ]
 
 [[package]]
@@ -5242,7 +5242,16 @@ version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.4.0",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
+dependencies = [
+ "zstd-safe 8.2.0",
 ]
 
 [[package]]
@@ -5250,6 +5259,15 @@ name = "zstd-safe"
 version = "7.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "8.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
 dependencies = [
  "zstd-sys",
 ]
