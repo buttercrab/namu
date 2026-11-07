@@ -63,8 +63,8 @@ kubectl -n namu create secret generic namu-tls \
 
 For TLS, cert-manager is the better way: create an `Issuer` from the cluster's CA (or AWS Private
 CA, with its issuer) and set `tls.certManager.enabled=true`; the chart's `Certificate` names
-everything needed, and cert-manager renews it. A member reads its certificate when it starts:
-roll the Deployments after a renewal (or let a restart pick it up). `namu certs` makes a CA and
+everything needed, and cert-manager renews it. Members take up a renewed certificate (and a
+changed tokens file) within 10 seconds, without a rollout. `namu certs` makes a CA and
 certificate for trying it out.
 
 ## 4. Install
@@ -120,4 +120,4 @@ certificate (`tls.certManager.extraDnsNames`).
 - Applying the Terraform and installing on EKS has not been done from this repository: the chart
   is checked on kind (`scripts/kind.sh`), the Terraform with `terraform validate`.
 - No KEDA scaler on NAMU's own metrics ships with the chart.
-- Certificates and tokens are read when a pod starts: a renewal or rotation needs a rollout.
+- A worker's token is an environment variable: rotating it needs a rollout of the workers.

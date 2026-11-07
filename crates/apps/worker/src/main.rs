@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use namu_engine::Worker;
+use namu_engine::files::{self, WATCH_EVERY};
 use namu_engine::routes::Routes;
 use namu_engine::transport::{MeshTls, TcpTransport};
 use namu_proto::{
@@ -166,7 +167,7 @@ struct Security {
 
 impl Security {
     /// From `NAMU_TLS_CA`, `NAMU_TLS_CERT`, `NAMU_TLS_KEY` and `NAMU_TOKEN`; `None` if run with
-    /// `NAMU_INSECURE=1` and none of them.
+    /// `NAMU_INSECURE=1` and none of them. The mesh's TLS is loaded again when its files change.
     fn from_env() -> anyhow::Result<Option<Self>> {
         let var = |name: &str| std::env::var(name).ok();
         let insecure = var("NAMU_INSECURE").is_some_and(|v| v == "1");
@@ -177,10 +178,18 @@ impl Security {
             var("NAMU_TOKEN"),
         ) {
             (Some(ca), Some(cert), Some(key), Some(token)) => {
-                let read =
-                    |path: &str| std::fs::read(path).with_context(|| format!("reading {path}"));
-                let ca = read(&ca)?;
-                let mesh = MeshTls::from_pem(&ca, &read(&cert)?, &read(&key)?)?;
+                let mesh = MeshTls::from_files(&ca, &cert, &key)?;
+                // A renewed certificate is taken up for the mesh as it comes. (The orchestrator's
+                // HTTPS is trusted by the CA read here: a new CA goes into the bundle beside the
+                // old one, and workers restart, before members get certificates from it.)
+                let files = [ca, cert, key].map(PathBuf::from);
+                files::watch("this member's certificate", files.to_vec(), WATCH_EVERY, {
+                    let mesh = mesh.clone();
+                    let [ca, cert, key] = files.clone();
+                    move || mesh.reload_files(&ca, &cert, &key)
+                });
+                let ca = std::fs::read(&files[0])
+                    .with_context(|| format!("reading {}", files[0].display()))?;
                 Ok(Some(Self { mesh, ca, token }))
             }
             (None, None, None, None) if insecure => {

@@ -4,9 +4,10 @@
 //!
 //! The orchestrator keeps only tokens' SHA-256 hashes, from a file of lines `<role> sha256:<hex>`
 //! (`namu token` makes a token and its line). Listing several per role lets a token be rotated:
-//! add the new one, move clients over, remove the old.
+//! add the new one, move clients over, remove the old. The file is read again when it changes.
 
 use std::path::Path;
+use std::sync::RwLock;
 
 use anyhow::Context;
 use axum::extract::{Request, State};
@@ -35,41 +36,23 @@ impl Role {
 
 /// The tokens the API takes, as hashes.
 #[derive(Debug, Default)]
-pub struct Tokens(Vec<(Role, [u8; 32])>);
+pub struct Tokens(RwLock<Vec<Entry>>);
 
 impl Tokens {
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading tokens from {}", path.display()))?;
-        Self::parse(&text).with_context(|| format!("tokens in {}", path.display()))
+        Ok(Self(RwLock::new(read(path)?)))
     }
 
+    /// Takes the tokens in `path` instead, unless it holds none that parse.
+    pub fn reload_file(&self, path: &Path) -> anyhow::Result<()> {
+        let tokens = read(path)?;
+        *self.0.write().unwrap() = tokens;
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn parse(text: &str) -> anyhow::Result<Self> {
-        let mut tokens = Vec::new();
-        for (n, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let entry = || -> Option<(Role, [u8; 32])> {
-                let (role, hash) = line.split_once(char::is_whitespace)?;
-                let hex = hash.trim().strip_prefix("sha256:")?;
-                let bytes = (0..64)
-                    .step_by(2)
-                    .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
-                    .collect::<Option<Vec<u8>>>()?;
-                Some((Role::parse(role)?, bytes.try_into().ok()?))
-            };
-            let entry = entry().with_context(|| {
-                format!(
-                    "line {}: expected `client|worker sha256:<64 hex digits>`",
-                    n + 1
-                )
-            })?;
-            tokens.push(entry);
-        }
-        anyhow::ensure!(!tokens.is_empty(), "no tokens");
-        Ok(Self(tokens))
+        Ok(Self(RwLock::new(parse(text)?)))
     }
 
     /// The role `token` has, if it is one of these. Every hash is compared, in full, so how long
@@ -77,7 +60,7 @@ impl Tokens {
     pub fn role(&self, token: &str) -> Option<Role> {
         let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         let mut found = None;
-        for (role, hash) in &self.0 {
+        for (role, hash) in self.0.read().unwrap().iter() {
             let same = hash.iter().zip(&digest).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0;
             if same {
                 found = Some(*role);
@@ -85,6 +68,42 @@ impl Tokens {
         }
         found
     }
+}
+
+type Entry = (Role, [u8; 32]);
+
+fn read(path: &Path) -> anyhow::Result<Vec<Entry>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading tokens from {}", path.display()))?;
+    parse(&text).with_context(|| format!("tokens in {}", path.display()))
+}
+
+fn parse(text: &str) -> anyhow::Result<Vec<Entry>> {
+    let mut tokens = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let entry = || -> Option<Entry> {
+            let (role, hash) = line.split_once(char::is_whitespace)?;
+            let hex = hash.trim().strip_prefix("sha256:")?;
+            let bytes = (0..64)
+                .step_by(2)
+                .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+                .collect::<Option<Vec<u8>>>()?;
+            Some((Role::parse(role)?, bytes.try_into().ok()?))
+        };
+        let entry = entry().with_context(|| {
+            format!(
+                "line {}: expected `client|worker sha256:<64 hex digits>`",
+                n + 1
+            )
+        })?;
+        tokens.push(entry);
+    }
+    anyhow::ensure!(!tokens.is_empty(), "no tokens");
+    Ok(tokens)
 }
 
 /// What a route requires: one of `roles`, or nothing if the API runs without tokens.

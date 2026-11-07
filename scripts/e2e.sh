@@ -113,6 +113,25 @@ if [[ $anonymous != 401 || $as_client != 403 || $forged != 401 || $plain != 000 
 fi
 echo "   ok: no token 401, a client's token on a worker route 403, a forged token 401, no plain HTTP"
 
+# A client token rotated while the orchestrator runs: the new one is taken as soon as the tokens
+# file is read again, and the old one, removed from it, is refused.
+tokens="$crash_dir/secrets/tokens"
+fresh=$("$ROOT_DIR/target/release/namu" token --role client --tokens "$tokens")
+old_hash=$(printf %s "$NAMU_TOKEN" | shasum -a 256 | cut -d' ' -f1)
+grep -v "$old_hash" "$tokens" >"$tokens.new" && mv "$tokens.new" "$tokens"
+for _ in $(seq 30); do
+  new_status=$(status -H "Authorization: Bearer $fresh" "$NAMU_ORCH_URL/workers")
+  old_status=$(status -H "Authorization: Bearer $NAMU_TOKEN" "$NAMU_ORCH_URL/workers")
+  [[ $new_status == 200 && $old_status == 401 ]] && break
+  sleep 1
+done
+if [[ $new_status != 200 || $old_status != 401 ]]; then
+  echo "rotating a token: expected the new one 200 and the old 401, got $new_status, $old_status" >&2
+  exit 1
+fi
+export NAMU_TOKEN=$fresh
+echo "   ok: a token rotated without a restart"
+
 # Results arrive as the run goes: a stream of 48 documents, one every 100 ms, each its own result.
 namu() { "$ROOT_DIR/target/release/namu" "$@"; }
 api() { curl -sf --cacert "$NAMU_TLS_CA" -H "Authorization: Bearer $NAMU_TOKEN" "$NAMU_ORCH_URL$1"; }

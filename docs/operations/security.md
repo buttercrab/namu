@@ -38,7 +38,7 @@ namu token --role worker --tokens /etc/namu/tokens    # and this one to workers 
 Clients send `Authorization: Bearer <token>`; the CLI sends `NAMU_TOKEN`. A missing or unknown
 token is `401`, a token whose role may not do something `403`. Several tokens per role may be
 listed, so one is rotated by adding the new one, moving its holders over, and removing the old;
-the orchestrator reads the file when it starts.
+the orchestrator reads the file again within 10 seconds of a change, without a restart.
 
 ## Certificates
 
@@ -50,6 +50,13 @@ names the hosts the API is reached by (unless a load balancer terminates HTTPS i
 - `NAMU_TLS_CA`: the cluster's CA certificate (PEM). Clients that reach the API with it set trust
   it; otherwise they use the system's roots.
 - `NAMU_TLS_CERT`, `NAMU_TLS_KEY`: this member's certificate (with its chain) and key (PEM).
+
+Members read these files again within 10 seconds of a change, so a renewed certificate (from
+cert-manager, say) is used for the connections made from then on, with no restart; connections
+already open keep going. Files caught halfway through an update are tried again until they make a
+valid identity. To move to a new CA, put both CAs in `NAMU_TLS_CA` first and restart workers (they
+trust the orchestrator's HTTPS by the CA they read at start), then issue certificates from the new
+one, then drop the old.
 
 In production, issue them from your PKI (on AWS, AWS Private CA; keep keys in Secrets Manager).
 For development, `namu certs` makes a CA and one member certificate:
@@ -63,7 +70,6 @@ writes `$POC_DIR/env` with what a client needs to reach it.
 
 ## Not covered yet
 
-- Tokens are read once, at start; rotating one means restarting the orchestrator.
-- Certificates are read once, at start; renewing them means restarting the member.
+- A worker's token (`NAMU_TOKEN`) is an environment variable: rotating it means restarting it.
 - Every member is equally trusted; a certificate does not bind a member to its worker id.
 - No per-run or per-workflow permissions: a `client` token may do every client thing.

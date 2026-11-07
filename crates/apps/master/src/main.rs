@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use axum_server::tls_rustls::RustlsConfig;
+use namu_engine::files::{self, WATCH_EVERY};
 use namu_engine::message::Message;
 use namu_engine::transport::{MeshTls, TcpTransport};
 use rustls::pki_types::pem::PemObject;
@@ -50,9 +51,10 @@ enum ArtifactsAt {
     Dir(PathBuf),
 }
 
+/// Read again whenever they change: a renewed certificate, a rotated token.
 struct Security {
     tls: TlsFiles,
-    tokens: Tokens,
+    tokens: PathBuf,
 }
 
 /// This member's identity in the cluster, as PEM files: the cluster's CA, and its certificate
@@ -61,6 +63,60 @@ struct TlsFiles {
     ca: PathBuf,
     cert: PathBuf,
     key: PathBuf,
+}
+
+/// The mesh's TLS, the API's HTTPS and its tokens, as loaded; each is loaded again when its files
+/// change.
+struct Secured {
+    mesh: MeshTls,
+    https: RustlsConfig,
+    tokens: Arc<Tokens>,
+}
+
+impl Secured {
+    fn load(
+        Security {
+            tls,
+            tokens: tokens_file,
+        }: Security,
+    ) -> anyhow::Result<Self> {
+        let mesh = tls.mesh()?;
+        let https = RustlsConfig::from_config(Arc::new(https_config(&tls)?));
+        let tokens = Arc::new(Tokens::from_file(&tokens_file)?);
+        files::watch(
+            "the API's tokens",
+            vec![tokens_file.clone()],
+            WATCH_EVERY,
+            {
+                let tokens = tokens.clone();
+                move || tokens.reload_file(&tokens_file)
+            },
+        );
+        let paths = vec![tls.ca.clone(), tls.cert.clone(), tls.key.clone()];
+        files::watch("this member's certificate", paths, WATCH_EVERY, {
+            let (mesh, https) = (mesh.clone(), https.clone());
+            move || {
+                tls.reload(&mesh)?;
+                https.reload_from_config(Arc::new(https_config(&tls)?));
+                Ok(())
+            }
+        });
+        Ok(Self {
+            mesh,
+            https,
+            tokens,
+        })
+    }
+}
+
+impl TlsFiles {
+    fn mesh(&self) -> anyhow::Result<MeshTls> {
+        MeshTls::from_files(&self.ca, &self.cert, &self.key)
+    }
+
+    fn reload(&self, mesh: &MeshTls) -> anyhow::Result<()> {
+        mesh.reload_files(&self.ca, &self.cert, &self.key)
+    }
 }
 
 impl Config {
@@ -77,7 +133,7 @@ impl Config {
         ) {
             (Some(ca), Some(cert), Some(key), Some(tokens)) => Some(Security {
                 tls: TlsFiles { ca, cert, key },
-                tokens: Tokens::from_file(&tokens)?,
+                tokens,
             }),
             (None, None, None, None) if insecure => None,
             _ => anyhow::bail!(
@@ -117,17 +173,11 @@ async fn main() -> anyhow::Result<()> {
              runs, and the mesh is plaintext"
         );
     }
-    let mesh_tls = config
-        .security
-        .as_ref()
-        .map(|security| {
-            let TlsFiles { ca, cert, key } = &security.tls;
-            MeshTls::from_files(ca, cert, key)
-        })
-        .transpose()?;
+    let secured = config.security.map(Secured::load).transpose()?;
 
     let store = RedisStore::connect(&config.redis_url).await?;
-    let (mesh, mesh_local, mut inbox) = TcpTransport::bind(config.mesh_addr, mesh_tls).await?;
+    let (mesh, mesh_local, mut inbox) =
+        TcpTransport::bind(config.mesh_addr, secured.as_ref().map(|s| s.mesh.clone())).await?;
     let mesh_addr = config
         .advertise_addr
         .unwrap_or_else(|| format!("127.0.0.1:{}", mesh_local.port()));
@@ -190,10 +240,9 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let addr = config.bind_addr;
-    match config.security {
-        Some(Security { tls, tokens }) => {
-            let app = api::router(control, Some(Arc::new(tokens)));
-            let https = RustlsConfig::from_config(Arc::new(https(&tls)?));
+    match secured {
+        Some(Secured { https, tokens, .. }) => {
+            let app = api::router(control, Some(tokens));
             tracing::info!(%addr, mesh = mesh_addr, "orchestrator listening (HTTPS)");
             axum_server::bind_rustls(addr, https)
                 .serve(app.into_make_service())
@@ -225,7 +274,7 @@ where
 
 /// The API's HTTPS: this member's certificate. Clients prove who they are with tokens, not
 /// certificates.
-fn https(tls: &TlsFiles) -> anyhow::Result<rustls::ServerConfig> {
+fn https_config(tls: &TlsFiles) -> anyhow::Result<rustls::ServerConfig> {
     let read =
         |path: &PathBuf| std::fs::read(path).with_context(|| format!("reading {}", path.display()));
     let chain = CertificateDer::pem_slice_iter(&read(&tls.cert)?)

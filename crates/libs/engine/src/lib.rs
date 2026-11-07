@@ -7,6 +7,7 @@
 //! `docs/design.md`.
 
 mod cluster;
+pub mod files;
 pub mod ids;
 pub mod kernel;
 pub mod log;

@@ -336,7 +336,7 @@ async fn open(tls: Option<&MeshTls>, addr: SocketAddr) -> io::Result<Connection>
     let _ = stream.set_nodelay(true);
     Ok(match tls {
         Some(tls) => Box::new(
-            tls.connector
+            tls.connector()
                 .connect(MeshTls::server_name(), stream)
                 .await?,
         ),
@@ -359,7 +359,7 @@ async fn accept(
                 // its own connection.
                 tokio::spawn(async move {
                     let stream: Connection = match tls {
-                        Some(tls) => match tls.acceptor.accept(stream).await {
+                        Some(tls) => match tls.acceptor().accept(stream).await {
                             Ok(stream) => Box::new(stream),
                             Err(err) => {
                                 return tracing::warn!(%peer, "refused a connection: {err}");
