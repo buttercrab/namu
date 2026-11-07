@@ -40,7 +40,7 @@ pub struct LocalCluster {
     /// Runs that have not finished: who owns them and how to start them again.
     running: Arc<Mutex<HashMap<RunId, (WorkerId, Started)>>>,
     /// The reports each run's owner sent as it recorded them, by branch, as the control plane
-    /// keeps them: one sent again counts once.
+    /// keeps them: one sent again counts once. A run's outcome is made of them.
     recorded: Arc<Mutex<Recorded>>,
     /// Workers draining: still running, but given no new work.
     leaving: Mutex<HashSet<WorkerId>>,
@@ -155,6 +155,9 @@ impl LocalCluster {
         let recorded: Arc<Mutex<Recorded>> = Arc::default();
         let (control, mut inbox) = control;
         let (finished, over, reports) = (waiting.clone(), running.clone(), recorded.clone());
+        let replies = control.clone();
+        // The cluster starts its runs, as the control plane does: it keeps their reports, each
+        // branch's once, tells their owners they are stored, and gives each run's outcome.
         tokio::spawn(async move {
             while let Some(message) = inbox.recv().await {
                 match message {
@@ -162,6 +165,7 @@ impl LocalCluster {
                         run,
                         branch,
                         report,
+                        delivery,
                     } => {
                         let mut reports = reports.lock().unwrap();
                         reports
@@ -169,9 +173,24 @@ impl LocalCluster {
                             .or_default()
                             .entry(branch)
                             .or_insert(report);
+                        drop(reports);
+                        let seqs = vec![delivery.seq];
+                        replies.send(delivery.from, Message::Stored { seqs });
                     }
-                    Message::Finished { run, outcome } => {
+                    Message::Finished { run, workers } => {
                         over.lock().unwrap().remove(&run);
+                        let mut outcome = RunOutcome {
+                            workers,
+                            ..RunOutcome::default()
+                        };
+                        let reports = reports.lock().unwrap();
+                        for report in reports.get(&run).into_iter().flat_map(BTreeMap::values) {
+                            match report.clone() {
+                                Report::Result(value) => outcome.results.push(value),
+                                Report::Failure(failure) => outcome.failures.push(failure),
+                            }
+                        }
+                        drop(reports);
                         if let Some(waiter) = finished.lock().unwrap().remove(&run) {
                             let _ = waiter.send(outcome);
                         }
@@ -197,7 +216,7 @@ impl LocalCluster {
     }
 
     /// The reports of every run so far, as their owners sent them while the runs went: each
-    /// branch's once, however often it was sent.
+    /// branch's once, however often it was sent, in branch order.
     pub fn recorded(&self) -> HashMap<RunId, Vec<Report>> {
         let recorded = self.recorded.lock().unwrap();
         recorded

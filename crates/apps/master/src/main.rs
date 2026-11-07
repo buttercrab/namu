@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         mesh_addr.clone(),
     ));
 
-    // Run owners send each report here as they record it, and the outcome when the run ends.
+    // Run owners send each report here as they record it, and say when the run is over.
     tokio::spawn({
         let control = control.clone();
         async move {
@@ -81,14 +81,17 @@ async fn main() -> anyhow::Result<()> {
                         run,
                         branch,
                         report,
+                        delivery,
                     } => {
-                        if let Err(err) = control.recorded(run, branch, report).await {
-                            tracing::error!(%run, "recording a report failed: {err:#}");
+                        // Not stored, so not acknowledged: the owner keeps it, and its successor
+                        // sends it again.
+                        if let Err(err) = control.recorded(run, branch, report, delivery).await {
+                            tracing::error!(%run, "storing a report failed: {err:#}");
                         }
                     }
-                    Message::Finished { run, outcome } => {
-                        if let Err(err) = control.finished(run, outcome).await {
-                            tracing::error!(%run, "recording the outcome failed: {err:#}");
+                    Message::Finished { run, workers } => {
+                        if let Err(err) = control.finished(run, workers).await {
+                            tracing::error!(%run, "recording the end of the run failed: {err:#}");
                         }
                     }
                     other => tracing::warn!("unexpected message for the control plane: {other:?}"),

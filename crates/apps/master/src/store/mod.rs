@@ -127,11 +127,4 @@ pub trait Store: Send + Sync + 'static {
     /// Run `id`'s results from the `after`th on, at most `limit`, in the order they arrived.
     async fn results(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<Json>>;
     async fn failures(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<String>>;
-    /// Run `id`'s results and failures are these, whatever arrived before.
-    async fn replace_reports(
-        &self,
-        id: Uuid,
-        results: &[Json],
-        failures: &[String],
-    ) -> anyhow::Result<()>;
 }

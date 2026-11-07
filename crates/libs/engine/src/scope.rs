@@ -13,7 +13,7 @@
 //! ends come in, one fold at a time. Only items that ended ahead of an earlier one wait in memory;
 //! the scope is over once every branch has ended and every item is folded.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use namu_core::OpId;
@@ -23,7 +23,6 @@ use tokio::sync::Semaphore;
 
 use crate::ids::{Lineage, NodeId, ScopeId};
 use crate::message::BranchId;
-use crate::run::RunOutcome;
 use crate::tasks::{CallKey, TaskRef};
 use crate::tree::Node;
 
@@ -98,14 +97,6 @@ impl Then {
             } => Some((continuation, ctx)),
         }
     }
-}
-
-/// The run's outcome as its owner collects it.
-#[derive(Default)]
-pub struct Finish {
-    pub outcome: RunOutcome,
-    /// Branches whose report is recorded.
-    pub reported: HashSet<BranchId>,
 }
 
 /// The branch that opened a fan-out scope, suspended until the scope is over.

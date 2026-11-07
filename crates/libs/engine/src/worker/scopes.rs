@@ -1,8 +1,9 @@
 //! Owning scopes and runs: branches end here, reports are recorded here, and a scope that is over
 //! continues the branch that opened it.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use namu_core::value::Value;
 
@@ -12,13 +13,14 @@ use crate::ids::{RunId, ScopeId, WorkerId, owner};
 use crate::kernel::Start;
 use crate::log::{EndRecord, Record, ReportRecord};
 use crate::message::{Branch, BranchId, End, Message, Report, Reported, Resume};
-use crate::run::{RunOutcome, WorkerStats};
-use crate::scope::{Continuation, Ended, Finish, Scope, Then};
+use crate::run::WorkerStats;
+use crate::scope::{Continuation, Ended, Scope, Then};
 use crate::tree::Node;
 
 /// A finished run waiting for the other workers to forget it.
 pub(super) struct Ending {
-    outcome: RunOutcome,
+    /// What each worker did for the run.
+    workers: BTreeMap<WorkerId, WorkerStats>,
     waiting: HashSet<WorkerId>,
     reply_to: Option<WorkerId>,
     root_scope: ScopeId,
@@ -101,11 +103,8 @@ impl Inner {
             // The root scope stays in the log until the run is gone, so a successor of this
             // worker can still finish the run.
             (_, Then::Finish) => {
-                let finish = run.finish.lock().unwrap().take();
-                self.finish(
-                    run,
-                    finish.expect("the run's outcome is kept where its root scope is"),
-                )
+                run.root.store(false, Ordering::Release);
+                self.finish(run)
             }
             (gathered, Then::Continue { continuation, ctx }) => {
                 self.resume(run, id, continuation, ctx, gathered);
@@ -246,18 +245,12 @@ impl Inner {
         let Some(state) = self.run_state(*run) else {
             return self.orphan(reported.into());
         };
-        let recorded = {
-            let mut finish = state.finish.lock().unwrap();
-            let Some(finish) = finish.as_mut() else {
-                // The run's owner is dead and this worker is (about to be) its successor.
-                drop(finish);
-                return self.orphan(reported.into());
-            };
-            record_report(finish, *branch, report.clone())
-        };
-        if !recorded {
-            return self.ack(*delivery);
+        if !state.root.load(Ordering::Acquire) {
+            // The run's owner is dead and this worker is (about to be) its successor.
+            return self.orphan(reported.into());
         }
+        // A report sent again, after recovery, is recorded again: the starter keeps each
+        // branch's once, and its scope counts its end once.
         let record = ReportRecord {
             branch: *branch,
             report: report.clone(),
@@ -271,35 +264,57 @@ impl Inner {
         tokio::spawn(async move {
             if durable.await.is_ok() {
                 worker.ack(delivery);
-                worker.forward_report(&state, branch, report);
-                // Recorded: the branch can now end in its scope, and let the run end. Until its
-                // end is acknowledged, the report in the log stands for it.
-                worker.send_end(&state, branch, None, None);
+                worker.pass_on(&state, branch, report);
             }
         });
     }
 
-    /// Sends a recorded report on to whoever started the run, if anyone is told.
-    pub(super) fn forward_report(self: &Arc<Self>, run: &Run, branch: BranchId, report: Report) {
-        if let Some(reply_to) = run.spec.info.reply_to {
-            let run = run.id();
-            self.deliver(
-                reply_to,
-                Message::Recorded {
-                    run,
-                    branch,
-                    report,
-                },
-            );
+    /// Passes on a report that is in the log: to the run's starter, which keeps it, and as its
+    /// branch's end, to its scope. The report stands for both until each is acknowledged; then
+    /// its record leaves the log, so the log holds the reports in flight, not every result.
+    pub(super) fn pass_on(self: &Arc<Self>, run: &Run, branch: BranchId, report: Report) {
+        let gone = Record::ReportGone {
+            run: run.id(),
+            branch,
+        };
+        match run.spec.info.reply_to {
+            Some(starter) => {
+                let release = self.release_after(2, gone);
+                self.send_recorded(starter, run.id(), branch, report, Some(release.clone()));
+                self.send_end(run, branch, None, Some(release));
+            }
+            None => self.send_end(run, branch, None, Some(self.release_after(1, gone))),
         }
     }
 
-    /// Every branch of the run has ended: have every worker forget it, then report the outcome.
-    fn finish(self: &Arc<Self>, run: &Run, finish: Finish) {
+    /// Sends `report` to the run's starter, kept until it is stored.
+    pub(super) fn send_recorded(
+        self: &Arc<Self>,
+        starter: WorkerId,
+        run: RunId,
+        branch: BranchId,
+        report: Report,
+        release: Option<Arc<Release>>,
+    ) {
+        self.send_kept(
+            starter,
+            |delivery| Message::Recorded {
+                run,
+                branch,
+                report,
+                delivery,
+            },
+            release,
+        );
+    }
+
+    /// Every branch of the run has ended: have every worker forget it, then report what each
+    /// did.
+    fn finish(self: &Arc<Self>, run: &Run) {
         let run_id = run.id();
         self.runs.lock().unwrap().remove(&run_id);
-        let mut outcome = finish.outcome;
-        record_stats(&mut outcome, self.id, run.stats());
+        let mut workers = BTreeMap::new();
+        record_stats(&mut workers, self.id, run.stats());
         let waiting: HashSet<WorkerId> = self
             .routes
             .workers()
@@ -308,7 +323,7 @@ impl Inner {
             .collect();
         // Recorded before asking, so no reply can arrive before it is expected.
         let ending = Ending {
-            outcome,
+            workers,
             waiting: waiting.clone(),
             reply_to: run.spec.info.reply_to,
             root_scope: run.spec.info.root_scope,
@@ -367,7 +382,7 @@ impl Inner {
 
     pub(super) fn on_forgotten(self: &Arc<Self>, run: RunId, worker: WorkerId, stats: WorkerStats) {
         if let Some(ending) = self.ending.lock().unwrap().get_mut(&run) {
-            record_stats(&mut ending.outcome, worker, stats);
+            record_stats(&mut ending.workers, worker, stats);
             ending.waiting.remove(&worker);
         }
         self.check_forgotten(run);
@@ -393,28 +408,20 @@ impl Inner {
             root_scope: ending.root_scope,
         }]);
         if let Some(reply_to) = ending.reply_to {
-            let outcome = ending.outcome;
-            self.deliver(reply_to, Message::Finished { run, outcome });
+            let workers = ending.workers;
+            self.deliver(reply_to, Message::Finished { run, workers });
         }
         self.idle.notify_waiters();
     }
 }
 
-/// Adds a branch's report to the outcome, unless it was recorded before.
-pub(super) fn record_report(finish: &mut Finish, branch: BranchId, report: Report) -> bool {
-    if !finish.reported.insert(branch) {
-        return false;
-    }
-    match report {
-        Report::Result(value) => finish.outcome.results.push(value),
-        Report::Failure(failure) => finish.outcome.failures.push(failure),
-    }
-    true
-}
-
-/// Adds a worker's stats to an outcome, if it did anything for the run.
-fn record_stats(outcome: &mut RunOutcome, worker: WorkerId, stats: WorkerStats) {
+/// Adds a worker's stats, if it did anything for the run.
+fn record_stats(
+    workers: &mut BTreeMap<WorkerId, WorkerStats>,
+    worker: WorkerId,
+    stats: WorkerStats,
+) {
     if stats != WorkerStats::default() {
-        outcome.workers.insert(worker, stats);
+        workers.insert(worker, stats);
     }
 }

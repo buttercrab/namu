@@ -88,6 +88,11 @@ impl Inner {
 
     pub(super) fn on_ack(self: &Arc<Self>, from: WorkerId, seqs: Vec<u64>, load: Load) {
         self.routes.report(from, load);
+        self.acknowledged(seqs);
+    }
+
+    /// Lets go of the kept messages `seqs`, counting their releases done.
+    pub(super) fn acknowledged(self: &Arc<Self>, seqs: Vec<u64>) {
         for seq in seqs {
             let kept = self.outbox.lock().unwrap().remove(&seq);
             self.idle.notify_waiters();

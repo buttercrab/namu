@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex};
 use bytes::Bytes;
 use namu::prelude::*;
 use namu_core::value::Value;
-use namu_engine::RunOutcome;
-use namu_engine::message::{BranchId, Message, Report};
+use namu_engine::message::{BranchId, Delivery, Message, Report};
 use namu_engine::run::WorkerStats;
 use namu_proto::{
     PageQuery, Published, RunCreateRequest, RunStatus, TaskManifest, WorkerRegisterRequest,
@@ -380,8 +379,13 @@ fn first(query_after: u64, limit: u64) -> PageQuery {
     }
 }
 
+/// Delivery `seq` from worker 1.
+fn delivery(seq: u64) -> Delivery {
+    Delivery { from: 1, seq }
+}
+
 #[tokio::test]
-async fn results_arrive_as_they_are_recorded_each_once() {
+async fn reports_are_stored_each_once_and_their_owner_told() {
     let plane = published().await;
     plane.control.register(worker("w1", 7001)).await.unwrap();
     let run = plane
@@ -392,27 +396,43 @@ async fn results_arrive_as_they_are_recorded_each_once() {
 
     for i in 0..5 {
         let report = Report::Result(Value::new(i * 10));
+        let branch = branch(i as u64);
         plane
             .control
-            .recorded(run, branch(i as u64), report)
+            .recorded(run, branch, report, delivery(i as u64))
             .await
             .unwrap();
     }
-    // Sent again by a successor: the same branches, counted once.
+    // Sent again by a successor: the same branches, counted once, and acknowledged again.
     for i in 0..5 {
         let report = Report::Result(Value::new(i * 10));
+        let branch = branch(i as u64);
         plane
             .control
-            .recorded(run, branch(i as u64), report)
+            .recorded(run, branch, report, delivery(10 + i as u64))
             .await
             .unwrap();
     }
     let failure = Report::Failure("a branch failed".into());
     plane
         .control
-        .recorded(run, branch(5), failure)
+        .recorded(run, branch(5), failure, delivery(20))
         .await
         .unwrap();
+    // Every one is acknowledged to the worker that sent it, once stored.
+    let stored: Vec<u64> = plane
+        .mesh
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(worker, message)| match message {
+            Message::Stored { seqs } if *worker == 1 => Some(seqs.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(stored, [0, 1, 2, 3, 4, 10, 11, 12, 13, 14, 20]);
 
     let status = plane.control.run_status(run).await.unwrap();
     assert_eq!(status.status, RunStatus::Running);
@@ -436,18 +456,15 @@ async fn results_arrive_as_they_are_recorded_each_once() {
         .unwrap();
     assert_eq!(failures.items, ["a branch failed"]);
 
-    let outcome = RunOutcome {
-        results: (0..5).map(|i| Value::new(i * 10)).collect(),
-        failures: vec!["a branch failed".into()],
-        workers: BTreeMap::from([(
-            1,
-            WorkerStats {
-                calls: 6,
-                ..WorkerStats::default()
-            },
-        )]),
+    let stats = WorkerStats {
+        calls: 6,
+        ..WorkerStats::default()
     };
-    plane.control.finished(run, outcome).await.unwrap();
+    plane
+        .control
+        .finished(run, BTreeMap::from([(1, stats)]))
+        .await
+        .unwrap();
     let status = plane.control.run_status(run).await.unwrap();
     assert_eq!(status.status, RunStatus::PartialFailed);
     assert_eq!((status.results, status.failures), (5, 1));
@@ -457,9 +474,13 @@ async fn results_arrive_as_they_are_recorded_each_once() {
     );
     assert!(plane.store.running().await.unwrap().is_empty());
 
-    // A report arriving after the end is in the outcome already.
-    let late = Report::Result(Value::new(99));
-    plane.control.recorded(run, branch(9), late).await.unwrap();
+    // A report arriving after the end was stored before it; it is acknowledged, not stored again.
+    let late = Report::Result(Value::new(0));
+    plane
+        .control
+        .recorded(run, branch(0), late, delivery(30))
+        .await
+        .unwrap();
     assert_eq!(plane.control.run_status(run).await.unwrap().results, 5);
     let page = plane
         .control
@@ -480,7 +501,7 @@ async fn results_arrive_as_they_are_recorded_each_once() {
 }
 
 #[tokio::test]
-async fn an_outcome_fills_in_results_that_went_missing() {
+async fn a_run_without_failures_succeeds() {
     let plane = published().await;
     plane.control.register(worker("w1", 7001)).await.unwrap();
     let run = plane
@@ -488,19 +509,13 @@ async fn an_outcome_fills_in_results_that_went_missing() {
         .start_run(run_of(json!({"n": 21})))
         .await
         .unwrap();
-    // Only one of the three arrived, as if the control plane was down for the others.
-    let report = Report::Result(Value::new(2));
+    let report = Report::Result(Value::new(42));
     plane
         .control
-        .recorded(run, branch(1), report)
+        .recorded(run, branch(0), report, delivery(0))
         .await
         .unwrap();
-
-    let outcome = RunOutcome {
-        results: vec![Value::new(1), Value::new(2), Value::new(3)],
-        ..RunOutcome::default()
-    };
-    plane.control.finished(run, outcome).await.unwrap();
+    plane.control.finished(run, BTreeMap::new()).await.unwrap();
     let status = plane.control.run_status(run).await.unwrap();
     assert_eq!(status.status, RunStatus::Succeeded);
     let page = plane
@@ -508,7 +523,7 @@ async fn an_outcome_fills_in_results_that_went_missing() {
         .results(run, PageQuery::default())
         .await
         .unwrap();
-    assert_eq!(page.items, [json!(1), json!(2), json!(3)]);
+    assert_eq!(page.items, [json!(42)]);
 }
 
 #[tokio::test]

@@ -174,3 +174,31 @@ async fn results_arrive_while_the_run_goes_on() {
         ["1", "2", "3", "4", "5"].map(String::from)
     );
 }
+
+/// A report leaves the log once the run's starter stored it and its branch ended in its scope:
+/// the log holds the reports in flight, not every result, however many a run makes.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_log_holds_reports_in_flight_not_every_result() {
+    #[workflow]
+    fn many() -> i32 {
+        let n = 400;
+        let delay = 1;
+        let pause = 0;
+        each(slow_numbers(n, delay, pause))
+    }
+
+    for workers in [1, 3] {
+        let cluster = LocalCluster::new(vec![tasks(); workers]);
+        let outcome = cluster
+            .run(many().to_serializable("many".into()))
+            .await
+            .unwrap();
+        assert_eq!(outcome.results.len(), 400, "{workers} workers");
+        let peak = cluster.log().peak_reports();
+        println!("{workers} workers: at most {peak} of 400 reports in the log at once");
+        assert!(
+            peak < 40,
+            "{workers} workers: {peak} reports in the log at once"
+        );
+    }
+}

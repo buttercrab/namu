@@ -5,7 +5,7 @@
 //! acknowledgements wait for that. Nothing reads the log on the common path: a successor reads a
 //! dead worker's estate, and workers read nodes whose holder is dead.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -92,6 +92,12 @@ pub enum Record {
     Report {
         run: RunId,
         report: ReportRecord,
+    },
+    /// The run's starter has stored branch `branch`'s report, and its end is in its scope: its
+    /// record goes.
+    ReportGone {
+        run: RunId,
+        branch: BranchId,
     },
     /// The run is over: everything about it can go.
     RunGone {
@@ -198,6 +204,8 @@ pub struct MemoryLog {
     runs: Mutex<HashMap<RunId, MemoryRun>>,
     /// The most nodes any run held at once.
     peak: std::sync::atomic::AtomicUsize,
+    /// The most reports any run held at once.
+    peak_reports: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Debug, Default)]
@@ -206,7 +214,7 @@ struct MemoryRun {
     nodes: HashMap<NodeId, Arc<Node>>,
     branches: HashMap<(WorkerId, BranchId, u64), Branch>,
     scopes: HashMap<ScopeId, ScopeEstate>,
-    reports: Vec<ReportRecord>,
+    reports: BTreeMap<BranchId, ReportRecord>,
     /// Nodes held after the last sweep.
     swept: usize,
 }
@@ -238,6 +246,11 @@ impl MemoryLog {
     /// The most nodes any run's log held at once.
     pub fn peak_nodes(&self) -> usize {
         self.peak.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The most reports any run's log held at once: those in flight, not every result.
+    pub fn peak_reports(&self) -> usize {
+        self.peak_reports.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn apply(&self, records: Vec<Record>) {
@@ -353,7 +366,15 @@ impl MemoryLog {
                     }
                 }
                 Record::Report { run, report } => {
-                    runs.entry(run).or_default().reports.push(report);
+                    let reports = &mut runs.entry(run).or_default().reports;
+                    reports.insert(report.branch, report);
+                    self.peak_reports
+                        .fetch_max(reports.len(), std::sync::atomic::Ordering::Relaxed);
+                }
+                Record::ReportGone { run, branch } => {
+                    if let Some(run) = runs.get_mut(&run) {
+                        run.reports.remove(&branch);
+                    }
                 }
                 Record::RunGone { run, .. } => {
                     runs.remove(&run);
@@ -389,7 +410,7 @@ impl Log for MemoryLog {
             RunEstate {
                 info: run.info.clone(),
                 reports: match owns_run {
-                    true => run.reports.clone(),
+                    true => run.reports.values().cloned().collect(),
                     false => Vec::new(),
                 },
                 scopes: run

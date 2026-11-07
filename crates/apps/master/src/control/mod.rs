@@ -19,8 +19,8 @@ use bytes::Bytes;
 use namu_core::inputs::Inputs;
 use namu_core::ir::Workflow;
 use namu_core::value::Value;
-use namu_engine::RunOutcome;
-use namu_engine::message::{BranchId, Message, Report};
+use namu_engine::WorkerStats;
+use namu_engine::message::{BranchId, Delivery, Message, Report};
 use namu_engine::transport::{TcpTransport, Transport};
 use namu_proto::{
     MEMBERSHIP_TTL_MS, Member, Membership, Page, PageQuery, Published, RunCreateRequest, RunStatus,
@@ -262,61 +262,60 @@ impl Control {
         Ok(())
     }
 
-    /// Branch `branch` of run `run` reported `report`, which its owner has recorded. One sent
-    /// again (a successor sends what it finds in the log) counts once; one that arrives after the
-    /// run ended is in its outcome already.
+    /// Branch `branch` of run `run` reported `report`, which its owner has recorded, and keeps
+    /// until it is stored here. Once it is, the owner is told (`delivery`), and lets go of it. One
+    /// sent again (a successor sends what it finds in the log) counts once; one that arrives
+    /// after the run ended was stored before it did.
     pub async fn recorded(
         &self,
         run: Uuid,
         branch: BranchId,
         report: Report,
+        delivery: Delivery,
     ) -> anyhow::Result<()> {
-        let Some(record) = self.store.run(run).await? else {
-            return Ok(());
-        };
-        if record.end.is_some() {
-            return Ok(());
+        let running = self
+            .store
+            .run(run)
+            .await?
+            .is_some_and(|run| run.end.is_none());
+        if running {
+            let report = match report {
+                Report::Result(value) => Reported::Result(to_json(&value)?),
+                Report::Failure(failure) => Reported::Failure(failure),
+            };
+            let branch = format!("{}:{}", branch.scope, branch.index);
+            self.store.record(run, &branch, &report).await?;
         }
-        let report = match report {
-            Report::Result(value) => Reported::Result(to_json(&value)?),
-            Report::Failure(failure) => Reported::Failure(failure),
-        };
-        let branch = format!("{}:{}", branch.scope, branch.index);
-        self.store.record(run, &branch, &report).await?;
+        let seqs = vec![delivery.seq];
+        self.mesh.send(delivery.from, Message::Stored { seqs });
         Ok(())
     }
 
-    /// Run `run` ended as `outcome`, which its owner reported.
-    pub async fn finished(&self, run: Uuid, outcome: RunOutcome) -> anyhow::Result<()> {
-        let ids: Vec<u64> = outcome.workers.keys().copied().collect();
+    /// Run `run` is over, and `workers` is what each worker did for it. Its reports came before,
+    /// each kept by its owner until it was stored here, so they are all here.
+    pub async fn finished(
+        &self,
+        run: Uuid,
+        workers: BTreeMap<u64, WorkerStats>,
+    ) -> anyhow::Result<()> {
+        let ids: Vec<u64> = workers.keys().copied().collect();
         let names = self.store.worker_names(&ids).await?;
         let mut calls_by_worker = BTreeMap::new();
         let mut remote_node_fetches_by_worker = BTreeMap::new();
-        for ((&id, stats), name) in outcome.workers.iter().zip(names) {
+        for ((&id, stats), name) in workers.iter().zip(names) {
             let name = name.unwrap_or_else(|| format!("worker-{id}"));
             calls_by_worker.insert(name.clone(), stats.calls);
             remote_node_fetches_by_worker.insert(name, stats.fetches);
         }
-        // The outcome holds every report. Those that arrived one by one are all of them, unless
-        // some were lost on the way (to a control plane that was down): then the outcome's stand.
-        let record = self.store.run(run).await?;
-        let counts = record.map(|record| (record.results, record.failures));
-        let complete = (outcome.results.len() as u64, outcome.failures.len() as u64);
-        if counts != Some(complete) {
-            tracing::warn!(%run, ?counts, ?complete, "results went missing on the way; taking the outcome's");
-            let results = outcome
-                .results
-                .iter()
-                .map(to_json)
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            self.store
-                .replace_reports(run, &results, &outcome.failures)
-                .await?;
-        }
+        let failed = self
+            .store
+            .run(run)
+            .await?
+            .is_some_and(|run| run.failures > 0);
         let end = RunEnd {
-            status: match outcome.succeeded() {
-                true => RunStatus::Succeeded,
-                false => RunStatus::PartialFailed,
+            status: match failed {
+                false => RunStatus::Succeeded,
+                true => RunStatus::PartialFailed,
             },
             finished_at_ms: now_ms(),
             calls_by_worker,

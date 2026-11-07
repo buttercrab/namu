@@ -254,17 +254,4 @@ impl Store for MemoryStore {
         let failures = state.reports.get(&id).map_or(&[][..], |r| &r.failures[..]);
         Ok(page(failures, after, limit))
     }
-
-    async fn replace_reports(
-        &self,
-        id: Uuid,
-        results: &[Json],
-        failures: &[String],
-    ) -> anyhow::Result<()> {
-        let mut state = self.state();
-        let reports = state.reports.entry(id).or_default();
-        reports.results = results.to_vec();
-        reports.failures = failures.to_vec();
-        Ok(())
-    }
 }

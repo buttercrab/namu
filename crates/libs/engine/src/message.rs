@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{Lineage, NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
 use crate::routes::Load;
-use crate::run::{RunInfo, RunOutcome, WorkerStats};
+use crate::run::{RunInfo, WorkerStats};
 use crate::tree::Node;
 
 /// A branch's identity, stable across handoffs and recovery: the scope it was created in (its
@@ -84,17 +84,24 @@ pub enum Message {
         task_versions: BTreeMap<String, String>,
         reply_to: WorkerId,
     },
-    /// A report the run's owner recorded, for whoever started the run: results arrive as the
-    /// run goes, an unbounded run's too. `branch` names it, so one sent again (a successor sends
-    /// what it finds in the log) is known as the same.
+    /// A report the run's owner recorded, for whoever started the run, which keeps it: results
+    /// arrive as the run goes, an unbounded run's too. `branch` names it, so one sent again (a
+    /// successor sends what it finds in the log) is known as the same. The owner keeps it until
+    /// told it is `Stored`; then its record leaves the log.
     Recorded {
         run: RunId,
         branch: BranchId,
         report: Report,
+        delivery: Delivery,
     },
+    /// The run's starter has stored these `Recorded` deliveries of the receiver's.
+    Stored {
+        seqs: Vec<u64>,
+    },
+    /// The run is over. Its reports went before, as `Recorded`; here is what each worker did.
     Finished {
         run: RunId,
-        outcome: RunOutcome,
+        workers: BTreeMap<WorkerId, WorkerStats>,
     },
 
     Handoff(Handoff),

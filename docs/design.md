@@ -410,7 +410,7 @@ the last durable point, and duplicates of recomputed work are recognized and dro
   when it continues after the collect.
 - A branch's **hop** counts its handoffs, so each stop of a branch on a worker is a distinct
   record.
-- **Scope owners drop a second `End` from the same branch, and run owners a second `Report`.**
+- **Scope owners drop a second `End` from the same branch, and a run's starter a second report.**
   So if recovery executes a branch again, it still counts once: effects on NAMU state are
   exactly-once, while task execution is at-least-once.
 
@@ -426,7 +426,7 @@ except the acknowledgement that releases the sender's copy.
 | Branch (context, resume point, scopes) | the worker holding it | when the branch arrives there |
 | Scope (the branch that opened it, its collect, its count if known) | the scope's owner | when it fans out; a stream's count when the stream ends |
 | End (branch index, collected item) | the scope's owner | when a branch ends in the scope |
-| Report (branch id, result or failure) | the run's owner | when a branch reports |
+| Report (branch id, result or failure) | the run's owner | when a branch reports; it goes once the run's starter has stored it and the branch's end is in its scope |
 | Nodes | whoever writes a record that refers to them | with that record |
 
 **Nodes are logged only when something durable refers to them.** A record refers to a context.
@@ -692,7 +692,7 @@ runs. Auth and multi-tenancy come later, but the API shapes should not preclude 
 | Fan-out / fan-in | ✅ Type-driven via `IntoArg`, or explicit with `each`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine). Reduce: an ordered fold at the scope's owner as branches end, durable step by step. Window: every `n` items in branch order go on as a branch, over lists and unbounded streams (§4.5) | Windows by time; the log still keeps a reducing or windowed scope's items until it is over |
 | `return` in a branch | ✅ Ends the branch; before a collect it drops the item (filter) | |
 | Inputs | ✅ A workflow's parameters are its inputs: typed in the IR, bound by name when a run starts (a JSON object through `POST /runs` and `namu run --input`, Rust values in process), checked against their types first, and held in the root context (§4.1) | |
-| Results | ✅ Each report goes to the control plane once its owner has logged it, so results arrive as a run goes, an unbounded run's too; a successor sends again what it finds in the log, and the control plane keeps each branch's report once. Read in pages with a cursor (`GET /runs/{id}/results`, `namu results --follow`); a run's outcome fills in what went missing on the way | Push (server-sent events) instead of polling |
+| Results | ✅ Each report goes to the run's starter once its owner has logged it, kept until the starter has stored it, so results arrive as a run goes, an unbounded run's too; a successor sends again what it finds in the log, and the starter keeps each branch's report once. Read in pages with a cursor (`GET /runs/{id}/results`, `namu results --follow`) | Push (server-sent events) instead of polling |
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |
@@ -706,6 +706,6 @@ runs. Auth and multi-tenancy come later, but the API shapes should not preclude 
 | Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v6; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
 | Runtimes | ✅ Per-task `wasm`, `native` or `python`, routed by runtime and platform. Python: a pool of processes per task on the worker, speaking MessagePack frames, called as an async task (`sdk/python`) | Python streams and batches; a Python environment per task; containers, GPU |
-| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, and nodes no live record reaches are swept whenever a run's nodes double (§7.5) | Reports, which are the run's results, stay until it ends |
+| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, and nodes no live record reaches are swept whenever a run's nodes double (§7.5)  A report goes once the run's starter (the control plane) has stored it and its branch's end is logged in its scope, so the log holds the reports in flight, not a run's results | |
 | Fan-in termination | ✅ Counting at scope owners: every branch of a scope is created by its owner, so it knows the count; ended indices are a watermark plus the out-of-order window | |
 | Membership | ✅ Join (register + heartbeats); a worker whose heartbeats stop is replaced by a successor (§7.4). Drain on SIGTERM (§10.4): routed around, branches move on at their next task call, stream sources stop at an item, and once nothing is in flight and everything is durable the worker leaves and its successor takes over its scopes from the log, with nothing run twice | Heartbeats tied to the registering process, not just its id |

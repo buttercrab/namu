@@ -356,31 +356,4 @@ impl Store for RedisStore {
     async fn failures(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<String>> {
         page(&mut self.conn(), &run_key(id, "failures"), after, limit).await
     }
-
-    async fn replace_reports(
-        &self,
-        id: Uuid,
-        results: &[Json],
-        failures: &[String],
-    ) -> anyhow::Result<()> {
-        let (results_key, failures_key) = (run_key(id, "results"), run_key(id, "failures"));
-        let results = results
-            .iter()
-            .map(serde_json::to_string)
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut pipe = redis::pipe();
-        pipe.atomic()
-            .del(&results_key)
-            .ignore()
-            .del(&failures_key)
-            .ignore();
-        if !results.is_empty() {
-            pipe.rpush(&results_key, results).ignore();
-        }
-        if !failures.is_empty() {
-            pipe.rpush(&failures_key, failures).ignore();
-        }
-        pipe.query_async::<()>(&mut self.conn()).await?;
-        Ok(())
-    }
 }

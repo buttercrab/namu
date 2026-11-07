@@ -50,6 +50,11 @@ fn branch_field(holder: WorkerId, id: BranchId, hop: u64) -> String {
     format!("{holder}:{}:{}:{hop}", id.scope, id.index)
 }
 
+/// A report's field in its run's reports: its branch's.
+fn report_field(id: BranchId) -> String {
+    format!("{}:{}", id.scope, id.index)
+}
+
 pub struct RedisLog {
     redis: ConnectionManager,
     appends: mpsc::UnboundedSender<(Vec<Record>, oneshot::Sender<()>)>,
@@ -280,7 +285,16 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             pipe.rpush(ends_key(*run, *scope), encode(end)?).ignore();
         }
         Record::Report { run, report } => {
-            pipe.rpush(key(*run, "reports"), encode(report)?).ignore();
+            pipe.hset(
+                key(*run, "reports"),
+                report_field(report.branch),
+                encode(report)?,
+            )
+            .ignore();
+        }
+        Record::ReportGone { run, branch } => {
+            pipe.hdel(key(*run, "reports"), report_field(*branch))
+                .ignore();
         }
         Record::RunGone { run, root_scope } => {
             // Every other scope is gone by now, and its ends with it.
@@ -396,7 +410,7 @@ impl Log for RedisLog {
 
             let reports = match info.owner() == worker {
                 true => {
-                    let raw: Vec<Vec<u8>> = redis.lrange(key(run, "reports"), 0, -1).await?;
+                    let raw: Vec<Vec<u8>> = redis.hvals(key(run, "reports")).await?;
                     raw.iter()
                         .map(|raw| rmp_serde::from_slice::<ReportRecord>(raw))
                         .collect::<Result<Vec<_>, _>>()?

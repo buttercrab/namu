@@ -20,7 +20,7 @@ mod view;
 mod windows;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
@@ -34,10 +34,10 @@ use self::scopes::Ending;
 use crate::ids::{Minter, NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
 use crate::log::{Log, Record};
-use crate::message::{Branch, BranchId, FetchRun, Message, Resume};
+use crate::message::{Branch, BranchId, FetchRun, Message, Report, Resume};
 use crate::routes::{Load, Routes};
-use crate::run::{RunInfo, RunOutcome, RunSpec, WorkerStats};
-use crate::scope::{Finish, Scope, Then};
+use crate::run::{RunInfo, RunSpec, WorkerStats};
+use crate::scope::{Scope, Then};
 use crate::tasks::{TaskRef, Tasks};
 use crate::transport::Transport;
 use crate::tree::{Node, Nodes};
@@ -91,8 +91,9 @@ struct Run {
     nodes: Arc<Nodes>,
     /// The scopes this worker owns that are open: opened here, or taken over from a dead worker.
     scopes: Mutex<HashMap<ScopeId, Scope>>,
-    /// The run's outcome as it is collected, on the worker that owns the run (or took it over).
-    finish: Mutex<Option<Finish>>,
+    /// Whether this worker holds the run's root scope, where its reports come: it owns the run,
+    /// or took it over.
+    root: AtomicBool,
     calls: AtomicU64,
     fetches: AtomicU64,
 }
@@ -250,10 +251,11 @@ impl Inner {
                 });
             }
             Message::Recorded { run, .. } => {
-                tracing::warn!(%run, "a run's report sent to a worker; only the control plane takes them");
+                tracing::warn!(%run, "a run's report sent to a worker; only its starter takes them");
             }
+            Message::Stored { seqs } => self.acknowledged(seqs),
             Message::Finished { run, .. } => {
-                tracing::warn!(%run, "run outcome sent to a worker; only the control plane takes them");
+                tracing::warn!(%run, "a run's end sent to a worker; only its starter takes it");
             }
             Message::Handoff(handoff) => self.on_handoff(handoff),
             Message::End(end) => self.on_end(end),
@@ -299,11 +301,15 @@ impl Inner {
         let spec = match RunSpec::from_info(info.clone()) {
             Ok(spec) => Arc::new(spec),
             Err(err) => {
-                let outcome = RunOutcome {
-                    failures: vec![format!("run did not start: {err:#}")],
-                    ..RunOutcome::default()
+                // The run's one report, from its root branch.
+                let branch = BranchId {
+                    scope: info.root_scope,
+                    index: 0,
                 };
-                return self.deliver(reply_to, Message::Finished { run: id, outcome });
+                let failure = Report::Failure(format!("run did not start: {err:#}"));
+                self.send_recorded(reply_to, id, branch, failure, None);
+                let workers = BTreeMap::new();
+                return self.deliver(reply_to, Message::Finished { run: id, workers });
             }
         };
         if let Err(err) = self.tasks.prepare(&spec).await {
@@ -313,7 +319,7 @@ impl Inner {
 
         // The root context holds the run's inputs, so every branch sees them.
         let root = run.nodes.hold(Arc::new(Node::root(info.root, inputs)));
-        *run.finish.lock().unwrap() = Some(Finish::default());
+        run.root.store(true, Ordering::Release);
         // The root scope has one branch: the run's root branch.
         let root_scope = Scope::new(Then::Finish, Some(1));
         run.open_scope(info.root_scope, root_scope);
@@ -389,7 +395,7 @@ impl Inner {
                         spec,
                         nodes: Arc::default(),
                         scopes: Mutex::default(),
-                        finish: Mutex::default(),
+                        root: AtomicBool::new(false),
                         calls: AtomicU64::new(0),
                         fetches: AtomicU64::new(0),
                     })
