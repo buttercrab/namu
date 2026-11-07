@@ -223,6 +223,10 @@ pub struct PageQuery {
     pub after: u64,
     #[serde(default)]
     pub limit: Option<u64>,
+    /// How long a page that would be empty while the run goes on waits for something to hold
+    /// (up to 30 s): a follower is told of each report as soon as it is stored, without polling.
+    #[serde(default)]
+    pub wait_ms: Option<u64>,
 }
 
 /// A worker joining the cluster.

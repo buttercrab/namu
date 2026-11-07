@@ -10,6 +10,7 @@
 //!   runs it owned before they reached the log are started again on the successor.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -28,6 +29,7 @@ use namu_proto::{
     WorkflowUploadRequest,
 };
 use serde_json::Value as Json;
+use tokio::time::timeout_at;
 use uuid::Uuid;
 
 use crate::artifacts::{self, Artifacts};
@@ -77,6 +79,8 @@ pub struct Control {
     impaired: std::sync::atomic::AtomicBool,
     /// One sweep at a time: a worker's leaving sweeps too, besides the periodic sweep.
     sweeping: tokio::sync::Mutex<()>,
+    /// Moves on whenever a report is stored or a run ends, for pages that wait for one.
+    reported: tokio::sync::watch::Sender<u64>,
 }
 
 impl Control {
@@ -95,6 +99,7 @@ impl Control {
             epoch: Uuid::new_v4().as_u64_pair().0,
             impaired: std::sync::atomic::AtomicBool::new(false),
             sweeping: tokio::sync::Mutex::new(()),
+            reported: tokio::sync::watch::Sender::new(0),
         }
     }
 
@@ -300,6 +305,7 @@ impl Control {
                     Reported::Failure(_) => "failure",
                 };
                 metrics::counter!("namu_reports_stored_total", "kind" => kind).increment(1);
+                self.reported.send_modify(|n| *n += 1);
             }
         }
         let seqs = vec![delivery.seq];
@@ -335,6 +341,7 @@ impl Control {
             remote_node_fetches_by_worker,
         };
         self.store.end_run(run, &end).await?;
+        self.reported.send_modify(|n| *n += 1);
         let status = match end.status {
             RunStatus::Succeeded => "succeeded",
             RunStatus::PartialFailed => "partial_failed",
@@ -377,22 +384,42 @@ impl Control {
 
     /// Run `run`'s results, in the order they arrived, from `query.after` on.
     pub async fn results(&self, run: Uuid, query: PageQuery) -> Result<Page<Json>, ApiError> {
-        let record = self.run(run).await?;
-        let items = self
-            .store
-            .results(run, query.after, page_limit(query))
-            .await?;
-        Ok(page(&record, query, items))
+        let limit = page_limit(query);
+        self.page(run, query, || self.store.results(run, query.after, limit))
+            .await
     }
 
     /// Run `run`'s failures, in the order they arrived, from `query.after` on.
     pub async fn failures(&self, run: Uuid, query: PageQuery) -> Result<Page<String>, ApiError> {
-        let record = self.run(run).await?;
-        let items = self
-            .store
-            .failures(run, query.after, page_limit(query))
-            .await?;
-        Ok(page(&record, query, items))
+        let limit = page_limit(query);
+        self.page(run, query, || self.store.failures(run, query.after, limit))
+            .await
+    }
+
+    /// A page of run `run`'s reports, as `read` reads them. One that would be empty while the run
+    /// goes on waits, up to `query.wait_ms`, for a report to be stored or the run to end.
+    async fn page<T, F>(
+        &self,
+        run: Uuid,
+        query: PageQuery,
+        read: impl Fn() -> F,
+    ) -> Result<Page<T>, ApiError>
+    where
+        F: Future<Output = anyhow::Result<Vec<T>>>,
+    {
+        let wait = Duration::from_millis(query.wait_ms.unwrap_or(0).min(MAX_WAIT_MS));
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut reported = self.reported.subscribe();
+        loop {
+            // What is stored from here on wakes the wait below.
+            reported.mark_unchanged();
+            let record = self.run(run).await?;
+            let page = page(&record, query, read().await?);
+            let waits = page.items.is_empty() && page.status == RunStatus::Running;
+            if !waits || !matches!(timeout_at(deadline, reported.changed()).await, Ok(Ok(()))) {
+                return Ok(page);
+            }
+        }
     }
 
     async fn run(&self, run: Uuid) -> Result<RunRecord, ApiError> {
@@ -632,6 +659,8 @@ fn same_task(a: &TaskManifest, b: &TaskManifest) -> bool {
 /// How many results a page holds unless asked for fewer, and at most.
 const PAGE: u64 = 1_000;
 const MAX_PAGE: u64 = 10_000;
+/// The longest a page waits for a report.
+const MAX_WAIT_MS: u64 = 30_000;
 
 fn page_limit(query: PageQuery) -> u64 {
     query.limit.unwrap_or(PAGE).min(MAX_PAGE)

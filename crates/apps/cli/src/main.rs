@@ -9,7 +9,7 @@ use std::process::Command;
 
 use clap::{Parser, Subcommand};
 use namu_proto::{
-    Page, RunCreateRequest, RunCreateResponse, RunStatus, TaskManifest, TaskRuntime,
+    Page, PageQuery, RunCreateRequest, RunCreateResponse, RunStatus, TaskManifest, TaskRuntime,
     WorkflowUploadRequest,
 };
 use reqwest::multipart;
@@ -717,9 +717,12 @@ async fn fetch_page(
     master_url: &str,
     run: &str,
     what: &str,
-    after: u64,
+    query: PageQuery,
 ) -> Result<Page<JsonValue>, Failed> {
-    let url = format!("{master_url}/runs/{run}/{what}?after={after}");
+    let mut url = format!("{master_url}/runs/{run}/{what}?after={}", query.after);
+    if let Some(wait_ms) = query.wait_ms {
+        url.push_str(&format!("&wait_ms={wait_ms}"));
+    }
     let response = client
         .get(url)
         .send()
@@ -747,12 +750,12 @@ async fn fetch_page_patiently(
     master_url: &str,
     run: &str,
     what: &str,
-    after: u64,
+    query: PageQuery,
 ) -> anyhow::Result<Page<JsonValue>> {
     let patience = std::time::Duration::from_secs(120);
     let started = std::time::Instant::now();
     loop {
-        match fetch_page(client, master_url, run, what, after).await {
+        match fetch_page(client, master_url, run, what, query).await {
             Ok(page) => return Ok(page),
             Err(Failed::Unavailable(err)) if started.elapsed() < patience => {
                 say_waiting(&err);
@@ -784,7 +787,11 @@ async fn all_pages(
 ) -> anyhow::Result<Vec<JsonValue>> {
     let mut items = Vec::new();
     loop {
-        let page = fetch_page_patiently(client, master_url, run, what, items.len() as u64).await?;
+        let query = PageQuery {
+            after: items.len() as u64,
+            ..PageQuery::default()
+        };
+        let page = fetch_page_patiently(client, master_url, run, what, query).await?;
         if page.items.is_empty() {
             return Ok(items);
         }
@@ -792,25 +799,30 @@ async fn all_pages(
     }
 }
 
+/// How long a followed page waits on the orchestrator for a report.
+const FOLLOW_WAIT_MS: u64 = 20_000;
+
 /// Prints a run's `what`, a JSON value per line; with `follow`, as they arrive, until the run
 /// ends.
 async fn print_results(run: &str, what: &str, follow: bool) -> anyhow::Result<()> {
     let master_url = get_master_url().map_err(anyhow::Error::msg)?;
     let master_url = master_url.trim_end_matches('/');
     let client = client();
-    let mut after = 0;
+    // Following, an empty page waits on the orchestrator for the next report, or the run's end.
+    let mut query = PageQuery {
+        wait_ms: follow.then_some(FOLLOW_WAIT_MS),
+        ..PageQuery::default()
+    };
     loop {
-        let page = fetch_page_patiently(&client, master_url, run, what, after).await?;
+        let page = fetch_page_patiently(&client, master_url, run, what, query).await?;
         for item in &page.items {
             println!("{item}");
         }
-        after = page.next;
+        query.after = page.next;
         // A page read once the run ended holds everything up to its end.
         let done = page.status != RunStatus::Running;
-        match (page.items.is_empty(), follow && !done) {
-            (false, _) => continue,
-            (true, true) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
-            (true, false) => return Ok(()),
+        if page.items.is_empty() && (!follow || done) {
+            return Ok(());
         }
     }
 }

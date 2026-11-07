@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bytes::Bytes;
 use namu::prelude::*;
@@ -376,6 +377,7 @@ fn first(query_after: u64, limit: u64) -> PageQuery {
     PageQuery {
         after: query_after,
         limit: Some(limit),
+        wait_ms: None,
     }
 }
 
@@ -524,6 +526,55 @@ async fn a_run_without_failures_succeeds() {
         .await
         .unwrap();
     assert_eq!(page.items, [json!(42)]);
+}
+
+#[tokio::test]
+async fn a_follower_waits_for_the_next_report_or_the_end() {
+    let plane = published().await;
+    plane.control.register(worker("w1", 7001)).await.unwrap();
+    let run = plane
+        .control
+        .start_run(run_of(json!({"n": 21})))
+        .await
+        .unwrap();
+    let waiting = PageQuery {
+        wait_ms: Some(10_000),
+        ..PageQuery::default()
+    };
+    let started = std::time::Instant::now();
+
+    // Nothing yet: the page waits, and holds the report as soon as it is stored.
+    let (page, ()) = tokio::join!(plane.control.results(run, waiting), async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let report = Report::Result(Value::new(7));
+        plane
+            .control
+            .recorded(run, branch(0), report, delivery(0))
+            .await
+            .unwrap();
+    });
+    assert_eq!(page.unwrap().items, [json!(7)]);
+
+    // Past it, the page waits for the run's end, and says so.
+    let after = PageQuery {
+        after: 1,
+        ..waiting
+    };
+    let (page, ()) = tokio::join!(plane.control.results(run, after), async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        plane.control.finished(run, BTreeMap::new()).await.unwrap();
+    });
+    let page = page.unwrap();
+    assert!(page.items.is_empty());
+    assert_eq!(page.status, RunStatus::Succeeded);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "woken, not timed out"
+    );
+
+    // Over, a run's page does not wait.
+    let page = plane.control.failures(run, after).await.unwrap();
+    assert_eq!(page.status, RunStatus::Succeeded);
 }
 
 #[tokio::test]

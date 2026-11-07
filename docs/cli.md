@@ -24,6 +24,9 @@ Run `namu --help` for the full command list. When working from source, use `carg
     With `--follow`, keeps printing them as they arrive until the run ends: an unbounded run's
     results are only ever read this way. The API underneath is
     `GET /runs/{id}/results?after=N&limit=M` (and `/failures`), pages with a `next` cursor.
+    With `&wait_ms=W`, a page that would be empty while the run goes on waits up to `W` ms
+    (30 s at most) for the next report or the run's end: `--follow` uses it, so each result
+    shows as soon as it is stored.
 - `namu workers`
   - Lists registered workers.
 - `namu token --role client|worker [--tokens FILE]`
