@@ -129,10 +129,15 @@ async fn page(
     after: u64,
     limit: u64,
 ) -> anyhow::Result<Vec<String>> {
+    // No list holds more items than an `isize` counts: a page past that is empty.
+    let Ok(start) = isize::try_from(after) else {
+        return Ok(Vec::new());
+    };
     if limit == 0 {
         return Ok(Vec::new());
     }
-    let (start, stop) = (after as isize, (after + limit - 1) as isize);
+    let last = after.saturating_add(limit - 1);
+    let stop = isize::try_from(last).unwrap_or(isize::MAX);
     Ok(redis.lrange(list, start, stop).await?)
 }
 

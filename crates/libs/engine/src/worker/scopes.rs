@@ -283,6 +283,11 @@ impl Inner {
     /// Passes on a report that is in the log: to the run's starter, which keeps it, and as its
     /// branch's end, to its scope. The report stands for both until each is acknowledged; then
     /// its record leaves the log, so the log holds the reports in flight, not every result.
+    ///
+    /// Reports come here, to the run's owner, wherever their branch ended, and the run's end
+    /// (`Finished`) is sent from here too, once every branch has ended: after this report's
+    /// `Recorded`, on the same ordered session to the starter. So the starter has every report
+    /// before it hears the run is over.
     pub(super) fn pass_on(self: &Arc<Self>, run: &Run, branch: BranchId, report: Report) {
         let gone = Record::ReportGone {
             run: run.id(),
