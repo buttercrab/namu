@@ -65,7 +65,7 @@ struct Version {
 
 pub struct Control {
     store: Arc<dyn Store>,
-    artifacts: Arc<dyn Artifacts>,
+    artifacts: Arc<Artifacts>,
     mesh: Arc<dyn Mesh>,
     /// Where workers reach the control plane in the mesh.
     mesh_addr: String,
@@ -76,7 +76,7 @@ pub struct Control {
 impl Control {
     pub fn new(
         store: Arc<dyn Store>,
-        artifacts: Arc<dyn Artifacts>,
+        artifacts: Arc<Artifacts>,
         mesh: Arc<dyn Mesh>,
         mesh_addr: String,
     ) -> Self {

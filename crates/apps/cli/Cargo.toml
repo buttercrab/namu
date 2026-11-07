@@ -21,7 +21,8 @@ getrandom = "0.4"
 namu-core = { path = "../../libs/core", version = "0.1.0" }
 namu-engine = { path = "../../libs/engine", version = "0.1.0", features = ["certs"] }
 namu-proto = { path = "../../libs/proto", version = "0.1.0" }
-reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["multipart", "json", "http2", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

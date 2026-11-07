@@ -1,21 +1,19 @@
 //! Task artifacts: `tar.zst` packages of a manifest and the task's code, published once per
-//! version and fetched by workers. [`DiskArtifacts`] keeps them in a directory; an object store
-//! (S3) goes behind the same trait.
+//! version and fetched by workers. They are kept in an object store: a directory on the
+//! orchestrator's machine, or a bucket (S3), which outlives it and which any orchestrator reaches.
 
 use std::io::{Cursor, Read};
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
-use async_trait::async_trait;
 use bytes::Bytes;
 use namu_proto::{TaskManifest, TaskRuntime};
+use object_store::aws::AmazonS3Builder;
+use object_store::local::LocalFileSystem;
+use object_store::path::Path;
+use object_store::prefix::PrefixStore;
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 use sha2::Digest;
-
-#[async_trait]
-pub trait Artifacts: Send + Sync + 'static {
-    async fn put(&self, task_id: &str, version: &str, artifact: Bytes) -> anyhow::Result<()>;
-    async fn get(&self, task_id: &str, version: &str) -> anyhow::Result<Option<Bytes>>;
-}
 
 /// Whether `id` is usable as a task or workflow id, or a version: letters, digits, `-`, `_` and
 /// `.`, and not `.` or `..`. So it is safe in a path, and in a store's keys.
@@ -63,68 +61,114 @@ pub fn manifest_of(artifact: &[u8]) -> anyhow::Result<TaskManifest> {
     Ok(manifest)
 }
 
-pub struct DiskArtifacts {
-    root: PathBuf,
+/// Where task packages are kept: a directory, or a bucket.
+pub struct Artifacts {
+    store: Arc<dyn ObjectStore>,
 }
 
-impl DiskArtifacts {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+impl Artifacts {
+    /// In the directory `dir`, made if it is not there.
+    pub fn in_dir(dir: &std::path::Path) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(dir).with_context(|| format!("making {}", dir.display()))?;
+        let store = LocalFileSystem::new_with_prefix(dir)?;
+        Ok(Self {
+            store: Arc::new(store),
+        })
     }
 
-    fn path(&self, task_id: &str, version: &str) -> anyhow::Result<PathBuf> {
+    /// At `url`: `s3://bucket/prefix`, with credentials as AWS tools find them (the environment,
+    /// an ECS task's role, an instance profile), or `file:///path`.
+    pub fn at(url: &str) -> anyhow::Result<Self> {
+        let parsed = url::Url::parse(url).with_context(|| format!("artifacts URL {url:?}"))?;
+        match parsed.scheme() {
+            "s3" => {
+                let bucket = AmazonS3Builder::from_env().with_url(url).build()?;
+                let prefix = parsed.path().trim_matches('/');
+                let store: Arc<dyn ObjectStore> = match prefix.is_empty() {
+                    true => Arc::new(bucket),
+                    false => Arc::new(PrefixStore::new(bucket, prefix)),
+                };
+                Ok(Self { store })
+            }
+            "file" => {
+                let dir = parsed
+                    .to_file_path()
+                    .map_err(|()| anyhow::anyhow!("{url:?} is not a local path"))?;
+                Self::in_dir(&dir)
+            }
+            other => {
+                anyhow::bail!("artifacts at {other}:// are not supported; use s3:// or file://")
+            }
+        }
+    }
+
+    /// In memory, for tests.
+    #[cfg(test)]
+    pub fn in_memory() -> Self {
+        Self {
+            store: Arc::new(object_store::memory::InMemory::new()),
+        }
+    }
+
+    fn path(task_id: &str, version: &str) -> anyhow::Result<Path> {
         anyhow::ensure!(
             valid_id(task_id) && valid_id(version),
             "invalid task {task_id:?} {version:?}"
         );
-        Ok(self
-            .root
-            .join(task_id)
-            .join(version)
-            .join("artifact.tar.zst"))
+        Ok(Path::from(format!(
+            "tasks/{task_id}/{version}/artifact.tar.zst"
+        )))
     }
-}
 
-#[async_trait]
-impl Artifacts for DiskArtifacts {
-    async fn put(&self, task_id: &str, version: &str, artifact: Bytes) -> anyhow::Result<()> {
-        let path = self.path(task_id, version)?;
-        if let Some(dir) = path.parent() {
-            tokio::fs::create_dir_all(dir).await?;
-        }
-        // Written aside and renamed, so a reader never sees half an artifact.
-        let partial = path.with_extension("partial");
-        tokio::fs::write(&partial, &artifact).await?;
-        tokio::fs::rename(&partial, &path).await?;
+    /// Stores task `task_id@version`'s package. A reader sees all of it or none: a file is
+    /// written aside and renamed, an object put whole.
+    pub async fn put(&self, task_id: &str, version: &str, artifact: Bytes) -> anyhow::Result<()> {
+        let path = Self::path(task_id, version)?;
+        self.store.put(&path, PutPayload::from(artifact)).await?;
         Ok(())
     }
 
-    async fn get(&self, task_id: &str, version: &str) -> anyhow::Result<Option<Bytes>> {
-        let path = self.path(task_id, version)?;
-        match tokio::fs::read(&path).await {
-            Ok(bytes) => Ok(Some(Bytes::from(bytes))),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(err).with_context(|| format!("reading {}", path.display())),
+    pub async fn get(&self, task_id: &str, version: &str) -> anyhow::Result<Option<Bytes>> {
+        let path = Self::path(task_id, version)?;
+        match self.store.get(&path).await {
+            Ok(found) => Ok(Some(found.bytes().await?)),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(err) => Err(err).with_context(|| format!("reading {path}")),
         }
     }
 }
 
-/// Artifacts in memory, for tests.
 #[cfg(test)]
-#[derive(Default)]
-pub struct MemoryArtifacts(std::sync::Mutex<std::collections::HashMap<(String, String), Bytes>>);
+mod tests {
+    use super::*;
 
-#[cfg(test)]
-#[async_trait]
-impl Artifacts for MemoryArtifacts {
-    async fn put(&self, task_id: &str, version: &str, artifact: Bytes) -> anyhow::Result<()> {
-        let key = (task_id.to_string(), version.to_string());
-        self.0.lock().unwrap().insert(key, artifact);
-        Ok(())
-    }
-
-    async fn get(&self, task_id: &str, version: &str) -> anyhow::Result<Option<Bytes>> {
-        let key = (task_id.to_string(), version.to_string());
-        Ok(self.0.lock().unwrap().get(&key).cloned())
+    #[tokio::test]
+    async fn packages_are_kept_by_task_and_version() {
+        let dir = std::env::temp_dir().join(format!("namu-artifacts-{}", std::process::id()));
+        let on_disk = Artifacts::in_dir(&dir).unwrap();
+        let by_url = Artifacts::at(&format!("file://{}", dir.display())).unwrap();
+        for artifacts in [Artifacts::in_memory(), on_disk] {
+            assert_eq!(artifacts.get("t", "1").await.unwrap(), None);
+            artifacts
+                .put("t", "1", Bytes::from_static(b"one"))
+                .await
+                .unwrap();
+            artifacts
+                .put("t", "2", Bytes::from_static(b"two"))
+                .await
+                .unwrap();
+            assert_eq!(artifacts.get("t", "1").await.unwrap().unwrap(), "one");
+            assert_eq!(artifacts.get("t", "2").await.unwrap().unwrap(), "two");
+            assert!(artifacts.get("..", "1").await.is_err());
+        }
+        // The same directory, reached by URL.
+        assert_eq!(by_url.get("t", "1").await.unwrap().unwrap(), "one");
+        assert!(Artifacts::at("ftp://example.com/x").is_err());
+        // A bucket, with a prefix or without: credentials are found when it is first used. Its
+        // client takes the process's TLS provider, which `main` installs.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        assert!(Artifacts::at("s3://namu-artifacts/cluster-a").is_ok());
+        assert!(Artifacts::at("s3://namu-artifacts").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

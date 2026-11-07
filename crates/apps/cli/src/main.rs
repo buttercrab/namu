@@ -107,6 +107,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
 
     match cli.command {

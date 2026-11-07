@@ -18,7 +18,7 @@ use sha2::Digest;
 use uuid::Uuid;
 
 use super::{Control, Mesh};
-use crate::artifacts::{Artifacts, MemoryArtifacts};
+use crate::artifacts::Artifacts;
 use crate::error::ApiError;
 use crate::store::{MemoryStore, Store};
 
@@ -71,13 +71,13 @@ fn to_json(value: &Value) -> serde_json::Value {
 struct Plane {
     control: Control,
     store: Arc<MemoryStore>,
-    artifacts: Arc<MemoryArtifacts>,
+    artifacts: Arc<Artifacts>,
     mesh: Arc<Recorder>,
 }
 
 fn plane() -> Plane {
     let store = Arc::new(MemoryStore::default());
-    let artifacts = Arc::new(MemoryArtifacts::default());
+    let artifacts = Arc::new(Artifacts::in_memory());
     let mesh = Arc::new(Recorder::default());
     let control = Control::new(
         store.clone(),

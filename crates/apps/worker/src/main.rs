@@ -33,6 +33,8 @@ mod tasks;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+    // Every TLS connection the process makes or takes uses ring: the mesh, HTTPS, Redis and S3.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let orchestrator_url = std::env::var("NAMU_ORCH_URL")
         .unwrap_or_else(|_| "http://localhost:8080".to_string())

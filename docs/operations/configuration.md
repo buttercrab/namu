@@ -34,7 +34,12 @@ settings the orchestrator and workers refuse to start, unless `NAMU_INSECURE=1`.
 - `NAMU_TOKENS`: the file of accepted tokens' hashes, `<role> sha256:<hex>` per line.
 - `REDIS_URL` (default: `redis://127.0.0.1/`)
 - `BIND_ADDR` (default: `0.0.0.0:8080`)
-- `ARTIFACTS_DIR` (default: `./data/artifacts`)
+- `ARTIFACTS_URL`: where task packages are kept, `s3://bucket/prefix` (credentials as AWS tools
+  find them: the environment, an ECS task's role, an instance profile; `AWS_ENDPOINT` and
+  `AWS_ALLOW_HTTP` for an S3-compatible store). Use a bucket in production: it outlives the
+  orchestrator's machine.
+- `ARTIFACTS_DIR` (default: `./data/artifacts`): a directory instead, when `ARTIFACTS_URL` is not
+  set.
 - `NAMU_MESH_ADDR` (default: `0.0.0.0:0`, any free port): where it listens in the mesh.
 - `NAMU_ADVERTISE_ADDR` (default: `127.0.0.1:<mesh port>`): where workers reach it.
 

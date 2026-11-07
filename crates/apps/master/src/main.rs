@@ -5,7 +5,8 @@
 //!
 //! - [`control`]: the rules, apart from HTTP and storage.
 //! - [`api`]: the HTTP API over them.
-//! - [`store`]: registry, membership and runs (Redis); [`artifacts`]: task packages (disk).
+//! - [`store`]: registry, membership and runs (Redis); [`artifacts`]: task packages (a directory,
+//!   or S3).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -26,7 +27,7 @@ mod control;
 mod error;
 mod store;
 
-use crate::artifacts::DiskArtifacts;
+use crate::artifacts::Artifacts;
 use crate::auth::Tokens;
 use crate::control::Control;
 use crate::store::RedisStore;
@@ -34,13 +35,19 @@ use crate::store::RedisStore;
 /// Settings, from the environment (`docs/operations/configuration.md`).
 struct Config {
     redis_url: String,
-    artifacts_dir: PathBuf,
+    artifacts: ArtifactsAt,
     bind_addr: SocketAddr,
     mesh_addr: SocketAddr,
     /// Where workers reach the control plane in the mesh, if not on this host.
     advertise_addr: Option<String>,
     /// TLS for the API and the mesh, and the API's tokens: `None` only if run insecure.
     security: Option<Security>,
+}
+
+/// Where task packages are kept: `ARTIFACTS_URL` (`s3://bucket/prefix`), or else `ARTIFACTS_DIR`.
+enum ArtifactsAt {
+    Url(String),
+    Dir(PathBuf),
 }
 
 struct Security {
@@ -81,7 +88,10 @@ impl Config {
         Ok(Self {
             security,
             redis_url: var("REDIS_URL", "redis://127.0.0.1/"),
-            artifacts_dir: var("ARTIFACTS_DIR", "./data/artifacts").into(),
+            artifacts: match std::env::var("ARTIFACTS_URL") {
+                Ok(url) => ArtifactsAt::Url(url),
+                Err(_) => ArtifactsAt::Dir(var("ARTIFACTS_DIR", "./data/artifacts").into()),
+            },
             bind_addr: var("BIND_ADDR", "0.0.0.0:8080")
                 .parse()
                 .context("BIND_ADDR")?,
@@ -96,6 +106,8 @@ impl Config {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+    // Every TLS connection the process makes or takes uses ring: the mesh, HTTPS, Redis and S3.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let config = Config::from_env()?;
 
     if config.security.is_none() {
@@ -120,7 +132,10 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| format!("127.0.0.1:{}", mesh_local.port()));
     let control = Arc::new(Control::new(
         Arc::new(store),
-        Arc::new(DiskArtifacts::new(config.artifacts_dir)),
+        Arc::new(match &config.artifacts {
+            ArtifactsAt::Url(url) => Artifacts::at(url)?,
+            ArtifactsAt::Dir(dir) => Artifacts::in_dir(dir)?,
+        }),
         mesh,
         mesh_addr.clone(),
     ));
