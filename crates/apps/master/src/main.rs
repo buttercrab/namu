@@ -105,9 +105,10 @@ impl Config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-    // Every TLS connection the process makes or takes uses ring: the mesh, HTTPS, Redis and S3.
+    // Every TLS connection the process makes or takes uses ring: the mesh, HTTPS, Redis, S3 and
+    // OTLP.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let _telemetry = namu_telemetry::init("namu-master")?;
     let config = Config::from_env()?;
 
     if config.security.is_none() {

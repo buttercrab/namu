@@ -32,9 +32,10 @@ mod tasks;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-    // Every TLS connection the process makes or takes uses ring: the mesh, HTTPS, Redis and S3.
+    // Every TLS connection the process makes or takes uses ring: the mesh, HTTPS, Redis, S3 and
+    // OTLP.
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let _telemetry = namu_telemetry::init("namu-worker")?;
 
     let orchestrator_url = std::env::var("NAMU_ORCH_URL")
         .unwrap_or_else(|_| "http://localhost:8080".to_string())
@@ -235,6 +236,7 @@ impl Lease {
             Ok(response) => response,
             Err(err) => {
                 error!("{what} failed: {err}");
+                metrics::counter!("namu_heartbeat_failures_total").increment(1);
                 return Ok(());
             }
         };

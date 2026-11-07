@@ -16,6 +16,7 @@ pub mod routes;
 pub mod run;
 pub mod scope;
 pub mod tasks;
+pub mod telemetry;
 pub mod transport;
 pub mod tree;
 mod worker;

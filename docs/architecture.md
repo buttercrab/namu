@@ -12,6 +12,7 @@ runtime each task declares. See `design.md` for the target design and `poc.md` f
   nodes, own the fan-out scopes they open, and send each other handoffs over a `Transport`.
   `LocalCluster` runs workers in one process over channels: the reference configuration, and how
   workflows run locally and in tests.
+- **namu-telemetry**: logs, metrics and traces for the binaries; a run is one trace across workers.
 - **namu-guest**: SDK for writing tasks once and building them as WASM components (`namu:task`
   WIT world) or native libraries (C ABI).
 - **namu-master** (orchestrator, control plane): task and workflow registry, membership, starting

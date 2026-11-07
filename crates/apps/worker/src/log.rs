@@ -101,11 +101,17 @@ async fn write(
         // (an empty append marks what came before as durable) is durable already.
         let mut backoff = std::time::Duration::from_millis(50);
         let empty = pipe.cmd_iter().next().is_none();
+        let started = std::time::Instant::now();
         while !empty && let Err(err) = pipe.query_async::<()>(&mut redis).await {
             tracing::error!("log write failed, retrying: {err}");
+            metrics::counter!("namu_log_write_failures_total").increment(1);
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(std::time::Duration::from_secs(2));
         }
+        // How long a batch took to become durable: what holds up a sender's release.
+        metrics::histogram!("namu_log_write_seconds").record(started.elapsed().as_secs_f64());
+        let records: usize = batch.iter().map(|(records, _)| records.len()).sum();
+        metrics::counter!("namu_log_records_total").increment(records as u64);
         for (_, durable) in batch {
             let _ = durable.send(());
         }

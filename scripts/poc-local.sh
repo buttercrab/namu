@@ -11,6 +11,8 @@
 # and WASM compilation). KEEP=1 leaves everything running afterwards. INPUTS gives the workflow's
 # inputs, space-separated `name=value` pairs (as `namu run --input` takes them).
 #
+# Metrics are served at 127.0.0.1:ORCH_PORT+100 (the orchestrator) and +100+i (worker i).
+#
 # The cluster runs as a production one does: its API over HTTPS with tokens, its mesh over mutual
 # TLS, with a CA and tokens made for it in $POC_DIR/secrets. $POC_DIR/env sets what a client needs
 # to reach it (`source` it, then use `namu` or curl).
@@ -98,6 +100,7 @@ set -euo pipefail
 source "$POC_DIR/env"
 BIND_ADDR="127.0.0.1:${ORCH_PORT}" ARTIFACTS_DIR="$POC_DIR/artifacts" NAMU_TOKENS="$secrets/tokens" \\
   NAMU_TLS_CERT="$secrets/member.pem" NAMU_TLS_KEY="$secrets/member.key" REDIS_URL="redis://127.0.0.1:${REDIS_PORT}/" \\
+  NAMU_METRICS_ADDR="127.0.0.1:$((ORCH_PORT + 100))" \\
   "$BIN/namu-master" >>"$POC_DIR/logs/master.log" 2>&1 &
 pid=\$!
 until curl -sf --cacert "\$NAMU_TLS_CA" "\$NAMU_ORCH_URL/healthz" >/dev/null; do sleep 0.1; done
@@ -110,7 +113,8 @@ i=0
 for runtimes in $WORKERS; do
   i=$((i + 1))
   RUST_LOG=${RUST_LOG:-info} WORKER_ID="worker-$i" NAMU_RUNTIMES="$runtimes" ARTIFACT_CACHE="$POC_DIR/cache" \
-    NAMU_TOKEN="$worker_token" "$BIN/namu-worker" >"$POC_DIR/logs/worker-$i.log" 2>&1 &
+    NAMU_TOKEN="$worker_token" NAMU_METRICS_ADDR="127.0.0.1:$((ORCH_PORT + 100 + i))" \
+    "$BIN/namu-worker" >"$POC_DIR/logs/worker-$i.log" 2>&1 &
   PIDS+=($!)
   echo "worker-$i: $runtimes"
 done

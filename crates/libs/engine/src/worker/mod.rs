@@ -39,6 +39,7 @@ use crate::routes::{Load, Routes};
 use crate::run::{RunInfo, RunSpec, WorkerStats};
 use crate::scope::{Scope, Then};
 use crate::tasks::{TaskRef, Tasks};
+use crate::telemetry;
 use crate::transport::Transport;
 use crate::tree::{Node, Nodes};
 
@@ -147,6 +148,7 @@ impl Worker {
             }
         });
         tokio::spawn(inner.clone().watch_members());
+        tokio::spawn(sample(Arc::downgrade(&inner)));
         Self { inner }
     }
 
@@ -468,6 +470,30 @@ impl Inner {
         if let Some(delivery) = message.delivery() {
             self.ack(delivery);
         }
+    }
+}
+
+/// Samples what the worker holds, for its gauges, until it is gone.
+async fn sample(worker: std::sync::Weak<Inner>) {
+    let mut every = tokio::time::interval(telemetry::SAMPLE_EVERY);
+    loop {
+        every.tick().await;
+        let Some(worker) = worker.upgrade() else {
+            return;
+        };
+        let runs: Vec<Arc<Run>> = worker.runs.lock().unwrap().values().cloned().collect();
+        telemetry::sampled(telemetry::Sample {
+            runs: runs.len(),
+            scopes_open: runs
+                .iter()
+                .map(|run| run.scopes.lock().unwrap().len())
+                .sum(),
+            branches_driving: worker.driving.load(Ordering::Relaxed),
+            task_slots_busy: (worker.slots as usize)
+                .saturating_sub(worker.task_slots.available_permits()),
+            unacknowledged: worker.outbox.lock().unwrap().len(),
+            releases_pending: worker.releasing.load(Ordering::Relaxed),
+        });
     }
 }
 

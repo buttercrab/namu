@@ -2,10 +2,12 @@
 
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, MatchedPath, Multipart, Path, Query, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use axum::routing::{get, post};
-use axum::{Json, Router, middleware};
+use axum::{Json, Router};
 use bytes::Bytes;
 use namu_proto::{
     Membership, Page, PageQuery, Published, RunCreateRequest, RunCreateResponse, RunStatusResponse,
@@ -61,9 +63,23 @@ pub fn router(control: Arc<Control>, tokens: Option<Arc<Tokens>>) -> Router {
         .merge(clients)
         .merge(workers)
         .merge(both)
+        .layer(middleware::from_fn(measure))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(TraceLayer::new_for_http())
         .with_state(control)
+}
+
+/// Counts and times each request, by route (its pattern: ids would make a series each) and status.
+async fn measure(route: Option<MatchedPath>, request: Request, next: Next) -> Response {
+    let route = route.map_or_else(|| "unmatched".to_string(), |r| r.as_str().to_string());
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    let status = response.status().as_u16().to_string();
+    metrics::counter!("namu_http_requests_total", "route" => route.clone(), "status" => status)
+        .increment(1);
+    metrics::histogram!("namu_http_request_seconds", "route" => route)
+        .record(started.elapsed().as_secs_f64());
+    response
 }
 
 async fn healthz() -> Json<serde_json::Value> {

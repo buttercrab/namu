@@ -232,6 +232,7 @@ impl Control {
             created_at_ms: now_ms(),
         };
         self.store.create_run(id, &spec, owner.id).await?;
+        metrics::counter!("namu_runs_started_total").increment(1);
         self.send_start(id, &spec, owner, &published)?;
         Ok(id)
     }
@@ -284,7 +285,13 @@ impl Control {
                 Report::Failure(failure) => Reported::Failure(failure),
             };
             let branch = format!("{}:{}", branch.scope, branch.index);
-            self.store.record(run, &branch, &report).await?;
+            if self.store.record(run, &branch, &report).await? {
+                let kind = match report {
+                    Reported::Result(_) => "result",
+                    Reported::Failure(_) => "failure",
+                };
+                metrics::counter!("namu_reports_stored_total", "kind" => kind).increment(1);
+            }
         }
         let seqs = vec![delivery.seq];
         self.mesh.send(delivery.from, Message::Stored { seqs });
@@ -307,11 +314,8 @@ impl Control {
             calls_by_worker.insert(name.clone(), stats.calls);
             remote_node_fetches_by_worker.insert(name, stats.fetches);
         }
-        let failed = self
-            .store
-            .run(run)
-            .await?
-            .is_some_and(|run| run.failures > 0);
+        let record = self.store.run(run).await?;
+        let failed = record.as_ref().is_some_and(|run| run.failures > 0);
         let end = RunEnd {
             status: match failed {
                 false => RunStatus::Succeeded,
@@ -321,7 +325,17 @@ impl Control {
             calls_by_worker,
             remote_node_fetches_by_worker,
         };
-        self.store.end_run(run, &end).await
+        self.store.end_run(run, &end).await?;
+        let status = match end.status {
+            RunStatus::Succeeded => "succeeded",
+            RunStatus::PartialFailed => "partial_failed",
+            RunStatus::Running => "running",
+        };
+        metrics::counter!("namu_runs_ended_total", "status" => status).increment(1);
+        if let Some(record) = record {
+            trace_run(run, &record.spec, &end, status);
+        }
+        Ok(())
     }
 
     pub async fn run_status(&self, run: Uuid) -> Result<RunStatusResponse, ApiError> {
@@ -519,7 +533,10 @@ impl Control {
             }
         }
         let successors = self.store.successors().await?;
-        for (run, owner) in self.store.running().await? {
+        let running = self.store.running().await?;
+        metrics::gauge!("namu_members").set(members.len() as f64);
+        metrics::gauge!("namu_runs_running").set(running.len() as f64);
+        for (run, owner) in running {
             let heir = succeed(&successors, owner);
             if heir == owner {
                 continue;
@@ -540,6 +557,24 @@ impl Control {
         }
         Ok(())
     }
+}
+
+/// Sends run `run`'s root span, from when it was asked for to when it ended, if it is traced.
+fn trace_run(run: Uuid, spec: &RunSpec, end: &RunEnd, status: &'static str) {
+    use opentelemetry::KeyValue;
+    let at = |ms: u64| UNIX_EPOCH + Duration::from_millis(ms);
+    namu_telemetry::run_span(
+        run,
+        format!("run {}", spec.workflow_id),
+        at(spec.created_at_ms),
+        at(end.finished_at_ms),
+        vec![
+            KeyValue::new("namu.run", run.to_string()),
+            KeyValue::new("namu.workflow", spec.workflow_id.clone()),
+            KeyValue::new("namu.version", spec.version.clone()),
+            KeyValue::new("namu.status", status),
+        ],
+    );
 }
 
 /// Who holds what `worker` held: itself if it lives, else its successor's heir.

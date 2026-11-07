@@ -30,6 +30,10 @@ settings the orchestrator and workers refuse to start, unless `NAMU_INSECURE=1`.
   and key (PEM), for the mesh, and for the orchestrator's HTTPS. Every member has them.
 - `NAMU_INSECURE=1`: an open API and a plaintext mesh, for a machine nobody else reaches.
 
+Telemetry, for every process (see `observability.md`): `NAMU_LOG_FORMAT` (`text` or `json`),
+`RUST_LOG`, `NAMU_METRICS_ADDR` (serve Prometheus metrics there), `OTEL_EXPORTER_OTLP_ENDPOINT`
+(send traces there) and `NAMU_TRACE_RATIO` (the share of runs traced).
+
 ## Orchestrator (namu-master)
 - `NAMU_TOKENS`: the file of accepted tokens' hashes, `<role> sha256:<hex>` per line.
 - `REDIS_URL` (default: `redis://127.0.0.1/`)

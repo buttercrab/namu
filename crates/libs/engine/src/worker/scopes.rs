@@ -47,6 +47,7 @@ impl Inner {
             let ended = scope.end(branch.index, item.clone());
             if ended != Ended::Again {
                 Self::free_credit(scope);
+                crate::telemetry::branch_ended();
             }
             let folds = scope.fold.is_some();
             let feeds = scope.feed.is_some();
@@ -251,6 +252,7 @@ impl Inner {
         }
         // A report sent again, after recovery, is recorded again: the starter keeps each
         // branch's once, and its scope counts its end once.
+        crate::telemetry::report_recorded(matches!(report, Report::Failure(_)));
         let record = ReportRecord {
             branch: *branch,
             report: report.clone(),

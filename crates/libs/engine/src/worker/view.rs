@@ -144,6 +144,7 @@ impl Inner {
                 };
                 self.deliver(holder, fetch);
                 run.fetches.fetch_add(1, Ordering::Relaxed);
+                crate::telemetry::node_fetched();
             }
             match reply.await.context("node fetch abandoned")? {
                 Some(node) => Some(node),

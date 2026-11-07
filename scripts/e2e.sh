@@ -233,4 +233,20 @@ assert len(ids) == 48 and len(set(ids)) == 48, f"{len(ids)} results, {len(set(id
 assert "worker-1" in workers, f"worker-1 is no longer a member: {workers}"
 print(f"   ok: all 48 results, each once; the workers stayed ({', '.join(w for w in workers if w != 'orchestrator')})")
 PY
+# Metrics: the orchestrator's and a worker's, after all of the above.
+echo "== metrics"
+metrics() { curl -sf "http://127.0.0.1:$1/metrics"; }
+orchestrator=$(metrics $((${ORCH_PORT:-8090} + 100)))
+worker=$(metrics $((${ORCH_PORT:-8090} + 101)))
+# (It restarted since it started a run: its counters began again.)
+for series in namu_runs_ended_total namu_reports_stored_total namu_http_requests_total namu_members; do
+  grep -q "^$series" <<<"$orchestrator" || { echo "the orchestrator has no $series" >&2; exit 1; }
+done
+for series in namu_task_calls_total namu_task_call_seconds namu_handoffs_sent_total \
+  namu_log_write_seconds namu_runs namu_unacknowledged_messages; do
+  grep -q "^$series" <<<"$worker" || { echo "worker-1 has no $series" >&2; exit 1; }
+done
+calls=$(awk '/^namu_task_calls_total/ {s += $2} END {print s}' <<<"$worker")
+echo "   ok: the orchestrator's and worker-1's series are served; worker-1 made $calls task calls"
+
 echo "e2e passed"

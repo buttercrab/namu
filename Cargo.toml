@@ -18,6 +18,7 @@ members = [
   "crates/libs/guest",
   "crates/libs/macros",
   "crates/libs/proto",
+  "crates/libs/telemetry",
 
   "examples/advanced",
   "examples/basic",
