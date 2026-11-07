@@ -75,14 +75,22 @@ pub struct Delivery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
-    /// Start a run owned by the receiving worker, with its inputs bound to their values;
-    /// `Finished` goes to `reply_to` when it is over.
+    /// Start a run owned by the receiving worker, with its inputs bound to their values. Its
+    /// reports go to `reply_to` as they are recorded (`Recorded`), and `Finished` when it is over.
     Start {
         run: RunId,
         workflow: Workflow,
         inputs: Vec<(ValueId, Value)>,
         task_versions: BTreeMap<String, String>,
         reply_to: WorkerId,
+    },
+    /// A report the run's owner recorded, for whoever started the run: results arrive as the
+    /// run goes, an unbounded run's too. `branch` names it, so one sent again (a successor sends
+    /// what it finds in the log) is known as the same.
+    Recorded {
+        run: RunId,
+        branch: BranchId,
+        report: Report,
     },
     Finished {
         run: RunId,

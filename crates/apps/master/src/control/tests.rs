@@ -8,10 +8,10 @@ use bytes::Bytes;
 use namu::prelude::*;
 use namu_core::value::Value;
 use namu_engine::RunOutcome;
-use namu_engine::message::Message;
+use namu_engine::message::{BranchId, Message, Report};
 use namu_engine::run::WorkerStats;
 use namu_proto::{
-    Published, RunCreateRequest, RunStatus, TaskManifest, WorkerRegisterRequest,
+    PageQuery, Published, RunCreateRequest, RunStatus, TaskManifest, WorkerRegisterRequest,
     WorkflowUploadRequest,
 };
 use serde_json::json;
@@ -369,8 +369,19 @@ async fn runs_start_with_checked_inputs_on_workers_in_turn() {
     );
 }
 
+fn branch(index: u64) -> BranchId {
+    BranchId { scope: 7, index }
+}
+
+fn first(query_after: u64, limit: u64) -> PageQuery {
+    PageQuery {
+        after: query_after,
+        limit: Some(limit),
+    }
+}
+
 #[tokio::test]
-async fn a_run_ends_with_its_owners_report() {
+async fn results_arrive_as_they_are_recorded_each_once() {
     let plane = published().await;
     plane.control.register(worker("w1", 7001)).await.unwrap();
     let run = plane
@@ -379,44 +390,125 @@ async fn a_run_ends_with_its_owners_report() {
         .await
         .unwrap();
 
+    for i in 0..5 {
+        let report = Report::Result(Value::new(i * 10));
+        plane
+            .control
+            .recorded(run, branch(i as u64), report)
+            .await
+            .unwrap();
+    }
+    // Sent again by a successor: the same branches, counted once.
+    for i in 0..5 {
+        let report = Report::Result(Value::new(i * 10));
+        plane
+            .control
+            .recorded(run, branch(i as u64), report)
+            .await
+            .unwrap();
+    }
+    let failure = Report::Failure("a branch failed".into());
+    plane
+        .control
+        .recorded(run, branch(5), failure)
+        .await
+        .unwrap();
+
+    let status = plane.control.run_status(run).await.unwrap();
+    assert_eq!(status.status, RunStatus::Running);
+    assert_eq!((status.results, status.failures), (5, 1));
+
+    // Read in pages, in the order they arrived, while the run goes on.
+    let page = plane.control.results(run, first(0, 2)).await.unwrap();
+    assert_eq!((page.items, page.next), (vec![json!(0), json!(10)], 2));
+    assert_eq!(page.status, RunStatus::Running);
+    let page = plane.control.results(run, first(2, 10)).await.unwrap();
+    assert_eq!(
+        (page.items, page.next),
+        (vec![json!(20), json!(30), json!(40)], 5)
+    );
+    let page = plane.control.results(run, first(5, 10)).await.unwrap();
+    assert_eq!((page.items.len(), page.next), (0, 5));
+    let failures = plane
+        .control
+        .failures(run, PageQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(failures.items, ["a branch failed"]);
+
     let outcome = RunOutcome {
-        results: vec![Value::new(42i32)],
-        failures: Vec::new(),
+        results: (0..5).map(|i| Value::new(i * 10)).collect(),
+        failures: vec!["a branch failed".into()],
         workers: BTreeMap::from([(
             1,
             WorkerStats {
-                calls: 1,
-                fetches: 0,
+                calls: 6,
                 ..WorkerStats::default()
             },
         )]),
     };
     plane.control.finished(run, outcome).await.unwrap();
     let status = plane.control.run_status(run).await.unwrap();
-    assert_eq!(status.status, RunStatus::Succeeded);
-    assert_eq!(status.results, [json!(42)]);
+    assert_eq!(status.status, RunStatus::PartialFailed);
+    assert_eq!((status.results, status.failures), (5, 1));
     assert_eq!(
         status.calls_by_worker,
-        BTreeMap::from([("w1".to_string(), 1)])
+        BTreeMap::from([("w1".to_string(), 6)])
     );
     assert!(plane.store.running().await.unwrap().is_empty());
 
-    let run = plane
+    // A report arriving after the end is in the outcome already.
+    let late = Report::Result(Value::new(99));
+    plane.control.recorded(run, branch(9), late).await.unwrap();
+    assert_eq!(plane.control.run_status(run).await.unwrap().results, 5);
+    let page = plane
         .control
-        .start_run(run_of(json!({"n": 1})))
+        .results(run, PageQuery::default())
         .await
         .unwrap();
+    assert_eq!(page.status, RunStatus::PartialFailed);
+    assert_eq!(page.items.len(), 5);
+
+    let refused = plane.control.run_status(Uuid::new_v4()).await.unwrap_err();
+    assert!(matches!(refused, ApiError::NotFound(_)), "{refused}");
+    let refused = plane
+        .control
+        .results(Uuid::new_v4(), PageQuery::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(refused, ApiError::NotFound(_)), "{refused}");
+}
+
+#[tokio::test]
+async fn an_outcome_fills_in_results_that_went_missing() {
+    let plane = published().await;
+    plane.control.register(worker("w1", 7001)).await.unwrap();
+    let run = plane
+        .control
+        .start_run(run_of(json!({"n": 21})))
+        .await
+        .unwrap();
+    // Only one of the three arrived, as if the control plane was down for the others.
+    let report = Report::Result(Value::new(2));
+    plane
+        .control
+        .recorded(run, branch(1), report)
+        .await
+        .unwrap();
+
     let outcome = RunOutcome {
-        failures: vec!["a branch failed".into()],
+        results: vec![Value::new(1), Value::new(2), Value::new(3)],
         ..RunOutcome::default()
     };
     plane.control.finished(run, outcome).await.unwrap();
     let status = plane.control.run_status(run).await.unwrap();
-    assert_eq!(status.status, RunStatus::PartialFailed);
-    assert_eq!(status.failures, ["a branch failed"]);
-
-    let refused = plane.control.run_status(Uuid::new_v4()).await.unwrap_err();
-    assert!(matches!(refused, ApiError::NotFound(_)), "{refused}");
+    assert_eq!(status.status, RunStatus::Succeeded);
+    let page = plane
+        .control
+        .results(run, PageQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(page.items, [json!(1), json!(2), json!(3)]);
 }
 
 #[tokio::test]

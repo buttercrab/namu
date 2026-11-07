@@ -6,6 +6,8 @@
 //!   workers not yet buried; `namu:successors`, dead worker -> successor; `namu:worker_names`.
 //! - `namu:run:{id}:spec` (JSON, set once), `namu:run:{id}:owner`, `namu:run:{id}:end` (JSON, set
 //!   once), and `namu:running`, the set of runs that have not ended.
+//! - `namu:run:{id}:results` and `:failures`, lists in the order reports arrived, and `:reported`,
+//!   the set of branches whose report is in one of them.
 //!
 //! Ids never contain `:` (the control plane checks), so keys cannot collide. Nothing scans the
 //! keyspace: members are read through `namu:alive`, runs through `namu:running`.
@@ -20,9 +22,10 @@ use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value as Json;
 use uuid::Uuid;
 
-use super::{Inserted, RunEnd, RunRecord, RunSpec, Store};
+use super::{Inserted, Reported, RunEnd, RunRecord, RunSpec, Store};
 
 const WORKER_SEQ: &str = "namu:worker_seq";
 const WORKER_NAMES: &str = "namu:worker_names";
@@ -92,6 +95,30 @@ impl RedisStore {
         raw.map(|raw| serde_json::from_str(&raw).with_context(|| format!("decoding {key}")))
             .transpose()
     }
+}
+
+/// Adds a report to its list unless its branch's is in already: `KEYS` are the set of reported
+/// branches and the list, `ARGV` the branch and the report.
+const RECORD: &str = r#"
+if redis.call('SADD', KEYS[1], ARGV[1]) == 1 then
+  redis.call('RPUSH', KEYS[2], ARGV[2])
+  return 1
+end
+return 0
+"#;
+
+/// The `limit` items of `list` from the `after`th on.
+async fn page(
+    redis: &mut ConnectionManager,
+    list: &str,
+    after: u64,
+    limit: u64,
+) -> anyhow::Result<Vec<String>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let (start, stop) = (after as isize, (after + limit - 1) as isize);
+    Ok(redis.lrange(list, start, stop).await?)
 }
 
 fn millis(ttl: Duration) -> u64 {
@@ -240,8 +267,15 @@ impl Store for RedisStore {
             run_key(id, "owner"),
             run_key(id, "end"),
         ];
-        let (spec, owner, end): (Option<String>, Option<u64>, Option<String>) = redis::cmd("MGET")
+        let ((spec, owner, end), results, failures): (
+            (Option<String>, Option<u64>, Option<String>),
+            u64,
+            u64,
+        ) = redis::pipe()
+            .cmd("MGET")
             .arg(&keys)
+            .llen(run_key(id, "results"))
+            .llen(run_key(id, "failures"))
             .query_async(&mut self.conn())
             .await?;
         let (Some(spec), Some(owner)) = (spec, owner) else {
@@ -250,6 +284,8 @@ impl Store for RedisStore {
         Ok(Some(RunRecord {
             spec: serde_json::from_str(&spec).context("decoding a run")?,
             owner,
+            results,
+            failures,
             end: end
                 .map(|end| serde_json::from_str(&end).context("decoding a run's end"))
                 .transpose()?,
@@ -291,6 +327,60 @@ impl Store for RedisStore {
             .ignore()
             .query_async::<()>(&mut self.conn())
             .await?;
+        Ok(())
+    }
+
+    async fn record(&self, id: Uuid, branch: &str, report: &Reported) -> anyhow::Result<bool> {
+        let (list, item) = match report {
+            Reported::Result(json) => ("results", serde_json::to_string(json)?),
+            Reported::Failure(failure) => ("failures", failure.clone()),
+        };
+        let added: u8 = redis::Script::new(RECORD)
+            .key(run_key(id, "reported"))
+            .key(run_key(id, list))
+            .arg(branch)
+            .arg(item)
+            .invoke_async(&mut self.conn())
+            .await?;
+        Ok(added == 1)
+    }
+
+    async fn results(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<Json>> {
+        page(&mut self.conn(), &run_key(id, "results"), after, limit)
+            .await?
+            .iter()
+            .map(|json| serde_json::from_str(json).context("decoding a result"))
+            .collect()
+    }
+
+    async fn failures(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<String>> {
+        page(&mut self.conn(), &run_key(id, "failures"), after, limit).await
+    }
+
+    async fn replace_reports(
+        &self,
+        id: Uuid,
+        results: &[Json],
+        failures: &[String],
+    ) -> anyhow::Result<()> {
+        let (results_key, failures_key) = (run_key(id, "results"), run_key(id, "failures"));
+        let results = results
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .del(&results_key)
+            .ignore()
+            .del(&failures_key)
+            .ignore();
+        if !results.is_empty() {
+            pipe.rpush(&results_key, results).ignore();
+        }
+        if !failures.is_empty() {
+            pipe.rpush(&failures_key, failures).ignore();
+        }
+        pipe.query_async::<()>(&mut self.conn()).await?;
         Ok(())
     }
 }

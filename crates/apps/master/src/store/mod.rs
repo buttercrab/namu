@@ -5,7 +5,8 @@
 //! - A member lasts as long as its lease; a worker whose lease ran out is still among the `alive`
 //!   until the sweep buries it and names its successor.
 //! - A run is what was asked for (its [`RunSpec`], which never changes), who owns it (which changes
-//!   when its owner dies), and how it ended (its [`RunEnd`], written once).
+//!   when its owner dies), its results and failures as they arrive (each branch's once), and how it
+//!   ended (its [`RunEnd`], written once).
 //!
 //! [`RedisStore`] is the one that runs; [`MemoryStore`] is for tests, as the engine's
 //! `MemoryLog` is.
@@ -45,12 +46,17 @@ pub struct RunSpec {
     pub created_at_ms: u64,
 }
 
+/// What a branch of a run reported.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reported {
+    Result(Json),
+    Failure(String),
+}
+
 /// How a run ended.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunEnd {
     pub status: RunStatus,
-    pub results: Vec<Json>,
-    pub failures: Vec<String>,
     pub finished_at_ms: u64,
     /// Task calls per worker, by name.
     pub calls_by_worker: BTreeMap<String, u64>,
@@ -62,6 +68,9 @@ pub struct RunEnd {
 pub struct RunRecord {
     pub spec: RunSpec,
     pub owner: u64,
+    /// How many results and failures it has so far.
+    pub results: u64,
+    pub failures: u64,
     /// `None` while it runs.
     pub end: Option<RunEnd>,
 }
@@ -112,4 +121,17 @@ pub trait Store: Send + Sync + 'static {
     async fn set_owner(&self, id: Uuid, owner: u64) -> anyhow::Result<()>;
     /// Run `id` ended as `end`; it is no longer running.
     async fn end_run(&self, id: Uuid, end: &RunEnd) -> anyhow::Result<()>;
+    /// Adds what branch `branch` of run `id` reported, unless it was added before; true if it
+    /// was not.
+    async fn record(&self, id: Uuid, branch: &str, report: &Reported) -> anyhow::Result<bool>;
+    /// Run `id`'s results from the `after`th on, at most `limit`, in the order they arrived.
+    async fn results(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<Json>>;
+    async fn failures(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<String>>;
+    /// Run `id`'s results and failures are these, whatever arrived before.
+    async fn replace_reports(
+        &self,
+        id: Uuid,
+        results: &[Json],
+        failures: &[String],
+    ) -> anyhow::Result<()>;
 }

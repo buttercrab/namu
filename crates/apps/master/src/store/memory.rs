@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use namu_proto::{Member, TaskManifest, WorkflowUploadRequest};
+use serde_json::Value as Json;
 use uuid::Uuid;
 
-use super::{Inserted, RunEnd, RunRecord, RunSpec, Store};
+use super::{Inserted, Reported, RunEnd, RunRecord, RunSpec, Store};
 
 #[derive(Default)]
 pub struct MemoryStore(Mutex<State>);
@@ -24,6 +25,14 @@ struct State {
     names: HashMap<u64, String>,
     owner_cursor: u64,
     runs: HashMap<Uuid, RunRecord>,
+    reports: HashMap<Uuid, Reports>,
+}
+
+#[derive(Default)]
+struct Reports {
+    branches: BTreeSet<String>,
+    results: Vec<Json>,
+    failures: Vec<String>,
 }
 
 impl State {
@@ -57,6 +66,15 @@ fn insert<T: Clone>(
             Inserted::New
         }
     }
+}
+
+fn page<T: Clone>(items: &[T], after: u64, limit: u64) -> Vec<T> {
+    items
+        .iter()
+        .skip(after as usize)
+        .take(limit as usize)
+        .cloned()
+        .collect()
 }
 
 #[async_trait]
@@ -168,6 +186,8 @@ impl Store for MemoryStore {
         let record = RunRecord {
             spec: spec.clone(),
             owner,
+            results: 0,
+            failures: 0,
             end: None,
         };
         self.state().runs.insert(id, record);
@@ -175,7 +195,15 @@ impl Store for MemoryStore {
     }
 
     async fn run(&self, id: Uuid) -> anyhow::Result<Option<RunRecord>> {
-        Ok(self.state().runs.get(&id).cloned())
+        let state = self.state();
+        Ok(state.runs.get(&id).map(|run| {
+            let reports = state.reports.get(&id);
+            RunRecord {
+                results: reports.map_or(0, |r| r.results.len() as u64),
+                failures: reports.map_or(0, |r| r.failures.len() as u64),
+                ..run.clone()
+            }
+        }))
     }
 
     async fn running(&self) -> anyhow::Result<Vec<(Uuid, u64)>> {
@@ -199,6 +227,44 @@ impl Store for MemoryStore {
         if let Some(run) = self.state().runs.get_mut(&id) {
             run.end = Some(end.clone());
         }
+        Ok(())
+    }
+
+    async fn record(&self, id: Uuid, branch: &str, report: &Reported) -> anyhow::Result<bool> {
+        let mut state = self.state();
+        let reports = state.reports.entry(id).or_default();
+        if !reports.branches.insert(branch.to_string()) {
+            return Ok(false);
+        }
+        match report {
+            Reported::Result(json) => reports.results.push(json.clone()),
+            Reported::Failure(failure) => reports.failures.push(failure.clone()),
+        }
+        Ok(true)
+    }
+
+    async fn results(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<Json>> {
+        let state = self.state();
+        let results = state.reports.get(&id).map_or(&[][..], |r| &r.results[..]);
+        Ok(page(results, after, limit))
+    }
+
+    async fn failures(&self, id: Uuid, after: u64, limit: u64) -> anyhow::Result<Vec<String>> {
+        let state = self.state();
+        let failures = state.reports.get(&id).map_or(&[][..], |r| &r.failures[..]);
+        Ok(page(failures, after, limit))
+    }
+
+    async fn replace_reports(
+        &self,
+        id: Uuid,
+        results: &[Json],
+        failures: &[String],
+    ) -> anyhow::Result<()> {
+        let mut state = self.state();
+        let reports = state.reports.entry(id).or_default();
+        reports.results = results.to_vec();
+        reports.failures = failures.to_vec();
         Ok(())
     }
 }

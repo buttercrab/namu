@@ -21,7 +21,7 @@ use tokio::time::{Duration, Instant};
 
 use crate::ids::{NodeId, RunId, WorkerId};
 use crate::log::{Durable, Log, MemoryLog, Record, RunEstate};
-use crate::message::Message;
+use crate::message::{BranchId, Message, Report};
 use crate::routes::Routes;
 use crate::run::{RunInfo, RunOutcome};
 use crate::tasks::{TaskRef, Tasks};
@@ -39,6 +39,9 @@ pub struct LocalCluster {
     waiting: Arc<Mutex<HashMap<RunId, oneshot::Sender<RunOutcome>>>>,
     /// Runs that have not finished: who owns them and how to start them again.
     running: Arc<Mutex<HashMap<RunId, (WorkerId, Started)>>>,
+    /// The reports each run's owner sent as it recorded them, by branch, as the control plane
+    /// keeps them: one sent again counts once.
+    recorded: Arc<Mutex<Recorded>>,
     /// Workers draining: still running, but given no new work.
     leaving: Mutex<HashSet<WorkerId>>,
     dead: Arc<Dead>,
@@ -47,6 +50,8 @@ pub struct LocalCluster {
     next_owner: AtomicUsize,
     log: Arc<MemoryLog>,
 }
+
+type Recorded = HashMap<RunId, BTreeMap<BranchId, Report>>;
 
 /// A run as it was started: what its owner, or the owner's successor, starts it with.
 #[derive(Clone)]
@@ -147,15 +152,31 @@ impl LocalCluster {
 
         let waiting: Arc<Mutex<HashMap<RunId, oneshot::Sender<RunOutcome>>>> = Arc::default();
         let running: Arc<Mutex<HashMap<RunId, (WorkerId, Started)>>> = Arc::default();
+        let recorded: Arc<Mutex<Recorded>> = Arc::default();
         let (control, mut inbox) = control;
-        let (finished, over) = (waiting.clone(), running.clone());
+        let (finished, over, reports) = (waiting.clone(), running.clone(), recorded.clone());
         tokio::spawn(async move {
             while let Some(message) = inbox.recv().await {
-                if let Message::Finished { run, outcome } = message {
-                    over.lock().unwrap().remove(&run);
-                    if let Some(waiter) = finished.lock().unwrap().remove(&run) {
-                        let _ = waiter.send(outcome);
+                match message {
+                    Message::Recorded {
+                        run,
+                        branch,
+                        report,
+                    } => {
+                        let mut reports = reports.lock().unwrap();
+                        reports
+                            .entry(run)
+                            .or_default()
+                            .entry(branch)
+                            .or_insert(report);
                     }
+                    Message::Finished { run, outcome } => {
+                        over.lock().unwrap().remove(&run);
+                        if let Some(waiter) = finished.lock().unwrap().remove(&run) {
+                            let _ = waiter.send(outcome);
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
@@ -165,6 +186,7 @@ impl LocalCluster {
             control,
             waiting,
             running,
+            recorded,
             dead,
             successors: Mutex::default(),
             leaving: Mutex::default(),
@@ -172,6 +194,16 @@ impl LocalCluster {
             next_owner: AtomicUsize::new(0),
             log,
         }
+    }
+
+    /// The reports of every run so far, as their owners sent them while the runs went: each
+    /// branch's once, however often it was sent.
+    pub fn recorded(&self) -> HashMap<RunId, Vec<Report>> {
+        let recorded = self.recorded.lock().unwrap();
+        recorded
+            .iter()
+            .map(|(&run, reports)| (run, reports.values().cloned().collect()))
+            .collect()
     }
 
     /// The log the workers share.

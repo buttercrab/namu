@@ -2,14 +2,15 @@
 
 use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use namu_proto::{
-    Membership, Published, RunCreateRequest, RunCreateResponse, RunStatusResponse, TaskManifest,
-    WorkerRegisterRequest, WorkerRegisterResponse, WorkersResponse, WorkflowUploadRequest,
+    Membership, Page, PageQuery, Published, RunCreateRequest, RunCreateResponse, RunStatusResponse,
+    TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse, WorkersResponse,
+    WorkflowUploadRequest,
 };
 use serde_json::json;
 use tower_http::trace::TraceLayer;
@@ -32,6 +33,8 @@ pub fn router(control: Arc<Control>) -> Router {
         .route("/workflows", post(publish_workflow))
         .route("/runs", post(start_run))
         .route("/runs/{run_id}", get(run_status))
+        .route("/runs/{run_id}/results", get(results))
+        .route("/runs/{run_id}/failures", get(failures))
         .route("/workers", get(workers))
         .route("/workers/register", post(register))
         .route("/workers/{worker_id}/heartbeat", post(heartbeat))
@@ -92,6 +95,23 @@ async fn run_status(
     Path(run): Path<Uuid>,
 ) -> Api<RunStatusResponse> {
     Ok(Json(control.run_status(run).await?))
+}
+
+/// `?after=N&limit=M`: the results from the `N`th on, in the order they arrived.
+async fn results(
+    State(control): State<Arc<Control>>,
+    Path(run): Path<Uuid>,
+    Query(query): Query<PageQuery>,
+) -> Api<Page<serde_json::Value>> {
+    Ok(Json(control.results(run, query).await?))
+}
+
+async fn failures(
+    State(control): State<Arc<Control>>,
+    Path(run): Path<Uuid>,
+    Query(query): Query<PageQuery>,
+) -> Api<Page<String>> {
+    Ok(Json(control.failures(run, query).await?))
 }
 
 async fn workers(State(control): State<Arc<Control>>) -> Api<WorkersResponse> {

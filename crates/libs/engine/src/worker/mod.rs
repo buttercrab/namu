@@ -249,6 +249,9 @@ impl Inner {
                         .await;
                 });
             }
+            Message::Recorded { run, .. } => {
+                tracing::warn!(%run, "a run's report sent to a worker; only the control plane takes them");
+            }
             Message::Finished { run, .. } => {
                 tracing::warn!(%run, "run outcome sent to a worker; only the control plane takes them");
             }

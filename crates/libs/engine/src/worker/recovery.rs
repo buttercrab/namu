@@ -166,6 +166,9 @@ impl Inner {
                 let mut finish = Finish::default();
                 for report in reports {
                     record_report(&mut finish, report.branch, report.report.clone());
+                    // The dead owner may not have sent it on: send it again. It is known by its
+                    // branch, so it counts once.
+                    self.forward_report(run, report.branch, report.report.clone());
                 }
                 *run.finish.lock().unwrap() = Some(finish);
                 Then::Finish

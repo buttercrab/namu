@@ -18,7 +18,12 @@ Run `namu --help` for the full command list. When working from source, use `carg
     `tags=["a","b"]`, `id="42"` for a string of digits), or else a string (`collection=wikipedia`).
     Inputs that do not fit the workflow are refused before the run starts.
 - `namu status <run_id>`
-  - Returns run status, results, failures, and task calls per worker.
+  - Returns run status, how many results and failures it has so far, and task calls per worker.
+- `namu results <run_id> [--follow] [--failures]`
+  - Prints the run's results (or failures), one JSON value per line, in the order they arrived.
+    With `--follow`, keeps printing them as they arrive until the run ends: an unbounded run's
+    results are only ever read this way. The API underneath is
+    `GET /runs/{id}/results?after=N&limit=M` (and `/failures`), pages with a `next` cursor.
 - `namu workers`
   - Lists registered workers.
 - `namu login`

@@ -71,12 +71,21 @@ async fn main() -> anyhow::Result<()> {
         mesh_addr.clone(),
     ));
 
-    // Run owners report here when their runs end.
+    // Run owners send each report here as they record it, and the outcome when the run ends.
     tokio::spawn({
         let control = control.clone();
         async move {
             while let Some(message) = inbox.recv().await {
                 match message {
+                    Message::Recorded {
+                        run,
+                        branch,
+                        report,
+                    } => {
+                        if let Err(err) = control.recorded(run, branch, report).await {
+                            tracing::error!(%run, "recording a report failed: {err:#}");
+                        }
+                    }
                     Message::Finished { run, outcome } => {
                         if let Err(err) = control.finished(run, outcome).await {
                             tracing::error!(%run, "recording the outcome failed: {err:#}");

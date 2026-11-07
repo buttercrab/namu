@@ -192,6 +192,14 @@ pub fn stream_docs(n: i32, delay_ms: i32) -> Result<impl Iterator<Item = Result<
 
 /// `doc_stats` with the documents streamed in: each is analyzed as soon as it arrives, while the
 /// rest are still coming. Same result as `doc_stats`.
+/// Every document's id, from a stream, each its own result: results arrive as the documents do,
+/// long before the run ends (`namu results --follow`).
+#[workflow(id = "doc_ids_streamed")]
+pub fn doc_ids_streamed(n: i32, delay_ms: i32) -> i64 {
+    let doc = each(stream_docs(n, delay_ms));
+    doc_id(doc)
+}
+
 #[workflow(id = "stream_stats")]
 pub fn stream_stats() -> Summary {
     let min_len = 6;

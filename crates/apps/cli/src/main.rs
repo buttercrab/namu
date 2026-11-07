@@ -9,7 +9,8 @@ use std::process::Command;
 
 use clap::{Parser, Subcommand};
 use namu_proto::{
-    RunCreateRequest, RunCreateResponse, TaskManifest, TaskRuntime, WorkflowUploadRequest,
+    Page, RunCreateRequest, RunCreateResponse, RunStatus, TaskManifest, TaskRuntime,
+    WorkflowUploadRequest,
 };
 use reqwest::multipart;
 use serde_json::Value as JsonValue;
@@ -61,12 +62,22 @@ enum Commands {
         /// (`limit=300`, `tags=["a","b"]`), or else a string (`collection=wikipedia`).
         #[arg(long = "input", value_name = "NAME=VALUE", value_parser = parse_input)]
         inputs: Vec<(String, serde_json::Value)>,
-        /// Wait for the run to finish and print its status and results
+        /// Wait for the run to finish and print its status, results and failures
         #[arg(long)]
         wait: bool,
     },
     /// Check run status
     Status { run_id: String },
+    /// Print a run's results, one JSON value per line, in the order they arrived
+    Results {
+        run_id: String,
+        /// Keep printing them as they arrive, until the run ends
+        #[arg(long)]
+        follow: bool,
+        /// The failures instead
+        #[arg(long)]
+        failures: bool,
+    },
     /// List workers
     Workers,
     /// Login and healthcheck orchestrator
@@ -112,6 +123,17 @@ async fn main() {
         }
         Commands::Status { run_id } => {
             run_status(&run_id).await;
+        }
+        Commands::Results {
+            run_id,
+            follow,
+            failures,
+        } => {
+            let what = if failures { "failures" } else { "results" };
+            if let Err(err) = print_results(&run_id, what, follow).await {
+                eprintln!("Failed to fetch {what}: {err:#}");
+                std::process::exit(1);
+            }
         }
         Commands::Workers => {
             list_workers().await;
@@ -593,9 +615,10 @@ async fn run_workflow(
         return;
     }
 
-    let url = format!("{master_url}/runs/{}", created.run_id);
+    let run = created.run_id.to_string();
+    let url = format!("{master_url}/runs/{run}");
     loop {
-        let status: JsonValue = match client.get(&url).send().await {
+        let mut status: JsonValue = match client.get(&url).send().await {
             Ok(resp) => resp.json().await.unwrap_or_default(),
             Err(err) => {
                 eprintln!("Failed to fetch status: {err}");
@@ -603,6 +626,16 @@ async fn run_workflow(
             }
         };
         if status["status"] != "running" {
+            // The status counts them; print them.
+            for what in ["results", "failures"] {
+                match all_pages(&client, &master_url, &run, what).await {
+                    Ok(items) => status[what] = JsonValue::Array(items),
+                    Err(err) => {
+                        eprintln!("Failed to fetch {what}: {err:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&status).unwrap_or_default()
@@ -613,6 +646,63 @@ async fn run_workflow(
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// One page of a run's `what` (`results` or `failures`) from the `after`th on.
+async fn fetch_page(
+    client: &reqwest::Client,
+    master_url: &str,
+    run: &str,
+    what: &str,
+    after: u64,
+) -> anyhow::Result<Page<JsonValue>> {
+    let url = format!("{master_url}/runs/{run}/{what}?after={after}");
+    let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        anyhow::bail!("{status} {}", response.text().await.unwrap_or_default());
+    }
+    Ok(response.json().await?)
+}
+
+/// Every one of a run's `what` so far.
+async fn all_pages(
+    client: &reqwest::Client,
+    master_url: &str,
+    run: &str,
+    what: &str,
+) -> anyhow::Result<Vec<JsonValue>> {
+    let mut items = Vec::new();
+    loop {
+        let page = fetch_page(client, master_url, run, what, items.len() as u64).await?;
+        if page.items.is_empty() {
+            return Ok(items);
+        }
+        items.extend(page.items);
+    }
+}
+
+/// Prints a run's `what`, a JSON value per line; with `follow`, as they arrive, until the run
+/// ends.
+async fn print_results(run: &str, what: &str, follow: bool) -> anyhow::Result<()> {
+    let master_url = get_master_url().map_err(anyhow::Error::msg)?;
+    let master_url = master_url.trim_end_matches('/');
+    let client = reqwest::Client::new();
+    let mut after = 0;
+    loop {
+        let page = fetch_page(&client, master_url, run, what, after).await?;
+        for item in &page.items {
+            println!("{item}");
+        }
+        after = page.next;
+        // A page read once the run ended holds everything up to its end.
+        let done = page.status != RunStatus::Running;
+        match (page.items.is_empty(), follow && !done) {
+            (false, _) => continue,
+            (true, true) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            (true, false) => return Ok(()),
+        }
     }
 }
 

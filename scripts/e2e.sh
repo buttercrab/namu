@@ -93,6 +93,30 @@ for problem in "400" "\`n\`: expected i32, got a string" "\`rounds\` (i32) is mi
   fi
 done
 echo "   ok: wrong inputs refused ($refused)"
+
+# Results arrive as the run goes: a stream of 48 documents, one every 100 ms, each its own result.
+namu() { NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" "$@"; }
+streamed=$(namu run doc_ids_streamed 0.1.0 --input n=48 --input delay_ms=100 | sed -n 's/^Run created: //p')
+early=0
+for _ in $(seq 100); do
+  early=$(curl -sf "http://127.0.0.1:${ORCH_PORT:-8090}/runs/$streamed" | python3 -c '
+import json, sys
+status = json.load(sys.stdin)
+print(status["results"] if status["status"] == "running" else 0)')
+  [[ $early != 0 ]] && break
+  sleep 0.05
+done
+if [[ $early == 0 ]]; then
+  echo "no result arrived while doc_ids_streamed went on" >&2
+  exit 1
+fi
+namu results "$streamed" --follow >"$crash_dir/streamed.jsonl"
+python3 - "$crash_dir/streamed.jsonl" "$early" <<'PY'
+import sys
+ids = open(sys.argv[1]).read().split()
+assert len(ids) == 48 and len(set(ids)) == 48, f"{len(ids)} results, {len(set(ids))} distinct"
+print(f"   ok: {sys.argv[2]} results while the run went on, then all 48 with --follow, each once")
+PY
 # Alongside it, a run that delivers a side effect per document, keyed by the call.
 NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
   run doc_stats_slow 0.1.0 --wait >"$crash_dir/crashed.json" &

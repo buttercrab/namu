@@ -267,14 +267,31 @@ impl Inner {
             report: record,
         }]);
         let (worker, delivery, branch) = (self.clone(), *delivery, *branch);
+        let report = report.clone();
         tokio::spawn(async move {
             if durable.await.is_ok() {
                 worker.ack(delivery);
+                worker.forward_report(&state, branch, report);
                 // Recorded: the branch can now end in its scope, and let the run end. Until its
                 // end is acknowledged, the report in the log stands for it.
                 worker.send_end(&state, branch, None, None);
             }
         });
+    }
+
+    /// Sends a recorded report on to whoever started the run, if anyone is told.
+    pub(super) fn forward_report(self: &Arc<Self>, run: &Run, branch: BranchId, report: Report) {
+        if let Some(reply_to) = run.spec.info.reply_to {
+            let run = run.id();
+            self.deliver(
+                reply_to,
+                Message::Recorded {
+                    run,
+                    branch,
+                    report,
+                },
+            );
+        }
     }
 
     /// Every branch of the run has ended: have every worker forget it, then report the outcome.

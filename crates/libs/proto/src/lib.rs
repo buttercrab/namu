@@ -192,16 +192,37 @@ pub enum RunStatus {
     PartialFailed,
 }
 
+/// Where a run is. Its results and failures, which an unbounded run keeps adding to, are read in
+/// pages ([`Page`]); here are how many there are so far.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunStatusResponse {
     pub status: RunStatus,
-    pub results: Vec<JsonValue>,
-    pub failures: Vec<String>,
+    pub results: u64,
+    pub failures: u64,
     pub elapsed_ms: Option<u64>,
     /// Task calls executed per worker.
     pub calls_by_worker: BTreeMap<String, u64>,
     /// Value-tree nodes each worker fetched because another worker produced them.
     pub remote_node_fetches_by_worker: BTreeMap<String, u64>,
+}
+
+/// Part of a run's results (or failures), in the order they arrived: `GET
+/// /runs/{id}/results?after=N&limit=M` gives those from the `N`th on. `next` is where the next page
+/// starts. A run that is still `Running` may add more after it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next: u64,
+    pub status: RunStatus,
+}
+
+/// Which part of the results a page holds.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct PageQuery {
+    #[serde(default)]
+    pub after: u64,
+    #[serde(default)]
+    pub limit: Option<u64>,
 }
 
 /// A worker joining the cluster.

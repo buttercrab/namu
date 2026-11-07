@@ -18,11 +18,12 @@ use anyhow::Context;
 use bytes::Bytes;
 use namu_core::inputs::Inputs;
 use namu_core::ir::Workflow;
+use namu_core::value::Value;
 use namu_engine::RunOutcome;
-use namu_engine::message::Message;
+use namu_engine::message::{BranchId, Message, Report};
 use namu_engine::transport::{TcpTransport, Transport};
 use namu_proto::{
-    MEMBERSHIP_TTL_MS, Member, Membership, Published, RunCreateRequest, RunStatus,
+    MEMBERSHIP_TTL_MS, Member, Membership, Page, PageQuery, Published, RunCreateRequest, RunStatus,
     RunStatusResponse, TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse,
     WorkflowUploadRequest,
 };
@@ -31,7 +32,7 @@ use uuid::Uuid;
 
 use crate::artifacts::{self, Artifacts};
 use crate::error::ApiError;
-use crate::store::{Inserted, RunEnd, RunSpec, Store};
+use crate::store::{Inserted, Reported, RunEnd, RunRecord, RunSpec, Store};
 
 /// The control plane's link to the workers: it is peer 0 of their mesh.
 pub trait Mesh: Send + Sync + 'static {
@@ -261,6 +262,30 @@ impl Control {
         Ok(())
     }
 
+    /// Branch `branch` of run `run` reported `report`, which its owner has recorded. One sent
+    /// again (a successor sends what it finds in the log) counts once; one that arrives after the
+    /// run ended is in its outcome already.
+    pub async fn recorded(
+        &self,
+        run: Uuid,
+        branch: BranchId,
+        report: Report,
+    ) -> anyhow::Result<()> {
+        let Some(record) = self.store.run(run).await? else {
+            return Ok(());
+        };
+        if record.end.is_some() {
+            return Ok(());
+        }
+        let report = match report {
+            Report::Result(value) => Reported::Result(to_json(&value)?),
+            Report::Failure(failure) => Reported::Failure(failure),
+        };
+        let branch = format!("{}:{}", branch.scope, branch.index);
+        self.store.record(run, &branch, &report).await?;
+        Ok(())
+    }
+
     /// Run `run` ended as `outcome`, which its owner reported.
     pub async fn finished(&self, run: Uuid, outcome: RunOutcome) -> anyhow::Result<()> {
         let ids: Vec<u64> = outcome.workers.keys().copied().collect();
@@ -272,19 +297,27 @@ impl Control {
             calls_by_worker.insert(name.clone(), stats.calls);
             remote_node_fetches_by_worker.insert(name, stats.fetches);
         }
-        // The API shows results as JSON: this is the one place values become JSON.
-        let results = outcome
-            .results
-            .iter()
-            .map(|result| Ok(rmp_serde::from_slice::<Json>(&result.encode()?)?))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        // The outcome holds every report. Those that arrived one by one are all of them, unless
+        // some were lost on the way (to a control plane that was down): then the outcome's stand.
+        let record = self.store.run(run).await?;
+        let counts = record.map(|record| (record.results, record.failures));
+        let complete = (outcome.results.len() as u64, outcome.failures.len() as u64);
+        if counts != Some(complete) {
+            tracing::warn!(%run, ?counts, ?complete, "results went missing on the way; taking the outcome's");
+            let results = outcome
+                .results
+                .iter()
+                .map(to_json)
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            self.store
+                .replace_reports(run, &results, &outcome.failures)
+                .await?;
+        }
         let end = RunEnd {
             status: match outcome.succeeded() {
                 true => RunStatus::Succeeded,
                 false => RunStatus::PartialFailed,
             },
-            results,
-            failures: outcome.failures,
             finished_at_ms: now_ms(),
             calls_by_worker,
             remote_node_fetches_by_worker,
@@ -293,30 +326,58 @@ impl Control {
     }
 
     pub async fn run_status(&self, run: Uuid) -> Result<RunStatusResponse, ApiError> {
-        let record = self
+        let record = self.run(run).await?;
+        let started = record.spec.created_at_ms;
+        let (status, elapsed_ms, calls_by_worker, remote_node_fetches_by_worker) = match record.end
+        {
+            Some(end) => (
+                end.status,
+                end.finished_at_ms.saturating_sub(started),
+                end.calls_by_worker,
+                end.remote_node_fetches_by_worker,
+            ),
+            None => (
+                RunStatus::Running,
+                now_ms().saturating_sub(started),
+                BTreeMap::new(),
+                BTreeMap::new(),
+            ),
+        };
+        Ok(RunStatusResponse {
+            status,
+            results: record.results,
+            failures: record.failures,
+            elapsed_ms: Some(elapsed_ms),
+            calls_by_worker,
+            remote_node_fetches_by_worker,
+        })
+    }
+
+    /// Run `run`'s results, in the order they arrived, from `query.after` on.
+    pub async fn results(&self, run: Uuid, query: PageQuery) -> Result<Page<Json>, ApiError> {
+        let record = self.run(run).await?;
+        let items = self
             .store
+            .results(run, query.after, page_limit(query))
+            .await?;
+        Ok(page(&record, query, items))
+    }
+
+    /// Run `run`'s failures, in the order they arrived, from `query.after` on.
+    pub async fn failures(&self, run: Uuid, query: PageQuery) -> Result<Page<String>, ApiError> {
+        let record = self.run(run).await?;
+        let items = self
+            .store
+            .failures(run, query.after, page_limit(query))
+            .await?;
+        Ok(page(&record, query, items))
+    }
+
+    async fn run(&self, run: Uuid) -> Result<RunRecord, ApiError> {
+        self.store
             .run(run)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("no run {run}")))?;
-        let started = record.spec.created_at_ms;
-        Ok(match record.end {
-            Some(end) => RunStatusResponse {
-                status: end.status,
-                results: end.results,
-                failures: end.failures,
-                elapsed_ms: Some(end.finished_at_ms.saturating_sub(started)),
-                calls_by_worker: end.calls_by_worker,
-                remote_node_fetches_by_worker: end.remote_node_fetches_by_worker,
-            },
-            None => RunStatusResponse {
-                status: RunStatus::Running,
-                results: Vec::new(),
-                failures: Vec::new(),
-                elapsed_ms: Some(now_ms().saturating_sub(started)),
-                calls_by_worker: BTreeMap::new(),
-                remote_node_fetches_by_worker: BTreeMap::new(),
-            },
-        })
+            .ok_or_else(|| ApiError::NotFound(format!("no run {run}")))
     }
 
     /// Adds a worker to the mesh and gives it its id.
@@ -458,6 +519,33 @@ fn same_task(a: &TaskManifest, b: &TaskManifest) -> bool {
         Some(json)
     };
     comparable(a).is_some_and(|a| Some(a) == comparable(b))
+}
+
+/// How many results a page holds unless asked for fewer, and at most.
+const PAGE: u64 = 1_000;
+const MAX_PAGE: u64 = 10_000;
+
+fn page_limit(query: PageQuery) -> u64 {
+    query.limit.unwrap_or(PAGE).min(MAX_PAGE)
+}
+
+/// A page of `items` from `query.after` on. The run's status is read before its items, so a page
+/// that says it ended holds everything up to its end.
+fn page<T>(record: &RunRecord, query: PageQuery, items: Vec<T>) -> Page<T> {
+    let status = record
+        .end
+        .as_ref()
+        .map_or(RunStatus::Running, |end| end.status);
+    Page {
+        next: query.after + items.len() as u64,
+        items,
+        status,
+    }
+}
+
+/// The API shows values as JSON: this is the one place they become JSON.
+fn to_json(value: &Value) -> anyhow::Result<Json> {
+    Ok(rmp_serde::from_slice(&value.encode()?)?)
 }
 
 fn check_id(what: &str, id: &str, version: &str) -> Result<(), ApiError> {
