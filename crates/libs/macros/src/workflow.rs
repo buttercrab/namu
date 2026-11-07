@@ -158,6 +158,19 @@ impl VisitMut for WorkflowVisitor {
             Expr::Unary(unary) => {
                 *i = self.handle_unary(unary);
             }
+            Expr::Field(field) => {
+                *i = self.handle_field(field);
+            }
+            Expr::Index(index) => {
+                *i = self.handle_index(index);
+            }
+            // `()` is not a value a workflow makes; a tuple of values is.
+            Expr::Tuple(tuple) if !tuple.elems.is_empty() => {
+                *i = self.handle_tuple(tuple);
+            }
+            Expr::Macro(mac) if mac.mac.path.is_ident("format") => {
+                *i = self.handle_format(mac);
+            }
             Expr::Lit(lit) => {
                 let builder_ident = &self.builder_ident;
                 // Workflow values are owned, so string literals are `String`, matching task
@@ -277,7 +290,7 @@ impl WorkflowVisitor {
         use syn::BinOp;
         let builtin = |name: &str| -> proc_macro2::TokenStream {
             let name = format_ident!("{}", name);
-            quote! { ::namu::__macro_exports::BuiltinOp::#name }
+            quote! { ::namu::__macro_exports::ScalarOp::#name }
         };
         let (helper, op) = match binary.op {
             BinOp::Add(_) => ("plus", None),
@@ -308,6 +321,102 @@ impl WorkflowVisitor {
         let (left, right) = (&binary.left, &binary.right);
         let op = op.map(|op| quote! { #op, });
         parse_quote! { ::namu::__macro_exports::#helper(&#builder, #op #left, #right) }
+    }
+
+    /// `value.name`, or `tuple.0`: the closure is the same access in Rust, which rustc checks and
+    /// types; the engine finds the field in the value's bytes.
+    fn handle_field(&mut self, field: &mut syn::ExprField) -> Expr {
+        self.visit_expr_mut(&mut field.base);
+        self.last_expr_has_value = true;
+        let (builder, base, member) = (&self.builder_ident, &field.base, &field.member);
+        let name = match member {
+            syn::Member::Named(ident) => ident.to_string(),
+            syn::Member::Unnamed(index) => index.index.to_string(),
+        };
+        parse_quote! {
+            ::namu::__macro_exports::field(&#builder, #base, #name, |value| &value.#member)
+        }
+    }
+
+    /// `list[index]`.
+    fn handle_index(&mut self, index: &mut syn::ExprIndex) -> Expr {
+        self.visit_expr_mut(&mut index.expr);
+        self.visit_expr_mut(&mut index.index);
+        self.last_expr_has_value = true;
+        let (builder, list, at) = (&self.builder_ident, &index.expr, &index.index);
+        parse_quote! { ::namu::__macro_exports::index(&#builder, #list, #at) }
+    }
+
+    /// `(a, b, ...)`.
+    fn handle_tuple(&mut self, tuple: &mut syn::ExprTuple) -> Expr {
+        for elem in tuple.elems.iter_mut() {
+            self.visit_expr_mut(elem);
+        }
+        self.last_expr_has_value = true;
+        let (builder, elems) = (&self.builder_ident, tuple.elems.iter());
+        parse_quote! { ::namu::__macro_exports::tuple(&#builder, (#(#elems,)*)) }
+    }
+
+    /// `format!("...", a, b)`, with `{}` and `{name}` placeholders, each a scalar. Formatting
+    /// options (`{:>8}`, `{:.2}`) and positions (`{0}`) are not taken: a task formats that way.
+    fn handle_format(&mut self, mac: &mut syn::ExprMacro) -> Expr {
+        const USAGE: &str = "a workflow's `format!` takes a string literal with `{}` or `{name}` \
+                             placeholders, then one value for each `{}`";
+        let parser = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated;
+        let Ok(parts) = syn::parse::Parser::parse2(parser, mac.mac.tokens.clone()) else {
+            self.fail(&mac, USAGE);
+            return Expr::Macro(mac.clone());
+        };
+        let mut parts = parts.into_iter();
+        let Some(Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(template),
+            ..
+        })) = parts.next()
+        else {
+            self.fail(&mac, USAGE);
+            return Expr::Macro(mac.clone());
+        };
+        let mut positional = parts;
+        let (pieces, holes) = match format_template(&template.value()) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                self.fail(&template, &message);
+                return Expr::Macro(mac.clone());
+            }
+        };
+        let mut args = Vec::new();
+        for hole in holes {
+            let arg = match hole {
+                Some(name) => {
+                    let name = format_ident!("{}", name);
+                    parse_quote! { #name }
+                }
+                None => match positional.next() {
+                    Some(arg) => arg,
+                    None => {
+                        self.fail(&template, "more `{}` than values");
+                        return Expr::Macro(mac.clone());
+                    }
+                },
+            };
+            args.push(arg);
+        }
+        if let Some(extra) = positional.next() {
+            self.fail(&extra, "a value no `{}` writes");
+            return Expr::Macro(mac.clone());
+        }
+        for arg in args.iter_mut() {
+            self.visit_expr_mut(arg);
+        }
+        self.last_expr_has_value = true;
+        let builder = &self.builder_ident;
+        parse_quote! {
+            ::namu::__macro_exports::format(
+                &#builder,
+                &[#(#pieces),*],
+                ::std::vec![#(::namu::__macro_exports::format_arg(#args)),*],
+            )
+        }
     }
 
     /// `window(items, N)`: continues once per `N` items of the innermost fan-out, with them.
@@ -731,6 +840,52 @@ impl WorkflowVisitor {
 }
 
 /// The operator of a compound assignment: `+` for `+=`, and so on.
+/// A `format!` template's text pieces, and what goes between them: `None` for `{}`, the name for
+/// `{name}`. `{{` and `}}` are braces.
+fn format_template(template: &str) -> Result<(Vec<String>, Vec<Option<String>>), String> {
+    let (mut pieces, mut holes, mut piece) = (Vec::new(), Vec::new(), String::new());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('{', Some('{')) | ('}', Some('}')) => {
+                piece.push(c);
+                chars.next();
+            }
+            ('{', _) => {
+                let (mut hole, mut closed) = (String::new(), false);
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        closed = true;
+                        break;
+                    }
+                    hole.push(c);
+                }
+                if !closed {
+                    return Err("a `{` with no `}`: write `{{` for a brace".into());
+                }
+                let hole = hole.trim();
+                let named = hole
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+                    && hole.chars().all(|c| c.is_alphanumeric() || c == '_');
+                if !hole.is_empty() && !named {
+                    return Err(format!(
+                        "`{{{hole}}}`: a workflow formats with `{{}}` or `{{name}}` only; \
+                         a task can format any other way"
+                    ));
+                }
+                pieces.push(std::mem::take(&mut piece));
+                holes.push((!hole.is_empty()).then(|| hole.to_string()));
+            }
+            ('}', _) => return Err("a `}` with no `{`: write `}}` for a brace".into()),
+            _ => piece.push(c),
+        }
+    }
+    pieces.push(piece);
+    Ok((pieces, holes))
+}
+
 fn compound(op: &syn::BinOp) -> Option<syn::BinOp> {
     use syn::BinOp;
     Some(match op {

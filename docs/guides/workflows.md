@@ -124,7 +124,23 @@ let label = exclaim(name) + "?";   // + on strings concatenates
 - Types: `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `String`. Both sides of an operator
   have one type; rustc checks it.
 - Integer arithmetic is checked: an overflow or a division by zero fails the branch.
-- Not yet: field and index access, tuples built from values, `format!`. Use a task.
+
+Values are taken apart and put together the same way:
+
+```rust
+let page = fetch(url);
+let first = page.links[0];               // a field, then an element
+let (lo, hi) = (page.span.0, page.span.1);
+let row = (page.url, page.words * 2);    // a tuple
+let line = format!("{} has {} words", page.url, page.words);
+```
+
+- Field access on structs (`page.url`) and tuples (`pair.0`), and indexing lists (`xs[i]`, with
+  `i` a `usize`): rustc checks the access as it would in Rust. An index out of bounds fails the
+  branch. The engine finds the part in the value's bytes, without decoding the rest.
+- Tuples of up to 8 values.
+- `format!` with `{}` and `{name}` placeholders, each a scalar (one of the types above), written
+  as `Display` writes it. Formatting options (`{:.2}`, `{:>8}`) are a task's to do.
 
 ## Supported control flow
 - `if` / `if-else`

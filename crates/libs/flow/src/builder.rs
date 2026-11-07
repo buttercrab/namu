@@ -9,7 +9,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use namu_core::ValueId;
-use namu_core::ir::{BuiltinOp, Input, ScalarType};
+use namu_core::ir::{BuiltinOp, Input, ScalarOp, ScalarType};
 use namu_core::types::{Defs, Type};
 use namu_core::value::Data;
 use serde::Serialize;
@@ -138,9 +138,9 @@ impl<T> Builder<T> {
         self.add_node(NodeKind::Collect { input, reduce }, 1)[0]
     }
 
-    /// Emits a built-in expression over `inputs`, read as `ty`, and returns its value.
-    pub fn builtin(&self, op: BuiltinOp, ty: ScalarType, inputs: Vec<ValueId>) -> ValueId {
-        self.add_node(NodeKind::Builtin { op, ty, inputs }, 1)[0]
+    /// Emits a built-in expression over `inputs`, and returns its value.
+    pub fn builtin(&self, op: BuiltinOp, inputs: Vec<ValueId>) -> ValueId {
+        self.add_node(NodeKind::Builtin { op, inputs }, 1)[0]
     }
 
     pub fn phi(&self, from: Vec<(BlockId, ValueId)>) -> ValueId {
@@ -436,23 +436,24 @@ impl Signed for f64 {}
 
 fn builtin<G, T: Scalar, R: Data>(
     builder: &Builder<G>,
-    op: BuiltinOp,
+    op: ScalarOp,
     inputs: &[ValueId],
 ) -> TracedValue<R> {
-    let id = builder.builtin(op, T::TYPE, inputs.to_vec());
+    let op = BuiltinOp::Scalar { op, ty: T::TYPE };
+    let id = builder.builtin(op, inputs.to_vec());
     builder.typed::<R>(id);
     TracedValue::new(id)
 }
 
 /// `a + b`.
 pub fn plus<G, T: Plus>(b: &Builder<G>, x: TracedValue<T>, y: TracedValue<T>) -> TracedValue<T> {
-    builtin::<G, T, T>(b, BuiltinOp::Add, &[x.id, y.id])
+    builtin::<G, T, T>(b, ScalarOp::Add, &[x.id, y.id])
 }
 
 /// `a - b`, `a * b`, `a / b`, `a % b`.
 pub fn arith<G, T: Number>(
     b: &Builder<G>,
-    op: BuiltinOp,
+    op: ScalarOp,
     x: TracedValue<T>,
     y: TracedValue<T>,
 ) -> TracedValue<T> {
@@ -461,13 +462,13 @@ pub fn arith<G, T: Number>(
 
 /// `-a`.
 pub fn negate<G, T: Signed>(b: &Builder<G>, x: TracedValue<T>) -> TracedValue<T> {
-    builtin::<G, T, T>(b, BuiltinOp::Neg, &[x.id])
+    builtin::<G, T, T>(b, ScalarOp::Neg, &[x.id])
 }
 
 /// `a == b`, `a != b`, `a < b`, `a <= b`, `a > b`, `a >= b`.
 pub fn compare<G, T: Scalar>(
     b: &Builder<G>,
-    op: BuiltinOp,
+    op: ScalarOp,
     x: TracedValue<T>,
     y: TracedValue<T>,
 ) -> TracedValue<bool> {
@@ -477,7 +478,7 @@ pub fn compare<G, T: Scalar>(
 /// `a && b`, `a || b`. Both sides are evaluated: they are values, which have no effects.
 pub fn logic<G>(
     b: &Builder<G>,
-    op: BuiltinOp,
+    op: ScalarOp,
     x: TracedValue<bool>,
     y: TracedValue<bool>,
 ) -> TracedValue<bool> {
@@ -486,5 +487,79 @@ pub fn logic<G>(
 
 /// `!a`.
 pub fn not<G>(b: &Builder<G>, x: TracedValue<bool>) -> TracedValue<bool> {
-    builtin::<G, bool, bool>(b, BuiltinOp::Not, &[x.id])
+    builtin::<G, bool, bool>(b, ScalarOp::Not, &[x.id])
+}
+
+// --- Taking values apart, and putting them together ---
+
+/// A built-in that makes an `R`.
+fn shape<G, R: Data>(builder: &Builder<G>, op: BuiltinOp, inputs: Vec<ValueId>) -> TracedValue<R> {
+    let id = builder.builtin(op, inputs);
+    builder.typed::<R>(id);
+    TracedValue::new(id)
+}
+
+/// `x.name`: a struct's field, or a tuple's element (`name` is then its position). `access` is
+/// the same access in Rust, never run: it is how rustc checks the field and gives its type.
+pub fn field<G, T: Data, F: Data>(
+    builder: &Builder<G>,
+    x: TracedValue<T>,
+    name: &str,
+    _access: fn(&T) -> &F,
+) -> TracedValue<F> {
+    let op = BuiltinOp::Field {
+        name: name.to_string(),
+    };
+    shape(builder, op, vec![x.id])
+}
+
+/// `list[index]`. An index out of bounds fails the branch.
+pub fn index<G, T: Data>(
+    builder: &Builder<G>,
+    list: TracedValue<Vec<T>>,
+    index: TracedValue<usize>,
+) -> TracedValue<T> {
+    shape(builder, BuiltinOp::Index, vec![list.id, index.id])
+}
+
+/// Values that make a tuple: a tuple of traced values.
+pub trait Tuple {
+    type Output: Data;
+    fn ids(&self) -> Vec<ValueId>;
+}
+
+macro_rules! tuple {
+    ($($t:ident $i:tt),+) => {
+        impl<$($t: Data),+> Tuple for ($(TracedValue<$t>,)+) {
+            type Output = ($($t,)+);
+            fn ids(&self) -> Vec<ValueId> {
+                vec![$(self.$i.id),+]
+            }
+        }
+    };
+}
+
+tuple!(A 0);
+tuple!(A 0, B 1);
+tuple!(A 0, B 1, C 2);
+tuple!(A 0, B 1, C 2, D 3);
+tuple!(A 0, B 1, C 2, D 3, E 4);
+tuple!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+tuple!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+
+/// `(a, b, ...)`.
+pub fn tuple<G, T: Tuple>(builder: &Builder<G>, parts: T) -> TracedValue<T::Output> {
+    shape(builder, BuiltinOp::Tuple, parts.ids())
+}
+
+/// A value `format!` writes: a scalar.
+pub fn format_arg<T: Scalar>(value: TracedValue<T>) -> ValueId {
+    value.id
+}
+
+/// `format!("...", ...)`: `pieces` with each of `args` written between them, as `Display` does.
+pub fn format<G>(builder: &Builder<G>, pieces: &[&str], args: Vec<ValueId>) -> TracedValue<String> {
+    let pieces = pieces.iter().map(|piece| piece.to_string()).collect();
+    shape(builder, BuiltinOp::Format { pieces }, args)
 }

@@ -4,7 +4,7 @@
 //! such as `Graph`, `Node`, `BasicBlock`, and `Terminator`.
 
 use namu_core::ValueId;
-use namu_core::ir::{BuiltinOp, ScalarType};
+use namu_core::ir::BuiltinOp;
 
 pub type NodeId = usize;
 pub type BlockId = usize;
@@ -40,7 +40,6 @@ pub enum NodeKind {
     /// An expression the engine evaluates itself.
     Builtin {
         op: BuiltinOp,
-        ty: ScalarType,
         inputs: Vec<ValueId>,
     },
 }

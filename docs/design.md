@@ -90,6 +90,13 @@ with no task call: a loop of arithmetic and comparisons never leaves its worker.
 is a compile error, and the IR records the type, so the engine reads the operands exactly.
 Integer arithmetic is checked; an overflow or a division by zero fails the branch with a message.
 
+Field access, indexing and tuples work on values as they cross every boundary, MessagePack (a
+struct as a map of its fields, a tuple or a list as an array): a field is a range of its struct's
+bytes, found without decoding the rest, and a tuple is its parts' bytes under an array header.
+The generated code carries the access as Rust too (`field(b, page, "url", |v| &v.url)`), never
+run, so rustc checks the field exists and gives its type. `format!` takes `{}` and `{name}` over
+scalars, written as `Display` writes them.
+
 ### 4.4 Errors
 
 A task call that fails ends its branch only; sibling branches continue. A workflow that wants to
@@ -696,7 +703,7 @@ runs. Auth and multi-tenancy come later, but the API shapes should not preclude 
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |
-| Expressions | ✅ Built-ins: `+ - * / %`, unary `-`, comparisons, `&& || !` and compound assignment on `bool`, integers, floats and strings (`+` concatenates), typed by rustc and evaluated in the kernel; checked integer arithmetic (§4.3) | Field and index access, tuples, string formatting |
+| Expressions | ✅ Built-ins: `+ - * / %`, unary `-`, comparisons, `&& || !` and compound assignment on `bool`, integers, floats and strings (`+` concatenates), typed by rustc and evaluated in the kernel; checked integer arithmetic; field access, indexing and tuples on MessagePack without decoding; `format!` over scalars (§4.3) | Formatting options; method calls (`len()`) |
 | Types | ✅ Every value in the IR has a type (`types`, by value id) and named types have their shapes (`defs`), from `Data` and `#[derive(Data)]` (§5) | Checked against task signatures at publish time; typed WIT task signatures; serde renames reflected in field names |
 | Errors in DSL | ✅ `match attempt(task(..)) { Ok(..) => .., Err(e) => .. }`: the call gets an error edge in the IR (§4.4); a failure nobody attempts drops the branch and is recorded in run failures | Typed errors: a task's own error type, not only its message |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |

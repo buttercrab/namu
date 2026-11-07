@@ -45,19 +45,33 @@ pub struct Literal {
     pub value: String,
 }
 
-/// An expression the engine evaluates itself, where it stands: arithmetic, a comparison, logic.
-/// `ty` is its operands' type, which says how to read them; see [`crate::builtin`].
+/// An expression the engine evaluates itself, where a branch stands, with no task call; see
+/// [`crate::builtin`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Builtin {
     pub op: BuiltinOp,
-    pub ty: ScalarType,
     pub inputs: Vec<ValueId>,
     pub output: ValueId,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinOp {
+    /// Arithmetic, a comparison or logic, on operands read as `ty`.
+    Scalar { op: ScalarOp, ty: ScalarType },
+    /// A struct's field, by name, or a tuple's element, by position (`"0"`, `"1"`, ...).
+    Field { name: String },
+    /// `list[index]`: the list, then the index.
+    Index,
+    /// `(a, b, ...)`: the inputs, as a tuple.
+    Tuple,
+    /// `format!`: `pieces[0]`, then each input (a scalar) followed by the next piece.
+    Format { pieces: Vec<String> },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalarOp {
     Add,
     Sub,
     Mul,

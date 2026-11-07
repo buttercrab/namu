@@ -211,7 +211,7 @@ async fn enter<S: ValueStore>(
                 None => store.get(&ctx, input).await?,
             });
         }
-        let value = builtin::eval(builtin.op, builtin.ty, &inputs)
+        let value = builtin::eval(&builtin.op, &inputs)
             .with_context(|| format!("built-in {:?} at op {op_id}", builtin.op))?;
         values.push((builtin.output, value));
     }

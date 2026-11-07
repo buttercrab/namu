@@ -20,7 +20,7 @@ pub fn if_statement_workflow() -> ::namu::__macro_exports::Graph<()> {
             let __if_then_block_0 = __builder.new_block();
             let __if_condition = ::namu::__macro_exports::compare(
                 &__builder,
-                ::namu::__macro_exports::BuiltinOp::Gt,
+                ::namu::__macro_exports::ScalarOp::Gt,
                 x,
                 ::namu::__macro_exports::literal(&__builder, 5),
             );

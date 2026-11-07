@@ -171,10 +171,9 @@ impl<T> Graph<T> {
                             size: *size,
                         }));
                     }
-                    NodeKind::Builtin { op, ty, inputs } => {
+                    NodeKind::Builtin { op, inputs } => {
                         pending.builtins.push(Builtin {
-                            op: *op,
-                            ty: *ty,
+                            op: op.clone(),
                             inputs: inputs.clone(),
                             output: node.outputs[0],
                         });
@@ -313,14 +312,10 @@ impl<T> Graph<T> {
                     NodeKind::Window { input, size } => {
                         format!("  let var{node_id} = window(var{input}, {size});\n")
                     }
-                    NodeKind::Builtin { op, ty, inputs } => {
+                    NodeKind::Builtin { op, inputs } => {
                         let inputs: Vec<String> =
                             inputs.iter().map(|v| format!("var{v}")).collect();
-                        format!(
-                            "  let var{} = {op:?}::<{ty:?}>({});\n",
-                            node_id,
-                            inputs.join(", ")
-                        )
+                        format!("  let var{node_id} = {op:?}({});\n", inputs.join(", "))
                     }
                     NodeKind::Phi { from } => {
                         let from_str: Vec<String> = from

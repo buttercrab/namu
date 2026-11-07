@@ -32,14 +32,14 @@ pub mod export {
 #[doc(hidden)]
 pub mod __macro_exports {
     pub use inventory;
-    pub use namu_core::ir::{BuiltinOp, Workflow};
+    pub use namu_core::ir::{ScalarOp, Workflow};
     pub use namu_core::registry::WorkflowEntry;
     pub use namu_core::types::{Def, Defs, Type, named};
     pub use namu_flow::{
         Builder, Graph, IntoArg, Node, NodeKind, TracedValue, arith, branch, call, call0, call1,
-        call2, call3, call4, call5, call6, call7, call8, call9, catch, compare, input, jump,
-        literal, logic, negate, not, phi, plus, reduce, return_unit, return_value, typed_like,
-        window,
+        call2, call3, call4, call5, call6, call7, call8, call9, catch, compare, field, format,
+        format_arg, index, input, jump, literal, logic, negate, not, phi, plus, reduce,
+        return_unit, return_value, tuple, typed_like, window,
     };
 }
 
