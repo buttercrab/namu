@@ -27,6 +27,12 @@ Rust source -> namu-macros -> JSON IR -> namu-engine -> workers
                                   +---- namu-master -----+
 ```
 
+## Deploying
+NAMU runs on Kubernetes from a Helm chart (`deploy/helm/namu`), on an EKS cluster with MemoryDB and
+S3 that `deploy/terraform/aws` makes; images build from `deploy/docker/Dockerfile`. The API is
+HTTPS with tokens, the mesh mutual TLS. See `docs/operations/kubernetes.md`;
+`./scripts/kind.sh` checks it all on a local kind cluster.
+
 ## Examples
 - `examples/basic` - a workflow and its tasks, run in-process (`cargo run -p namu-basic`).
 - `examples/advanced` - a labeling pipeline: a stream, continuous batching, and a report

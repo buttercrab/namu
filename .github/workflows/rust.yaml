@@ -95,6 +95,52 @@ jobs:
         if: failure() || cancelled()
         run: tail -n 40 data/rag/run.log data/rag/run/logs/*.log data/rag/qdrant/qdrant.log
 
+  deploy:
+    name: Deploy files (Helm, Terraform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Helm lint, and render every option
+        run: |
+          helm lint deploy/helm/namu
+          helm template namu deploy/helm/namu --set worker.autoscaling.enabled=true \
+            --set tls.certManager.enabled=true --set networkPolicy.enabled=true \
+            --set telemetry.otlpEndpoint=http://collector:4318 >/dev/null
+          helm template namu deploy/helm/namu --set insecure=true >/dev/null
+      - name: Terraform validate
+        working-directory: deploy/terraform/aws
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+
+  kubernetes:
+    name: Kubernetes (kind, Helm chart)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          rustup update --no-self-update
+          rustup target add wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with:
+          install_only: true
+      - uses: docker/setup-buildx-action@v3
+      - name: Images, chart, workflows, a worker drained
+        run: ./scripts/kind.sh
+      - name: Cluster state
+        if: failure() || cancelled()
+        run: |
+          kubectl -n namu get pods -o wide || true
+          kubectl -n namu logs deploy/namu-orchestrator --tail=60 || true
+          kubectl -n namu logs deploy/namu-worker --tail=60 || true
+
   fmt:
     name: Format
     runs-on: ubuntu-latest

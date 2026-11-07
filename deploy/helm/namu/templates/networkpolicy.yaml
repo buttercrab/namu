@@ -1,0 +1,23 @@
+{{- if .Values.networkPolicy.enabled }}
+# Only NAMU's pods reach the mesh port; the API and metrics stay open to the namespace's policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "namu.fullname" . }}-mesh
+  labels: {{- include "namu.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "namu.selector" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{- include "namu.selector" . | nindent 14 }}
+      ports:
+        - { port: 7100 }
+    - ports:
+        - { port: 8080 }
+        {{- if .Values.telemetry.metricsPort }}
+        - { port: {{ .Values.telemetry.metricsPort }} }
+        {{- end }}
+{{- end }}

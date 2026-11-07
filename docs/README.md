@@ -24,6 +24,7 @@ Welcome to the NAMU docs. Start with Getting Started for a runnable local stack,
 - `operations/configuration.md` - environment variables and runtime knobs.
 - `operations/security.md` - tokens, TLS and mutual TLS: what is protected and how.
 - `operations/observability.md` - logs, metrics and traces: what each process tells, and how.
+- `operations/kubernetes.md` - NAMU on EKS: Terraform, images, the Helm chart, autoscaling, spot.
 
 ## Development
 - `development.md` - build, test, and verification workflow.

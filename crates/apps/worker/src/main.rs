@@ -85,20 +85,13 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| format!("127.0.0.1:{}", mesh_local.port()));
 
     let http = http_client(security.as_ref())?;
-    let registration: WorkerRegisterResponse = http
-        .post(format!("{orchestrator_url}/workers/register"))
-        .json(&WorkerRegisterRequest {
-            name: name.clone(),
-            addr: addr.clone(),
-            runtimes: runtime_keys.iter().cloned().collect(),
-            platform,
-        })
-        .send()
-        .await
-        .context("register with orchestrator")?
-        .error_for_status()?
-        .json()
-        .await?;
+    let request = WorkerRegisterRequest {
+        name: name.clone(),
+        addr: addr.clone(),
+        runtimes: runtime_keys.iter().cloned().collect(),
+        platform,
+    };
+    let registration = register(&http, &orchestrator_url, &request).await?;
     let id = registration.worker_id;
 
     let routes = Arc::new(Routes::default());
@@ -217,6 +210,38 @@ fn http_client(security: Option<&Security>) -> anyhow::Result<reqwest::Client> {
             .add_root_certificate(reqwest::Certificate::from_pem(&security.ca)?);
     }
     Ok(builder.build()?)
+}
+
+/// Joins the cluster, waiting for the orchestrator as long as it takes: workers may start first,
+/// or it may be restarting. A refusal that waiting cannot change (a token it does not take, a
+/// request it finds wrong) ends the worker.
+async fn register(
+    http: &reqwest::Client,
+    orchestrator_url: &str,
+    request: &WorkerRegisterRequest,
+) -> anyhow::Result<WorkerRegisterResponse> {
+    let url = format!("{orchestrator_url}/workers/register");
+    let mut backoff = Duration::from_millis(250);
+    loop {
+        let failure = match http.post(&url).json(request).send().await {
+            Ok(response) if response.status().is_success() => {
+                return response.json().await.context("a registration");
+            }
+            Ok(response) if response.status().is_client_error() => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                anyhow::bail!("the orchestrator refused this worker: {status} {body}");
+            }
+            Ok(response) => format!("{}", response.status()),
+            Err(err) => format!("{err}"),
+        };
+        tracing::warn!(
+            url,
+            "cannot register yet, retrying in {backoff:?}: {failure}"
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(5));
+    }
 }
 
 /// This worker's membership lease with the orchestrator.

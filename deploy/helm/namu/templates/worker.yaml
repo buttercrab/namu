@@ -1,0 +1,132 @@
+# Workers: any number, joining and leaving while runs go on. A worker that is stopped (scale-down,
+# a node drained, a spot instance reclaimed) drains on SIGTERM: it takes no new work, hands on
+# what it holds and leaves, within its grace period; one that is killed is taken over from the log.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "namu.fullname" . }}-worker
+  labels: {{- include "namu.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
+  replicas: {{ .Values.worker.replicas }}
+  {{- end }}
+  strategy:
+    rollingUpdate:
+      maxUnavailable: {{ .Values.worker.maxUnavailable }}
+      maxSurge: 25%
+  selector:
+    matchLabels: {{- include "namu.selector" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels: {{- include "namu.selector" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "namu.fullname" . }}-worker
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      {{- include "namu.podSecurity" . | nindent 6 }}
+      containers:
+        - name: worker
+          image: {{ include "namu.image" (dict "image" .Values.image.worker "chart" .Chart) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- include "namu.containerSecurity" . | nindent 10 }}
+          env:
+            {{- include "namu.commonEnv" . | nindent 12 }}
+            - name: NAMU_ORCH_URL
+              value: {{ include "namu.orchestratorUrl" . }}
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NAMU_RUNTIMES
+              value: {{ .Values.worker.runtimes | quote }}
+            {{- with .Values.worker.taskSlots }}
+            - name: NAMU_TASK_SLOTS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if not .Values.insecure }}
+            - name: NAMU_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tokens.existingSecret }}
+                  key: worker
+            {{- end }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - { name: mesh, containerPort: 7100 }
+            {{- if .Values.telemetry.metricsPort }}
+            - { name: metrics, containerPort: {{ .Values.telemetry.metricsPort }} }
+            {{- end }}
+          {{- if .Values.telemetry.metricsPort }}
+          readinessProbe:
+            httpGet: { path: /metrics, port: metrics }
+            periodSeconds: 10
+          {{- end }}
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/namu }
+            {{- if not .Values.insecure }}
+            - { name: tls, mountPath: /etc/namu/tls, readOnly: true }
+            {{- end }}
+      volumes:
+        - name: data
+          emptyDir: {}
+        {{- if not .Values.insecure }}
+        - name: tls
+          secret:
+            secretName: {{ include "namu.tlsSecret" . }}
+        {{- end }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.topologySpreadConstraints }}
+      topologySpreadConstraints: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "namu.fullname" . }}-worker
+  labels: {{- include "namu.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.worker.maxUnavailable }}
+  selector:
+    matchLabels: {{- include "namu.selector" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+{{- if .Values.worker.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "namu.fullname" . }}-worker
+  labels: {{- include "namu.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "namu.fullname" . }}-worker
+  minReplicas: {{ .Values.worker.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.worker.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.worker.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    # Workers join a running run at once; leaving, each drains, so scale down slowly.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 60 }
+{{- end }}

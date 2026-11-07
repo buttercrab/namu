@@ -5,3 +5,4 @@ data/
 dev/data/
 examples/distributed/dist/
 examples/distributed/tasks/*/target/
+.terraform/
