@@ -9,7 +9,8 @@ use std::process::Command;
 
 use clap::{Parser, Subcommand};
 use namu_proto::{
-    RunCreateRequest, RunCreateResponse, TaskManifest, TaskRuntime, WorkflowUploadRequest,
+    Page, PageQuery, RunCreateRequest, RunCreateResponse, RunStatus, TaskManifest, TaskRuntime,
+    WorkflowUploadRequest,
 };
 use reqwest::multipart;
 use serde_json::Value as JsonValue;
@@ -57,22 +58,56 @@ enum Commands {
     Run {
         workflow_id: String,
         version: String,
-        /// Wait for the run to finish and print its status and results
+        /// A value for a workflow parameter, `name=value`; repeat for each. The value is JSON
+        /// (`limit=300`, `tags=["a","b"]`), or else a string (`collection=wikipedia`).
+        #[arg(long = "input", value_name = "NAME=VALUE", value_parser = parse_input)]
+        inputs: Vec<(String, serde_json::Value)>,
+        /// Wait for the run to finish and print its status, results and failures
         #[arg(long)]
         wait: bool,
     },
     /// Check run status
     Status { run_id: String },
+    /// Print a run's results, one JSON value per line, in the order they arrived
+    Results {
+        run_id: String,
+        /// Keep printing them as they arrive, until the run ends
+        #[arg(long)]
+        follow: bool,
+        /// The failures instead
+        #[arg(long)]
+        failures: bool,
+    },
     /// List workers
     Workers,
     /// Login and healthcheck orchestrator
     Login,
     /// Show version information
     Version,
+    /// Make an API token: prints it, and adds its hash to the orchestrator's tokens file
+    Token {
+        /// `client` (publish, run, read results) or `worker` (join the mesh)
+        #[arg(long)]
+        role: String,
+        /// The orchestrator's tokens file (`NAMU_TOKENS`); without it, the line is printed
+        #[arg(long)]
+        tokens: Option<PathBuf>,
+    },
+    /// Make a cluster CA and a member certificate, for development: a production cluster gets
+    /// them from its own PKI
+    Certs {
+        /// Where to write ca.pem, member.pem and member.key
+        #[arg(long)]
+        out: PathBuf,
+        /// A name or address the orchestrator's HTTPS is reached by; repeat for each
+        #[arg(long = "host")]
+        hosts: Vec<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
 
     match cli.command {
@@ -101,12 +136,24 @@ async fn main() {
         Commands::Run {
             workflow_id,
             version,
+            inputs,
             wait,
         } => {
-            run_workflow(&workflow_id, &version, wait).await;
+            run_workflow(&workflow_id, &version, inputs.into_iter().collect(), wait).await;
         }
         Commands::Status { run_id } => {
             run_status(&run_id).await;
+        }
+        Commands::Results {
+            run_id,
+            follow,
+            failures,
+        } => {
+            let what = if failures { "failures" } else { "results" };
+            if let Err(err) = print_results(&run_id, what, follow).await {
+                eprintln!("Failed to fetch {what}: {err:#}");
+                std::process::exit(1);
+            }
         }
         Commands::Workers => {
             list_workers().await;
@@ -116,6 +163,18 @@ async fn main() {
         }
         Commands::Version => {
             show_version();
+        }
+        Commands::Token { role, tokens } => {
+            if let Err(err) = make_token(&role, tokens.as_deref()) {
+                eprintln!("Error: {err:#}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Certs { out, hosts } => {
+            if let Err(err) = make_certs(&out, &hosts) {
+                eprintln!("Error: {err:#}");
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -255,6 +314,8 @@ fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
         runtime: task.runtime,
         platform: None,
         checkpoint: task.checkpoint,
+        retries: task.retries,
+        retry_backoff_ms: task.retry_backoff_ms,
         window: task.window,
         batch_size: task.batch_size,
         max_wait_ms: task.max_wait_ms,
@@ -442,7 +503,7 @@ async fn publish(out_dir: &Path) -> bool {
         }
     };
 
-    let client = reqwest::Client::new();
+    let client = client();
     let mut ok = true;
 
     let tasks_dir = out_dir.join("tasks");
@@ -525,7 +586,22 @@ async fn publish(out_dir: &Path) -> bool {
     ok
 }
 
-async fn run_workflow(workflow_id: &str, version: &str, wait: bool) {
+/// `name=value`, the value as JSON, or else as a string.
+fn parse_input(arg: &str) -> Result<(String, serde_json::Value), String> {
+    let (name, value) = arg
+        .split_once('=')
+        .ok_or_else(|| format!("expected NAME=VALUE, got {arg:?}"))?;
+    let value = serde_json::from_str(value)
+        .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+    Ok((name.to_string(), value))
+}
+
+async fn run_workflow(
+    workflow_id: &str,
+    version: &str,
+    inputs: serde_json::Map<String, serde_json::Value>,
+    wait: bool,
+) {
     let master_url = match get_master_url() {
         Ok(url) => url,
         Err(e) => {
@@ -535,10 +611,11 @@ async fn run_workflow(workflow_id: &str, version: &str, wait: bool) {
     };
     let master_url = master_url.trim_end_matches('/').to_string();
 
-    let client = reqwest::Client::new();
+    let client = client();
     let req = RunCreateRequest {
         workflow_id: workflow_id.to_string(),
         version: version.to_string(),
+        inputs,
     };
     let resp = match client
         .post(format!("{master_url}/runs"))
@@ -572,16 +649,41 @@ async fn run_workflow(workflow_id: &str, version: &str, wait: bool) {
         return;
     }
 
-    let url = format!("{master_url}/runs/{}", created.run_id);
+    let run = created.run_id.to_string();
+    let url = format!("{master_url}/runs/{run}");
+    // The run goes on while the orchestrator restarts: keep asking, for a while.
+    let patience = std::time::Duration::from_secs(120);
+    let mut failing_since: Option<std::time::Instant> = None;
     loop {
-        let status: JsonValue = match client.get(&url).send().await {
-            Ok(resp) => resp.json().await.unwrap_or_default(),
-            Err(err) => {
-                eprintln!("Failed to fetch status: {err}");
+        let fetched = match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => resp.json::<JsonValue>().await.ok(),
+            Ok(resp) if resp.status().is_client_error() => {
+                eprintln!("Failed to fetch status: {}", resp.status());
                 std::process::exit(1);
             }
+            _ => None,
         };
+        let Some(mut status) = fetched else {
+            let since = *failing_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() > patience {
+                eprintln!("The orchestrator has not answered for {patience:?}; giving up");
+                std::process::exit(1);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            continue;
+        };
+        failing_since = None;
         if status["status"] != "running" {
+            // The status counts them; print them.
+            for what in ["results", "failures"] {
+                match all_pages(&client, &master_url, &run, what).await {
+                    Ok(items) => status[what] = JsonValue::Array(items),
+                    Err(err) => {
+                        eprintln!("Failed to fetch {what}: {err:#}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&status).unwrap_or_default()
@@ -595,6 +697,138 @@ async fn run_workflow(workflow_id: &str, version: &str, wait: bool) {
     }
 }
 
+/// Why a request to the orchestrator failed.
+enum Failed {
+    /// It answered no: waiting changes nothing (a wrong run id, a token it does not take).
+    Refused(anyhow::Error),
+    /// It did not answer, or failed itself: it may be restarting.
+    Unavailable(anyhow::Error),
+}
+
+impl From<Failed> for anyhow::Error {
+    fn from(failed: Failed) -> Self {
+        match failed {
+            Failed::Refused(err) | Failed::Unavailable(err) => err,
+        }
+    }
+}
+
+/// One page of a run's `what` (`results` or `failures`) from the `after`th on.
+async fn fetch_page(
+    client: &reqwest::Client,
+    master_url: &str,
+    run: &str,
+    what: &str,
+    query: PageQuery,
+) -> Result<Page<JsonValue>, Failed> {
+    let mut url = format!("{master_url}/runs/{run}/{what}?after={}", query.after);
+    if let Some(wait_ms) = query.wait_ms {
+        url.push_str(&format!("&wait_ms={wait_ms}"));
+    }
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| Failed::Unavailable(err.into()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        let err = anyhow::anyhow!("{status} {body}");
+        return Err(match status.is_client_error() {
+            true => Failed::Refused(err),
+            false => Failed::Unavailable(err),
+        });
+    }
+    response
+        .json()
+        .await
+        .map_err(|err| Failed::Unavailable(err.into()))
+}
+
+/// [`fetch_page`], asked again while the orchestrator does not answer, for up to two minutes:
+/// a run goes on while it restarts.
+async fn fetch_page_patiently(
+    client: &reqwest::Client,
+    master_url: &str,
+    run: &str,
+    what: &str,
+    query: PageQuery,
+) -> anyhow::Result<Page<JsonValue>> {
+    let patience = std::time::Duration::from_secs(120);
+    let started = std::time::Instant::now();
+    loop {
+        match fetch_page(client, master_url, run, what, query).await {
+            Ok(page) => return Ok(page),
+            Err(Failed::Unavailable(err)) if started.elapsed() < patience => {
+                say_waiting(&err);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(failed) => return Err(failed.into()),
+        }
+    }
+}
+
+/// Says, once a second at most, that the orchestrator is not answering.
+fn say_waiting(err: &anyhow::Error) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if LAST.swap(now, Ordering::Relaxed) != now {
+        eprintln!("waiting for the orchestrator: {err:#}");
+    }
+}
+
+/// Every one of a run's `what` so far.
+async fn all_pages(
+    client: &reqwest::Client,
+    master_url: &str,
+    run: &str,
+    what: &str,
+) -> anyhow::Result<Vec<JsonValue>> {
+    let mut items = Vec::new();
+    loop {
+        let query = PageQuery {
+            after: items.len() as u64,
+            ..PageQuery::default()
+        };
+        let page = fetch_page_patiently(client, master_url, run, what, query).await?;
+        if page.items.is_empty() {
+            return Ok(items);
+        }
+        items.extend(page.items);
+    }
+}
+
+/// How long a followed page waits on the orchestrator for a report.
+const FOLLOW_WAIT_MS: u64 = 20_000;
+
+/// Prints a run's `what`, a JSON value per line; with `follow`, as they arrive, until the run
+/// ends.
+async fn print_results(run: &str, what: &str, follow: bool) -> anyhow::Result<()> {
+    let master_url = get_master_url().map_err(anyhow::Error::msg)?;
+    let master_url = master_url.trim_end_matches('/');
+    let client = client();
+    // Following, an empty page waits on the orchestrator for the next report, or the run's end.
+    let mut query = PageQuery {
+        wait_ms: follow.then_some(FOLLOW_WAIT_MS),
+        ..PageQuery::default()
+    };
+    loop {
+        let page = fetch_page_patiently(&client, master_url, run, what, query).await?;
+        for item in &page.items {
+            println!("{item}");
+        }
+        query.after = page.next;
+        // A page read once the run ended holds everything up to its end.
+        let done = page.status != RunStatus::Running;
+        if page.items.is_empty() && (!follow || done) {
+            return Ok(());
+        }
+    }
+}
+
 async fn run_status(run_id: &str) {
     let master_url = match get_master_url() {
         Ok(url) => url,
@@ -603,7 +837,7 @@ async fn run_status(run_id: &str) {
             std::process::exit(1);
         }
     };
-    let client = reqwest::Client::new();
+    let client = client();
     let url = format!("{}/runs/{}", master_url.trim_end_matches('/'), run_id);
     match client.get(url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -630,7 +864,7 @@ async fn list_workers() {
             std::process::exit(1);
         }
     };
-    let client = reqwest::Client::new();
+    let client = client();
     let url = format!("{}/workers", master_url.trim_end_matches('/'));
     match client.get(url).send().await {
         Ok(resp) if resp.status().is_success() => {
@@ -718,7 +952,7 @@ async fn perform_health_check(url: &str) -> Result<(), String> {
         return Err("Invalid URL format - must start with http:// or https://".to_string());
     }
 
-    let client = reqwest::Client::new();
+    let client = client();
     let health_url = format!("{}/healthz", url.trim_end_matches('/'));
 
     match client.get(&health_url).send().await {
@@ -745,6 +979,84 @@ pub fn get_master_url() -> Result<String, String> {
     let config_path = get_config_path();
     get_saved_master_url(&config_path)
         .ok_or_else(|| "No orchestrator URL configured. Run 'namu login' first.".to_string())
+}
+
+/// The client for the orchestrator's API: with the token in `NAMU_TOKEN`, trusting the CA in
+/// `NAMU_TLS_CA` too, if set (a cluster's own CA; otherwise the system's roots).
+fn client() -> reqwest::Client {
+    let build = || -> anyhow::Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder();
+        if let Ok(token) = std::env::var("NAMU_TOKEN") {
+            let mut auth = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|_| anyhow::anyhow!("NAMU_TOKEN is not a valid header value"))?;
+            auth.set_sensitive(true);
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(reqwest::header::AUTHORIZATION, auth);
+            builder = builder.default_headers(headers);
+        }
+        if let Ok(ca) = std::env::var("NAMU_TLS_CA") {
+            let pem =
+                fs::read(&ca).map_err(|err| anyhow::anyhow!("reading NAMU_TLS_CA {ca}: {err}"))?;
+            builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
+        }
+        Ok(builder.build()?)
+    };
+    build().unwrap_or_else(|err| {
+        eprintln!("Error: {err:#}");
+        std::process::exit(1);
+    })
+}
+
+/// A new token for `role`: printed, and its hash added to `tokens` (or printed, if not given).
+fn make_token(role: &str, tokens: Option<&Path>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(role, "client" | "worker"),
+        "the role is `client` or `worker`, not {role:?}"
+    );
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).map_err(|err| anyhow::anyhow!("no randomness: {err}"))?;
+    let token: String = std::iter::once("namu_".to_string())
+        .chain(secret.iter().map(|b| format!("{b:02x}")))
+        .collect();
+    let line = format!(
+        "{role} sha256:{:x}\n",
+        sha2::Sha256::digest(token.as_bytes())
+    );
+    match tokens {
+        Some(path) => {
+            use std::io::Write as _;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            file.write_all(line.as_bytes())?;
+        }
+        None => eprint!("{line}"),
+    }
+    println!("{token}");
+    Ok(())
+}
+
+/// A cluster CA, and one member certificate for every member, in `out`.
+fn make_certs(out: &Path, hosts: &[String]) -> anyhow::Result<()> {
+    use namu_engine::transport::certs::ClusterCa;
+    fs::create_dir_all(out)?;
+    let ca = ClusterCa::new()?;
+    let member = ca.member(hosts)?;
+    fs::write(out.join("ca.pem"), ca.pem())?;
+    fs::write(out.join("member.pem"), member.cert)?;
+    let key = out.join("member.key");
+    fs::write(&key, member.key)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600))?;
+    }
+    println!(
+        "wrote ca.pem, member.pem and member.key to {}",
+        out.display()
+    );
+    Ok(())
 }
 
 fn show_version() {

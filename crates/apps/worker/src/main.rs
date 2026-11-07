@@ -17,8 +17,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 use namu_engine::Worker;
+use namu_engine::files::{self, WATCH_EVERY};
 use namu_engine::routes::Routes;
-use namu_engine::transport::TcpTransport;
+use namu_engine::transport::{MeshTls, TcpTransport};
 use namu_proto::{
     HEARTBEAT_INTERVAL_MS, Membership, TaskRuntime, WorkerRegisterRequest, WorkerRegisterResponse,
     host_platform,
@@ -32,7 +33,10 @@ mod tasks;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    // Every TLS connection the process makes or takes uses ring: the mesh, HTTPS, Redis, S3 and
+    // OTLP.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _telemetry = namu_telemetry::init("namu-worker")?;
 
     let orchestrator_url = std::env::var("NAMU_ORCH_URL")
         .unwrap_or_else(|_| "http://localhost:8080".to_string())
@@ -73,27 +77,22 @@ async fn main() -> anyhow::Result<()> {
     .join(&name);
     tokio::fs::create_dir_all(&cache_dir).await?;
 
+    let security = Security::from_env()?;
     let redis = ConnectionManager::new(redis::Client::open(redis_url)?).await?;
     let log = log::RedisLog::spawn(redis);
-    let (mesh, mesh_local, inbox) = TcpTransport::bind(mesh_bind).await?;
+    let mesh_tls = security.as_ref().map(|s| s.mesh.clone());
+    let (mesh, mesh_local, inbox) = TcpTransport::bind(mesh_bind, mesh_tls).await?;
     let addr = std::env::var("NAMU_ADVERTISE_ADDR")
         .unwrap_or_else(|_| format!("127.0.0.1:{}", mesh_local.port()));
 
-    let http = reqwest::Client::new();
-    let registration: WorkerRegisterResponse = http
-        .post(format!("{orchestrator_url}/workers/register"))
-        .json(&WorkerRegisterRequest {
-            name: name.clone(),
-            addr: addr.clone(),
-            runtimes: runtime_keys.iter().cloned().collect(),
-            platform,
-        })
-        .send()
-        .await
-        .context("register with orchestrator")?
-        .error_for_status()?
-        .json()
-        .await?;
+    let http = http_client(security.as_ref())?;
+    let request = WorkerRegisterRequest {
+        name: name.clone(),
+        addr: addr.clone(),
+        runtimes: runtime_keys.iter().cloned().collect(),
+        platform,
+    };
+    let registration = register(&http, &orchestrator_url, &request).await?;
     let id = registration.worker_id;
 
     let routes = Arc::new(Routes::default());
@@ -104,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         runtime_keys.clone(),
         routes.clone(),
     ));
+    let epoch = registration.membership.epoch;
     apply(&mesh, &routes, &tasks, registration.membership);
     let worker = Worker::spawn(
         id,
@@ -122,6 +122,8 @@ async fn main() -> anyhow::Result<()> {
         mesh,
         routes,
         tasks,
+        worker: worker.clone(),
+        epoch: std::sync::atomic::AtomicU64::new(epoch),
     };
     let mut interval = tokio::time::interval(Duration::from_millis(HEARTBEAT_INTERVAL_MS));
     let stop = stop_signal();
@@ -155,6 +157,105 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How this worker proves it is one: its identity in the cluster (for the mesh, and to trust the
+/// orchestrator's HTTPS), and its token for the orchestrator's API.
+struct Security {
+    mesh: MeshTls,
+    ca: Vec<u8>,
+    token: String,
+}
+
+impl Security {
+    /// From `NAMU_TLS_CA`, `NAMU_TLS_CERT`, `NAMU_TLS_KEY` and `NAMU_TOKEN`; `None` if run with
+    /// `NAMU_INSECURE=1` and none of them. The mesh's TLS is loaded again when its files change.
+    fn from_env() -> anyhow::Result<Option<Self>> {
+        let var = |name: &str| std::env::var(name).ok();
+        let insecure = var("NAMU_INSECURE").is_some_and(|v| v == "1");
+        match (
+            var("NAMU_TLS_CA"),
+            var("NAMU_TLS_CERT"),
+            var("NAMU_TLS_KEY"),
+            var("NAMU_TOKEN"),
+        ) {
+            (Some(ca), Some(cert), Some(key), Some(token)) => {
+                let mesh = MeshTls::from_files(&ca, &cert, &key)?;
+                // A renewed certificate is taken up for the mesh as it comes. (The orchestrator's
+                // HTTPS is trusted by the CA read here: a new CA goes into the bundle beside the
+                // old one, and workers restart, before members get certificates from it.)
+                let files = [ca, cert, key].map(PathBuf::from);
+                files::watch("this member's certificate", files.to_vec(), WATCH_EVERY, {
+                    let mesh = mesh.clone();
+                    let [ca, cert, key] = files.clone();
+                    move || mesh.reload_files(&ca, &cert, &key)
+                });
+                let ca = std::fs::read(&files[0])
+                    .with_context(|| format!("reading {}", files[0].display()))?;
+                Ok(Some(Self { mesh, ca, token }))
+            }
+            (None, None, None, None) if insecure => {
+                tracing::warn!(
+                    "NAMU_INSECURE=1: the mesh is plaintext and the API unauthenticated"
+                );
+                Ok(None)
+            }
+            _ => anyhow::bail!(
+                "set NAMU_TLS_CA, NAMU_TLS_CERT, NAMU_TLS_KEY and NAMU_TOKEN (or NAMU_INSECURE=1 \
+                 for a cluster on a machine nobody else reaches)"
+            ),
+        }
+    }
+}
+
+/// The client for the orchestrator's API: it sends this worker's token, and trusts the
+/// cluster's CA for HTTPS.
+fn http_client(security: Option<&Security>) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(security) = security {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let mut auth =
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", security.token))
+                .context("NAMU_TOKEN")?;
+        auth.set_sensitive(true);
+        headers.insert(reqwest::header::AUTHORIZATION, auth);
+        builder = builder
+            .default_headers(headers)
+            .add_root_certificate(reqwest::Certificate::from_pem(&security.ca)?);
+    }
+    Ok(builder.build()?)
+}
+
+/// Joins the cluster, waiting for the orchestrator as long as it takes: workers may start first,
+/// or it may be restarting. A refusal that waiting cannot change (a token it does not take, a
+/// request it finds wrong) ends the worker.
+async fn register(
+    http: &reqwest::Client,
+    orchestrator_url: &str,
+    request: &WorkerRegisterRequest,
+) -> anyhow::Result<WorkerRegisterResponse> {
+    let url = format!("{orchestrator_url}/workers/register");
+    let mut backoff = Duration::from_millis(250);
+    loop {
+        let failure = match http.post(&url).json(request).send().await {
+            Ok(response) if response.status().is_success() => {
+                return response.json().await.context("a registration");
+            }
+            Ok(response) if response.status().is_client_error() => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                anyhow::bail!("the orchestrator refused this worker: {status} {body}");
+            }
+            Ok(response) => format!("{}", response.status()),
+            Err(err) => format!("{err}"),
+        };
+        tracing::warn!(
+            url,
+            "cannot register yet, retrying in {backoff:?}: {failure}"
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(5));
+    }
+}
+
 /// This worker's membership lease with the orchestrator.
 struct Lease {
     http: reqwest::Client,
@@ -162,6 +263,9 @@ struct Lease {
     mesh: Arc<TcpTransport>,
     routes: Arc<Routes>,
     tasks: Arc<tasks::RuntimeTasks>,
+    worker: Worker,
+    /// The control plane's incarnation, as last heard.
+    epoch: std::sync::atomic::AtomicU64,
 }
 
 impl Lease {
@@ -172,6 +276,7 @@ impl Lease {
             Ok(response) => response,
             Err(err) => {
                 error!("{what} failed: {err}");
+                metrics::counter!("namu_heartbeat_failures_total").increment(1);
                 return Ok(());
             }
         };
@@ -182,7 +287,15 @@ impl Lease {
         }
         match response.error_for_status() {
             Ok(response) => match response.json::<Membership>().await {
-                Ok(membership) => apply(&self.mesh, &self.routes, &self.tasks, membership),
+                Ok(membership) => {
+                    let epoch = membership.epoch;
+                    apply(&self.mesh, &self.routes, &self.tasks, membership);
+                    let before = self.epoch.swap(epoch, std::sync::atomic::Ordering::Relaxed);
+                    if before != epoch {
+                        info!(before, epoch, "the control plane restarted");
+                        self.worker.peer_restarted(0);
+                    }
+                }
                 Err(err) => error!("bad {what} response: {err}"),
             },
             Err(err) => error!("{what} failed: {err}"),

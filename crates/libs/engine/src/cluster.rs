@@ -12,17 +12,20 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use namu_core::ValueId;
+use namu_core::inputs::Inputs;
 use namu_core::ir::{Operation, Workflow};
+use namu_core::value::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 
 use crate::ids::{NodeId, RunId, WorkerId};
-use crate::log::{Durable, Log, MemoryLog, Record, RunEstate};
-use crate::message::Message;
+use crate::log::{Durable, Log, Logged, MemoryLog, Record, RunEstate};
+use crate::message::{BranchId, Message, Report};
 use crate::routes::Routes;
-use crate::run::{RunInfo, RunOutcome};
+use crate::run::RunOutcome;
 use crate::tasks::{TaskRef, Tasks};
-use crate::transport::{LocalTransport, TcpTransport, Transport};
+use crate::transport::{LocalTransport, MeshTls, TcpTransport, Transport};
 use crate::tree::Node;
 use crate::worker::Worker;
 
@@ -35,7 +38,10 @@ pub struct LocalCluster {
     control: Arc<dyn Transport>,
     waiting: Arc<Mutex<HashMap<RunId, oneshot::Sender<RunOutcome>>>>,
     /// Runs that have not finished: who owns them and how to start them again.
-    running: Arc<Mutex<HashMap<RunId, (WorkerId, Workflow)>>>,
+    running: Arc<Mutex<HashMap<RunId, (WorkerId, Started)>>>,
+    /// The reports each run's owner sent as it recorded them, by branch, as the control plane
+    /// keeps them: one sent again counts once. A run's outcome is made of them.
+    recorded: Arc<Mutex<Recorded>>,
     /// Workers draining: still running, but given no new work.
     leaving: Mutex<HashSet<WorkerId>>,
     dead: Arc<Dead>,
@@ -43,6 +49,15 @@ pub struct LocalCluster {
     tasks: Mutex<BTreeSet<TaskRef>>,
     next_owner: AtomicUsize,
     log: Arc<MemoryLog>,
+}
+
+type Recorded = HashMap<RunId, BTreeMap<BranchId, Report>>;
+
+/// A run as it was started: what its owner, or the owner's successor, starts it with.
+#[derive(Clone)]
+struct Started {
+    workflow: Workflow,
+    inputs: Vec<(ValueId, Value)>,
 }
 
 /// Workers that were killed: nothing they send or log arrives anywhere.
@@ -83,9 +98,18 @@ impl LocalCluster {
     /// Like [`LocalCluster::new`], but the workers talk over TCP on localhost, so every message
     /// is encoded, sent and decoded exactly as between machines.
     pub async fn tcp(task_sets: Vec<Arc<dyn Tasks>>) -> std::io::Result<Self> {
+        Self::tcp_with(task_sets, None).await
+    }
+
+    /// Like [`LocalCluster::tcp`], with mutual TLS between every member if `tls` is given.
+    pub async fn tcp_with(
+        task_sets: Vec<Arc<dyn Tasks>>,
+        tls: Option<MeshTls>,
+    ) -> std::io::Result<Self> {
         let mut transports = Vec::new();
         for _ in 0..=task_sets.len() {
-            transports.push(TcpTransport::bind(([127, 0, 0, 1], 0).into()).await?);
+            let localhost = ([127, 0, 0, 1], 0).into();
+            transports.push(TcpTransport::bind(localhost, tls.clone()).await?);
         }
         for (transport, _, _) in &transports {
             for (id, (_, addr, _)) in (0..).zip(&transports) {
@@ -136,16 +160,51 @@ impl LocalCluster {
         routes.set_workers(workers.iter().map(Worker::id).collect());
 
         let waiting: Arc<Mutex<HashMap<RunId, oneshot::Sender<RunOutcome>>>> = Arc::default();
-        let running: Arc<Mutex<HashMap<RunId, (WorkerId, Workflow)>>> = Arc::default();
+        let running: Arc<Mutex<HashMap<RunId, (WorkerId, Started)>>> = Arc::default();
+        let recorded: Arc<Mutex<Recorded>> = Arc::default();
         let (control, mut inbox) = control;
-        let (finished, over) = (waiting.clone(), running.clone());
+        let (finished, over, reports) = (waiting.clone(), running.clone(), recorded.clone());
+        let replies = control.clone();
+        // The cluster starts its runs, as the control plane does: it keeps their reports, each
+        // branch's once, tells their owners they are stored, and gives each run's outcome.
         tokio::spawn(async move {
             while let Some(message) = inbox.recv().await {
-                if let Message::Finished { run, outcome } = message {
-                    over.lock().unwrap().remove(&run);
-                    if let Some(waiter) = finished.lock().unwrap().remove(&run) {
-                        let _ = waiter.send(outcome);
+                match message {
+                    Message::Recorded {
+                        run,
+                        branch,
+                        report,
+                        delivery,
+                    } => {
+                        let mut reports = reports.lock().unwrap();
+                        reports
+                            .entry(run)
+                            .or_default()
+                            .entry(branch)
+                            .or_insert(report);
+                        drop(reports);
+                        let seqs = vec![delivery.seq];
+                        replies.send(delivery.from, Message::Stored { seqs });
                     }
+                    Message::Finished { run, workers } => {
+                        over.lock().unwrap().remove(&run);
+                        let mut outcome = RunOutcome {
+                            workers,
+                            ..RunOutcome::default()
+                        };
+                        let reports = reports.lock().unwrap();
+                        for report in reports.get(&run).into_iter().flat_map(BTreeMap::values) {
+                            match report.clone() {
+                                Report::Result(value) => outcome.results.push(value),
+                                Report::Failure(failure) => outcome.failures.push(failure),
+                            }
+                        }
+                        drop(reports);
+                        if let Some(waiter) = finished.lock().unwrap().remove(&run) {
+                            let _ = waiter.send(outcome);
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
@@ -155,6 +214,7 @@ impl LocalCluster {
             control,
             waiting,
             running,
+            recorded,
             dead,
             successors: Mutex::default(),
             leaving: Mutex::default(),
@@ -162,6 +222,16 @@ impl LocalCluster {
             next_owner: AtomicUsize::new(0),
             log,
         }
+    }
+
+    /// The reports of every run so far, as their owners sent them while the runs went: each
+    /// branch's once, however often it was sent, in branch order.
+    pub fn recorded(&self) -> HashMap<RunId, Vec<Report>> {
+        let recorded = self.recorded.lock().unwrap();
+        recorded
+            .iter()
+            .map(|(&run, reports)| (run, reports.values().cloned().collect()))
+            .collect()
     }
 
     /// The log the workers share.
@@ -200,8 +270,15 @@ impl LocalCluster {
         Ok(())
     }
 
-    /// Runs `workflow` to completion.
+    /// Runs `workflow`, which takes no inputs, to its end.
     pub async fn run(&self, workflow: Workflow) -> anyhow::Result<RunOutcome> {
+        self.run_with(workflow, Inputs::new()).await
+    }
+
+    /// Runs `workflow` with `inputs` to its end. Inputs that do not match the workflow's
+    /// parameters are refused before anything runs.
+    pub async fn run_with(&self, workflow: Workflow, inputs: Inputs) -> anyhow::Result<RunOutcome> {
+        let inputs = inputs.bind(&workflow)?;
         let tasks = workflow
             .operations
             .iter()
@@ -219,18 +296,21 @@ impl LocalCluster {
         let run = RunId::new_v4();
         let (done, outcome) = oneshot::channel();
         self.waiting.lock().unwrap().insert(run, done);
+        let started = Started { workflow, inputs };
         self.running
             .lock()
             .unwrap()
-            .insert(run, (owner, workflow.clone()));
-        self.start(owner, run, workflow);
+            .insert(run, (owner, started.clone()));
+        self.start(owner, run, started);
         outcome.await.context("run abandoned")
     }
 
-    fn start(&self, owner: WorkerId, run: RunId, workflow: Workflow) {
+    fn start(&self, owner: WorkerId, run: RunId, started: Started) {
+        let Started { workflow, inputs } = started;
         let start = Message::Start {
             run,
             workflow,
+            inputs,
             task_versions: BTreeMap::new(),
             reply_to: CONTROL,
         };
@@ -265,19 +345,19 @@ impl LocalCluster {
         self.reroute()?;
         // As the orchestrator does: a run whose owner died before logging it starts again on the
         // successor, which ignores the start if it can take the run over from the log instead.
-        let orphaned: Vec<(RunId, Workflow)> = self
+        let orphaned: Vec<(RunId, Started)> = self
             .running
             .lock()
             .unwrap()
             .iter_mut()
             .filter(|(_, (owner, _))| *owner == worker)
-            .map(|(&run, (owner, workflow))| {
+            .map(|(&run, (owner, started))| {
                 *owner = successor;
-                (run, workflow.clone())
+                (run, started.clone())
             })
             .collect();
-        for (run, workflow) in orphaned {
-            self.start(successor, run, workflow);
+        for (run, started) in orphaned {
+            self.start(successor, run, started);
         }
         Ok(())
     }
@@ -357,11 +437,71 @@ impl Log for MortalLog {
         self.inner.node(run, id).await
     }
 
-    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>> {
+    async fn run(&self, run: RunId) -> anyhow::Result<Logged> {
         self.inner.run(run).await
     }
 
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>> {
         self.inner.estate(worker).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use namu_core::ir::{Action, Call, Literal, Next, Operation, Workflow};
+
+    use super::*;
+    use crate::FnTasks;
+
+    /// `count(1)`: one call of `count`, which counts its calls.
+    fn once() -> Workflow {
+        let call = Call {
+            task_id: "count".into(),
+            inputs: vec![0],
+            outputs: vec![1],
+            catch: None,
+        };
+        let literal = Literal {
+            output: 0,
+            value: "1".into(),
+        };
+        let op = Operation::new(
+            vec![literal],
+            Vec::new(),
+            Some(Action::Call(call)),
+            Next::return_value(1),
+        );
+        Workflow::new("once".into(), vec![op])
+    }
+
+    /// A control plane that restarted before it heard a run end, or a dead owner's successor,
+    /// may be sent its `Start` again: the run must not run again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_start_sent_again_after_the_run_ended_does_not_run_it_again() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let tasks = FnTasks::new().with("count", {
+            let calls = calls.clone();
+            move |x: i32| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>(x)
+            }
+        });
+        let cluster = LocalCluster::uniform(2, Arc::new(tasks));
+        cluster.run(once()).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let run = *cluster.recorded().keys().next().expect("the run reported");
+
+        for worker in [1, 2] {
+            let started = Started {
+                workflow: once(),
+                inputs: Vec::new(),
+            };
+            cluster.start(worker, run, started);
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the run ran again");
+        assert_eq!(cluster.recorded()[&run].len(), 1);
     }
 }

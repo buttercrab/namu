@@ -30,6 +30,9 @@ PY
 }
 
 check doc_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
+# The same, with what doc_stats hard-codes given as the run's inputs.
+INPUTS="n=48 min_len=6 rounds=4000" \
+  check doc_stats_of '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 # The same, with the summary folded document by document (a reduce) rather than collected.
 check doc_stats_reduced '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 # The summary written in Python, run by a pool of Python processes on the workers.
@@ -41,12 +44,37 @@ check stream_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 
 check stream_windows '{"status": "succeeded", "failures": 0, "result": 30750}'
 # Two batch tasks (dynamic, then continuous) label each document; every label is counted.
 check label_stats '{"status": "succeeded", "failures": 0, "TREE": 4, "STREAM": 4, "BRANCH": 4, "A": 1, "WORKER": 2}'
+# The same in Python: a stream, a dynamic batch and a continuous one, each in processes of its own.
+check label_stats_py '{"status": "succeeded", "failures": 0, "TREE": 4, "STREAM": 4, "BRANCH": 4, "A": 1, "WORKER": 2}'
 check doc_stats_partial '{"status": "partial_failed", "failures": 14, "docs": 34}'
 # Tasks that crash (trap) fail their branch; the run carries on without it.
 check doc_stats_poison '{"status": "partial_failed", "failures": 14, "docs": 34}'
 # Errors as values: sends a flaky service turns down are matched on and retried in a loop, and
 # no branch fails.
 check retry_stats '{"status": "succeeded", "failures": 0, "docs": 48, "retries": 72, "most": 3}'
+
+# Task packages in S3 (moto's S3 server standing in), as on AWS: the orchestrator keeps them
+# there, and workers fetch them from it. Needs `uvx`; skipped without it.
+if command -v uvx >/dev/null; then
+  s3_port=$((${ORCH_PORT:-8090} + 200))
+  s3_url="http://127.0.0.1:$s3_port"
+  uvx --from 'moto[server]==5.1.22' moto_server -H 127.0.0.1 -p "$s3_port" \
+    >"$ROOT_DIR/data/e2e/s3.log" 2>&1 &
+  s3_pid=$!
+  until curl -sf -o /dev/null "$s3_url/moto-api/"; do sleep 0.5; done
+  export AWS_ACCESS_KEY_ID=namu AWS_SECRET_ACCESS_KEY=namu-secret AWS_REGION=us-east-1
+  s3() { curl -sf --aws-sigv4 "aws:amz:$AWS_REGION:s3" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" "$@"; }
+  s3 -X PUT "$s3_url/namu"
+  AWS_ENDPOINT=$s3_url AWS_ALLOW_HTTP=true ARTIFACTS_URL=s3://namu/artifacts \
+    check doc_stats_py '{"status": "succeeded", "failures": 0, "docs": 48, "checksum": 9482608591355693952}'
+  kept=$(s3 "$s3_url/namu?list-type=2&prefix=artifacts/" | grep -o "<Key>" | wc -l | tr -d ' ')
+  kill "$s3_pid"
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
+  [[ $kept -gt 0 ]] || { echo "no task packages in the bucket" >&2; exit 1; }
+  echo "   ok: $kept task packages kept in S3"
+else
+  echo "== S3 artifacts: skipped (no uvx)"
+fi
 
 # Recovery: kill -9 a worker in the middle of a run. Once its membership expires, its successor
 # takes over from the log, and the run must produce the result of an uninterrupted run.
@@ -59,6 +87,9 @@ KEEP=1 POC_DIR="$crash_dir" NAMU_TASK_SLOTS=2 WORKFLOW=doc_stats_slow \
   WORKERS="wasm,native wasm,native wasm" NAMU_DELIVERIES="$deliveries" \
   ./scripts/poc-local.sh >"$crash_dir.log" 2>&1
 read -r -a pids <<<"$(sed -n 's/^left running (pids: \(.*\))$/\1/p' "$crash_dir.log")"
+# The cluster's address, CA and a client token.
+# shellcheck source=/dev/null
+source "$crash_dir/env"
 teardown() {
   # Workers first, so they can drain while the orchestrator and Redis are up; then the rest.
   kill "${pids[@]:2}" >/dev/null 2>&1 || true
@@ -76,11 +107,83 @@ teardown() {
 }
 trap teardown EXIT
 # pids: redis, orchestrator, worker-1, worker-2, worker-3
+
+# Inputs that do not fit the workflow are refused before a run starts.
+if refused=$("$ROOT_DIR/target/release/namu" \
+  run doc_stats_of 0.1.0 --input n=lots --input min_len=6 2>&1); then
+  echo "a run with wrong inputs started: $refused" >&2
+  exit 1
+fi
+for problem in "400" "\`n\`: expected i32, got a string" "\`rounds\` (i32) is missing"; do
+  if [[ $refused != *"$problem"* ]]; then
+    echo "expected \"$problem\" in: $refused" >&2
+    exit 1
+  fi
+done
+echo "   ok: wrong inputs refused ($refused)"
+
+# Nobody without a token reaches the API, a client's token opens no worker route, and nothing is
+# served in the clear.
+status() { curl -s -o /dev/null -w '%{http_code}' --cacert "$NAMU_TLS_CA" "$@"; }
+anonymous=$(status -X POST -H 'Content-Type: application/json' -d '{}' "$NAMU_ORCH_URL/runs")
+as_client=$(status -X POST -H "Authorization: Bearer $NAMU_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"w","addr":"127.0.0.1:1","runtimes":[],"platform":"x"}' "$NAMU_ORCH_URL/workers/register")
+forged=$(status -H "Authorization: Bearer namu_$(printf '0%.0s' $(seq 64))" "$NAMU_ORCH_URL/runs/$(uuidgen 2>/dev/null || echo 00000000-0000-0000-0000-000000000000)")
+plain=$(curl -s -o /dev/null -w '%{http_code}' "${NAMU_ORCH_URL/https:/http:}/healthz" || true)
+if [[ $anonymous != 401 || $as_client != 403 || $forged != 401 || $plain != 000 ]]; then
+  echo "expected 401, 403, 401 and no plain HTTP; got $anonymous, $as_client, $forged, $plain" >&2
+  exit 1
+fi
+echo "   ok: no token 401, a client's token on a worker route 403, a forged token 401, no plain HTTP"
+
+# A client token rotated while the orchestrator runs: the new one is taken as soon as the tokens
+# file is read again, and the old one, removed from it, is refused.
+tokens="$crash_dir/secrets/tokens"
+fresh=$("$ROOT_DIR/target/release/namu" token --role client --tokens "$tokens")
+old_hash=$(printf %s "$NAMU_TOKEN" | shasum -a 256 | cut -d' ' -f1)
+grep -v "$old_hash" "$tokens" >"$tokens.new" && mv "$tokens.new" "$tokens"
+for _ in $(seq 30); do
+  new_status=$(status -H "Authorization: Bearer $fresh" "$NAMU_ORCH_URL/workers")
+  old_status=$(status -H "Authorization: Bearer $NAMU_TOKEN" "$NAMU_ORCH_URL/workers")
+  [[ $new_status == 200 && $old_status == 401 ]] && break
+  sleep 1
+done
+if [[ $new_status != 200 || $old_status != 401 ]]; then
+  echo "rotating a token: expected the new one 200 and the old 401, got $new_status, $old_status" >&2
+  exit 1
+fi
+export NAMU_TOKEN=$fresh
+echo "   ok: a token rotated without a restart"
+
+# Results arrive as the run goes: a stream of 48 documents, one every 100 ms, each its own result.
+namu() { "$ROOT_DIR/target/release/namu" "$@"; }
+api() { curl -sf --cacert "$NAMU_TLS_CA" -H "Authorization: Bearer $NAMU_TOKEN" "$NAMU_ORCH_URL$1"; }
+streamed=$(namu run doc_ids_streamed 0.1.0 --input n=48 --input delay_ms=100 | sed -n 's/^Run created: //p')
+early=0
+for _ in $(seq 100); do
+  early=$(api "/runs/$streamed" | python3 -c '
+import json, sys
+status = json.load(sys.stdin)
+print(status["results"] if status["status"] == "running" else 0)')
+  [[ $early != 0 ]] && break
+  sleep 0.05
+done
+if [[ $early == 0 ]]; then
+  echo "no result arrived while doc_ids_streamed went on" >&2
+  exit 1
+fi
+namu results "$streamed" --follow >"$crash_dir/streamed.jsonl"
+python3 - "$crash_dir/streamed.jsonl" "$early" <<'PY'
+import sys
+ids = open(sys.argv[1]).read().split()
+assert len(ids) == 48 and len(set(ids)) == 48, f"{len(ids)} results, {len(set(ids))} distinct"
+print(f"   ok: {sys.argv[2]} results while the run went on, then all 48 with --follow, each once")
+PY
 # Alongside it, a run that delivers a side effect per document, keyed by the call.
-NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+"$ROOT_DIR/target/release/namu" \
   run doc_stats_slow 0.1.0 --wait >"$crash_dir/crashed.json" &
 run_pid=$!
-NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+"$ROOT_DIR/target/release/namu" \
   run deliveries_slow 0.1.0 --wait >"$crash_dir/deliveries.json" &
 deliveries_pid=$!
 # Killed as soon as it has delivered something: it dies waiting for the acknowledgement. However
@@ -124,7 +227,7 @@ PY
 # run gives the same result. (That nothing runs twice is checked by the engine's drain tests,
 # which count every call; a worker that left takes its run statistics with it.)
 echo "== doc_stats_slow with a worker drained mid-run"
-NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+"$ROOT_DIR/target/release/namu" \
   run doc_stats_slow 0.1.0 --wait >"$crash_dir/drained.json" &
 run_pid=$!
 sleep 2
@@ -150,4 +253,44 @@ assert not drained["failures"], drained["failures"]
 assert drained["results"] == baseline["results"], (drained["results"], baseline["results"])
 print(f"   ok: same result as the uninterrupted run, and worker-3 left")
 PY
+# The orchestrator restarts: kill -9 it in the middle of a run, and start it again only after
+# every lease has run out. The run goes on without it, peer to peer; its results wait on the
+# workers until it is back. The workers stay members, and every result arrives once.
+echo "== doc_ids_streamed with the orchestrator killed mid-run"
+restarted=$(namu run doc_ids_streamed 0.1.0 --input n=48 --input delay_ms=100 | sed -n 's/^Run created: //p')
+sleep 1.5
+kill -9 "${pids[1]}"
+echo "   killed the orchestrator"
+sleep 7
+pids[1]=$("$crash_dir/start-master")
+echo "   started it again"
+namu results "$restarted" --follow >"$crash_dir/restarted.jsonl"
+api "/runs/$restarted" >"$crash_dir/restarted.json"
+api "/workers" >"$crash_dir/workers.json"
+python3 - "$crash_dir/restarted.jsonl" "$crash_dir/restarted.json" "$crash_dir/workers.json" <<'PY'
+import json, sys
+ids = open(sys.argv[1]).read().split()
+status = json.load(open(sys.argv[2]))
+workers = [w["name"] for w in json.load(open(sys.argv[3]))["workers"]]
+assert status["status"] == "succeeded", status
+assert len(ids) == 48 and len(set(ids)) == 48, f"{len(ids)} results, {len(set(ids))} distinct"
+assert "worker-1" in workers, f"worker-1 is no longer a member: {workers}"
+print(f"   ok: all 48 results, each once; the workers stayed ({', '.join(w for w in workers if w != 'orchestrator')})")
+PY
+# Metrics: the orchestrator's and a worker's, after all of the above.
+echo "== metrics"
+metrics() { curl -sf "http://127.0.0.1:$1/metrics"; }
+orchestrator=$(metrics $((${ORCH_PORT:-8090} + 100)))
+worker=$(metrics $((${ORCH_PORT:-8090} + 101)))
+# (It restarted since it started a run: its counters began again.)
+for series in namu_runs_ended_total namu_reports_stored_total namu_http_requests_total namu_members; do
+  grep -q "^$series" <<<"$orchestrator" || { echo "the orchestrator has no $series" >&2; exit 1; }
+done
+for series in namu_task_calls_total namu_task_call_seconds namu_handoffs_sent_total \
+  namu_log_write_seconds namu_runs namu_unacknowledged_messages; do
+  grep -q "^$series" <<<"$worker" || { echo "worker-1 has no $series" >&2; exit 1; }
+done
+calls=$(awk '/^namu_task_calls_total/ {s += $2} END {print s}' <<<"$worker")
+echo "   ok: the orchestrator's and worker-1's series are served; worker-1 made $calls task calls"
+
 echo "e2e passed"

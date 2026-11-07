@@ -18,10 +18,10 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use async_trait::async_trait;
 use namu_core::value::Value;
-use namu_engine::RunInfo;
 use namu_engine::ids::{NodeId, RunId, WorkerId, owner};
 use namu_engine::log::{
-    Durable, EndRecord, Log, Record, ReportRecord, RunEstate, SWEEP_FLOOR, ScopeEstate, dead_nodes,
+    Durable, ENDED_FOR, EndRecord, Log, Logged, Record, ReportRecord, RunEstate, SWEEP_FLOOR,
+    ScopeEstate, dead_nodes,
 };
 use namu_engine::message::{Branch, BranchId};
 use namu_engine::scope::{Continuation, Feed, Position, Source};
@@ -48,6 +48,11 @@ fn encode(record: &impl serde::Serialize) -> anyhow::Result<Vec<u8>> {
 
 fn branch_field(holder: WorkerId, id: BranchId, hop: u64) -> String {
     format!("{holder}:{}:{}:{hop}", id.scope, id.index)
+}
+
+/// A report's field in its run's reports: its branch's.
+fn report_field(id: BranchId) -> String {
+    format!("{}:{}", id.scope, id.index)
 }
 
 pub struct RedisLog {
@@ -96,11 +101,17 @@ async fn write(
         // (an empty append marks what came before as durable) is durable already.
         let mut backoff = std::time::Duration::from_millis(50);
         let empty = pipe.cmd_iter().next().is_none();
+        let started = std::time::Instant::now();
         while !empty && let Err(err) = pipe.query_async::<()>(&mut redis).await {
             tracing::error!("log write failed, retrying: {err}");
+            metrics::counter!("namu_log_write_failures_total").increment(1);
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(std::time::Duration::from_secs(2));
         }
+        // How long a batch took to become durable: what holds up a sender's release.
+        metrics::histogram!("namu_log_write_seconds").record(started.elapsed().as_secs_f64());
+        let records: usize = batch.iter().map(|(records, _)| records.len()).sum();
+        metrics::counter!("namu_log_records_total").increment(records as u64);
         for (_, durable) in batch {
             let _ = durable.send(());
         }
@@ -264,6 +275,8 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 .ignore()
                 .hdel(key(*run, "feeds"), scope)
                 .ignore()
+                .hdel(key(*run, "settled"), scope)
+                .ignore()
                 .del(ends_key(*run, *scope))
                 .ignore();
         }
@@ -276,11 +289,34 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
             let fold = encode(&(through, accumulator))?;
             pipe.hset(key(*run, "folds"), scope, fold).ignore();
         }
+        // A scope's ends, by branch index, so that settling it drops exactly those before a point.
         Record::End { run, scope, end } => {
-            pipe.rpush(ends_key(*run, *scope), encode(end)?).ignore();
+            pipe.hset(ends_key(*run, *scope), end.index, encode(end)?)
+                .ignore();
+        }
+        Record::Settled {
+            run,
+            scope,
+            from,
+            below,
+        } => {
+            let gone: Vec<u64> = (*from..*below).collect();
+            if !gone.is_empty() {
+                pipe.hdel(ends_key(*run, *scope), gone).ignore();
+            }
+            pipe.hset(key(*run, "settled"), scope, below).ignore();
         }
         Record::Report { run, report } => {
-            pipe.rpush(key(*run, "reports"), encode(report)?).ignore();
+            pipe.hset(
+                key(*run, "reports"),
+                report_field(report.branch),
+                encode(report)?,
+            )
+            .ignore();
+        }
+        Record::ReportGone { run, branch } => {
+            pipe.hdel(key(*run, "reports"), report_field(*branch))
+                .ignore();
         }
         Record::RunGone { run, root_scope } => {
             // Every other scope is gone by now, and its ends with it.
@@ -295,11 +331,15 @@ fn add(pipe: &mut redis::Pipeline, record: &Record) -> anyhow::Result<()> {
                 "positions",
                 "folds",
                 "feeds",
+                "settled",
                 "reports",
             ];
             let mut keys: Vec<String> = parts.iter().map(|part| key(*run, part)).collect();
             keys.push(ends_key(*run, *root_scope));
             pipe.del(keys).ignore().srem(RUNS, run.to_string()).ignore();
+            // What stays, for a while: that it ended, so a `Start` sent again is not acted on.
+            let ended_for = ENDED_FOR.as_millis() as u64;
+            pipe.pset_ex(key(*run, "ended"), 1, ended_for).ignore();
         }
     }
     Ok(())
@@ -319,10 +359,19 @@ impl Log for RedisLog {
             .transpose()
     }
 
-    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>> {
-        let raw: Option<Vec<u8>> = self.redis.clone().get(key(run, "info")).await?;
-        raw.map(|raw| rmp_serde::from_slice(&raw).context("bad run in the log"))
-            .transpose()
+    async fn run(&self, run: RunId) -> anyhow::Result<Logged> {
+        let (info, ended): (Option<Vec<u8>>, bool) = redis::pipe()
+            .get(key(run, "info"))
+            .exists(key(run, "ended"))
+            .query_async(&mut self.redis.clone())
+            .await?;
+        Ok(match (info, ended) {
+            (Some(raw), _) => {
+                Logged::Running(rmp_serde::from_slice(&raw).context("bad run in the log")?)
+            }
+            (None, true) => Logged::Ended,
+            (None, false) => Logged::Unknown,
+        })
     }
 
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>> {
@@ -331,7 +380,7 @@ impl Log for RedisLog {
         let mut estates = Vec::new();
         for run in runs {
             let run: RunId = run.parse()?;
-            let Some(info) = self.run(run).await? else {
+            let Logged::Running(info) = self.run(run).await? else {
                 continue;
             };
             let branches: HashMap<String, Vec<u8>> = redis.hgetall(key(run, "branches")).await?;
@@ -372,9 +421,13 @@ impl Log for RedisLog {
                     feeds.insert(scope, rmp_serde::from_slice(&raw)?);
                 }
             }
+            let settled: HashMap<u64, u64> = match owned.is_empty() {
+                true => HashMap::new(),
+                false => redis.hgetall(key(run, "settled")).await?,
+            };
             let mut ends: HashMap<u64, Vec<EndRecord>> = HashMap::new();
             for &scope in owned.keys() {
-                let raw: Vec<Vec<u8>> = redis.lrange(ends_key(run, scope), 0, -1).await?;
+                let raw: Vec<Vec<u8>> = redis.hvals(ends_key(run, scope)).await?;
                 let records = raw
                     .iter()
                     .map(|raw| rmp_serde::from_slice(raw))
@@ -388,6 +441,7 @@ impl Log for RedisLog {
                     continuation,
                     source,
                     count: counts.get(&scope).copied(),
+                    settled: settled.get(&scope).copied().unwrap_or(0),
                     ends: ends.remove(&scope).unwrap_or_default(),
                     folded: folds.remove(&scope),
                     feeds: feeds.remove(&scope),
@@ -396,7 +450,7 @@ impl Log for RedisLog {
 
             let reports = match info.owner() == worker {
                 true => {
-                    let raw: Vec<Vec<u8>> = redis.lrange(key(run, "reports"), 0, -1).await?;
+                    let raw: Vec<Vec<u8>> = redis.hvals(key(run, "reports")).await?;
                     raw.iter()
                         .map(|raw| rmp_serde::from_slice::<ReportRecord>(raw))
                         .collect::<Result<Vec<_>, _>>()?

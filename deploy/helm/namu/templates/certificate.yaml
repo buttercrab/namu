@@ -1,0 +1,30 @@
+{{- if .Values.tls.certManager.enabled }}
+# The certificate every member uses: it names the mesh, and the orchestrator's service.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "namu.fullname" . }}-tls
+  labels: {{- include "namu.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "namu.fullname" . }}-tls
+  duration: {{ .Values.tls.certManager.duration }}
+  renewBefore: {{ .Values.tls.certManager.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages: [server auth, client auth, digital signature, key encipherment]
+  dnsNames:
+    - namu.mesh
+    - {{ include "namu.orchestrator" . }}
+    - {{ include "namu.orchestrator" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "namu.orchestrator" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    # Through `kubectl port-forward`.
+    - localhost
+    {{- range .Values.tls.certManager.extraDnsNames }}
+    - {{ . }}
+    {{- end }}
+  issuerRef:
+    name: {{ .Values.tls.certManager.issuerRef.name }}
+    kind: {{ .Values.tls.certManager.issuerRef.kind }}
+    group: cert-manager.io
+{{- end }}

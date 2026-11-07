@@ -237,10 +237,12 @@ mod tests {
     #[test]
     fn a_built_in_reads_what_the_ones_before_it_made() {
         // op 0: a = x + 1; b = a * 2; then call t(b, y), returning its output.
-        use crate::ir::{Builtin, BuiltinOp, ScalarType};
+        use crate::ir::{Builtin, BuiltinOp, ScalarOp, ScalarType};
         let builtin = |op, inputs: Vec<ValueId>, output| Builtin {
-            op,
-            ty: ScalarType::I64,
+            op: BuiltinOp::Scalar {
+                op,
+                ty: ScalarType::I64,
+            },
             inputs,
             output,
         };
@@ -254,8 +256,8 @@ mod tests {
                     Next::return_value(12),
                 )
                 .with_builtins(vec![
-                    builtin(BuiltinOp::Add, vec![0, 0], 10),
-                    builtin(BuiltinOp::Mul, vec![10, 10], 11),
+                    builtin(ScalarOp::Add, vec![0, 0], 10),
+                    builtin(ScalarOp::Mul, vec![10, 10], 11),
                 ]),
             ],
         );

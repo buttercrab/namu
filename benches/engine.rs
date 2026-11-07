@@ -126,7 +126,7 @@ fn value(c: &mut Criterion) {
 }
 
 fn find(c: &mut Criterion) {
-    let mut chain = Arc::new(Node::root(0));
+    let mut chain = Arc::new(Node::root(0, Vec::new()));
     for id in 1..2000 {
         chain = Arc::new(Node::new(
             id,

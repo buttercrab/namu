@@ -121,12 +121,9 @@ How to read these:
 
 ## Known gaps
 
-1. **A run's reports stay in the log until it ends**: they are its results. Everything else in the
-   log is the run's live frontier: finished scopes and the nodes nothing live reaches are dropped
-   as the run goes.
-2. **Large values travel inline** in messages; there is no object-store path for them yet.
-3. **Routing is by load only**: work goes to the least loaded worker that can take it (loads
+1. **Large values travel inline** in messages; there is no object-store path for them yet.
+2. **Routing is by load only**: work goes to the least loaded worker that can take it (loads
    ride on acknowledgements), but where a context's nodes are held is not considered, and batch
    items are not packed into one worker's batch.
-4. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated
+3. **Signatures are written by hand** in the workflow crate; WIT-typed signatures and generated
    stubs come later.

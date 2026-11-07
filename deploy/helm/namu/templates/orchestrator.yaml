@@ -1,0 +1,110 @@
+{{- if and .Values.insecure .Values.tls.certManager.enabled }}
+{{- fail "tls.certManager and insecure do not go together" }}
+{{- end }}
+# One orchestrator. It keeps no state of its own: restarted, it takes up from Redis, and runs go
+# on without it meanwhile. Two at once would be two mesh peer 0s: `Recreate` never overlaps them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "namu.orchestrator" . }}
+  labels: {{- include "namu.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "namu.selector" . | nindent 6 }}
+      app.kubernetes.io/component: orchestrator
+  template:
+    metadata:
+      labels: {{- include "namu.selector" . | nindent 8 }}
+        app.kubernetes.io/component: orchestrator
+    spec:
+      serviceAccountName: {{ include "namu.orchestrator" . }}
+      {{- include "namu.podSecurity" . | nindent 6 }}
+      containers:
+        - name: orchestrator
+          image: {{ include "namu.image" (dict "image" .Values.image.orchestrator "chart" .Chart) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- include "namu.containerSecurity" . | nindent 10 }}
+          env:
+            {{- include "namu.commonEnv" . | nindent 12 }}
+            {{- if not .Values.insecure }}
+            - name: NAMU_TOKENS
+              value: /etc/namu/tokens/tokens
+            {{- end }}
+            {{- with .Values.artifacts.url }}
+            - name: ARTIFACTS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.orchestrator.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - { name: api, containerPort: 8080 }
+            - { name: mesh, containerPort: 7100 }
+            {{- if .Values.telemetry.metricsPort }}
+            - { name: metrics, containerPort: {{ .Values.telemetry.metricsPort }} }
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+              scheme: {{ ternary "HTTP" "HTTPS" .Values.insecure }}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+              scheme: {{ ternary "HTTP" "HTTPS" .Values.insecure }}
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.orchestrator.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/namu }
+            {{- if not .Values.insecure }}
+            - { name: tls, mountPath: /etc/namu/tls, readOnly: true }
+            - { name: tokens, mountPath: /etc/namu/tokens, readOnly: true }
+            {{- end }}
+      volumes:
+        - name: data
+          emptyDir: {}
+        {{- if not .Values.insecure }}
+        - name: tls
+          secret:
+            secretName: {{ include "namu.tlsSecret" . }}
+        - name: tokens
+          secret:
+            secretName: {{ .Values.tokens.existingSecret }}
+            items:
+              - { key: tokens, path: tokens }
+        {{- end }}
+      {{- with .Values.orchestrator.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "namu.orchestrator" . }}
+  labels: {{- include "namu.labels" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator
+  {{- with .Values.orchestrator.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.orchestrator.service.type }}
+  selector: {{- include "namu.selector" . | nindent 4 }}
+    app.kubernetes.io/component: orchestrator
+  ports:
+    - { name: api, port: 8080, targetPort: api }
+    {{- if .Values.telemetry.metricsPort }}
+    - { name: metrics, port: {{ .Values.telemetry.metricsPort }}, targetPort: metrics }
+    {{- end }}

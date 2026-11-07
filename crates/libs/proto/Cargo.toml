@@ -1,8 +1,10 @@
 [package]
 name = "namu-proto"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wire types shared by the NAMU CLI, orchestrator and workers"
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }

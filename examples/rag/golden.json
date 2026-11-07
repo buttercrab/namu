@@ -1,0 +1,17 @@
+[
+  {"question": "How can a model focus on the relevant parts of its input sequence?", "title": "Attention (machine learning)"},
+  {"question": "How do you find rare observations that differ from most of the data?", "title": "Anomaly detection"},
+  {"question": "Why does reducing a model's error from bias increase its error from variance?", "title": "Bias–variance tradeoff"},
+  {"question": "What happens when the statistical properties of the target change over time?", "title": "Concept drift"},
+  {"question": "How to optimize an expensive black-box function using a surrogate probabilistic model?", "title": "Bayesian optimization"},
+  {"question": "How do you estimate how well a model generalizes by repeatedly splitting data into training and validation folds?", "title": "Cross-validation (statistics)"},
+  {"question": "Why does data become sparse as the number of dimensions grows?", "title": "Curse of dimensionality"},
+  {"question": "How can a learner choose which unlabeled examples a human should label next?", "title": "Active learning (machine learning)"},
+  {"question": "How can carefully crafted inputs fool a trained classifier?", "title": "Adversarial machine learning"},
+  {"question": "Which table counts a classifier's true positives, false positives, true negatives and false negatives?", "title": "Confusion matrix"},
+  {"question": "Which model learns to match images with their text captions?", "title": "Contrastive Language–Image Pre-training"},
+  {"question": "How is a text represented by the counts of its words, ignoring their order?", "title": "Bag-of-words model"},
+  {"question": "How can training data be enlarged by transforming existing examples?", "title": "Data augmentation"},
+  {"question": "How can AI systems discriminate unfairly against groups of people?", "title": "Algorithmic bias"},
+  {"question": "Which model estimates the probability that one item beats another in a pairwise comparison?", "title": "Bradley–Terry model"}
+]

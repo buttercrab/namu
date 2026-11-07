@@ -90,6 +90,13 @@ pub struct TaskManifest {
     /// Use for tasks with external side effects.
     #[serde(default)]
     pub checkpoint: bool,
+    /// How many more times a call that fails is tried, under the same call key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub retries: u32,
+    /// How long before the first retry; each next waits twice as long (up to 30 s). 100 ms if
+    /// unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_backoff_ms: Option<u64>,
     /// For a stream task: how many of its items may be in flight at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<usize>,
@@ -159,10 +166,22 @@ pub struct WorkflowUploadRequest {
     pub task_versions: HashMap<String, String>,
 }
 
+/// A task or workflow version, published. `unchanged` if it already was, identically.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Published {
+    pub id: String,
+    pub version: String,
+    #[serde(default)]
+    pub unchanged: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunCreateRequest {
     pub workflow_id: String,
     pub version: String,
+    /// A value for each of the workflow's parameters, by name.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub inputs: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,17 +189,51 @@ pub struct RunCreateResponse {
     pub run_id: Uuid,
 }
 
+/// Where a run is.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatus {
+    Running,
+    Succeeded,
+    /// It ended, but some branches failed.
+    PartialFailed,
+}
+
+/// Where a run is. Its results and failures, which an unbounded run keeps adding to, are read in
+/// pages ([`Page`]); here are how many there are so far.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunStatusResponse {
-    /// `running`, `succeeded`, or `partial_failed` (some branches failed).
-    pub status: String,
-    pub results: Vec<JsonValue>,
-    pub failures: Vec<String>,
+    pub status: RunStatus,
+    pub results: u64,
+    pub failures: u64,
     pub elapsed_ms: Option<u64>,
     /// Task calls executed per worker.
     pub calls_by_worker: BTreeMap<String, u64>,
     /// Value-tree nodes each worker fetched because another worker produced them.
     pub remote_node_fetches_by_worker: BTreeMap<String, u64>,
+}
+
+/// Part of a run's results (or failures), in the order they arrived: `GET
+/// /runs/{id}/results?after=N&limit=M` gives those from the `N`th on. `next` is where the next page
+/// starts. A run that is still `Running` may add more after it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next: u64,
+    pub status: RunStatus,
+}
+
+/// Which part of the results a page holds.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct PageQuery {
+    #[serde(default)]
+    pub after: u64,
+    #[serde(default)]
+    pub limit: Option<u64>,
+    /// How long a page that would be empty while the run goes on waits for something to hold
+    /// (up to 30 s): a follower is told of each report as soon as it is stored, without polling.
+    #[serde(default)]
+    pub wait_ms: Option<u64>,
 }
 
 /// A worker joining the cluster.
@@ -221,68 +274,32 @@ pub struct Member {
 /// successor takes over its work (design §7.4), and if it comes back, it registers anew.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Membership {
+    /// The control plane's incarnation: new each time it starts. One that restarted has forgotten
+    /// what it was sent and had not stored yet: members send it again what they keep for it.
+    #[serde(default)]
+    pub epoch: u64,
     pub members: Vec<Member>,
     /// Dead worker -> the worker that took over its work.
     pub successors: BTreeMap<u64, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkersResponse {
+    pub workers: Vec<Member>,
+}
+
+/// What the API answers when a request fails.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub error: String,
 }
 
 /// How often workers send heartbeats, and how long membership lasts without one.
 pub const HEARTBEAT_INTERVAL_MS: u64 = 1_000;
 pub const MEMBERSHIP_TTL_MS: u64 = 5_000;
 
-/// Redis key layout of the control plane.
-pub mod keys {
-    use uuid::Uuid;
-
-    pub const WORKER_SEQ: &str = "namu:worker_seq";
-    /// Hash: worker id -> name, kept after the worker leaves so run stats stay readable.
-    pub const WORKER_NAMES: &str = "namu:worker_names";
-    /// Round-robin cursor for choosing the owner of a new run.
-    pub const OWNER_CURSOR: &str = "namu:owner_cursor";
-    /// Set: workers believed alive. One that is here but has no member record has died.
-    pub const ALIVE: &str = "namu:alive";
-    /// Hash: dead worker -> the worker that took over its work.
-    pub const SUCCESSORS: &str = "namu:successors";
-    /// Set: runs that have not finished.
-    pub const RUNNING: &str = "namu:running";
-
-    /// A live member's record; expires unless renewed by heartbeats.
-    pub fn member(id: u64) -> String {
-        format!("namu:member:{id}")
-    }
-
-    pub const MEMBER_PATTERN: &str = "namu:member:*";
-
-    pub fn task(task_id: &str, version: &str) -> String {
-        format!("namu:task:{task_id}:{version}")
-    }
-
-    pub fn workflow(id: &str, version: &str) -> String {
-        format!("namu:workflow:{id}:{version}")
-    }
-
-    /// Hash: status, owner, workflow_id, version, created_at_ms, finished_at_ms.
-    pub fn run_state(run: Uuid) -> String {
-        format!("namu:run:{run}:state")
-    }
-
-    pub fn run_results(run: Uuid) -> String {
-        format!("namu:run:{run}:results")
-    }
-
-    pub fn run_failures(run: Uuid) -> String {
-        format!("namu:run:{run}:failures")
-    }
-
-    /// Hash: worker name -> task calls.
-    pub fn run_calls(run: Uuid) -> String {
-        format!("namu:run:{run}:calls")
-    }
-
-    /// Hash: worker name -> nodes fetched from other workers.
-    pub fn run_remote_fetches(run: Uuid) -> String {
-        format!("namu:run:{run}:remote_fetches")
-    }
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 #[cfg(test)]

@@ -2,8 +2,8 @@ use std::marker::PhantomData;
 
 use namu_core::ValueId;
 use namu_core::ir::{
-    Action, Builtin, Call, Catch, Collect, FanOut, Literal, Next, Operation, Phi, Reduce, Window,
-    Workflow,
+    Action, Builtin, Call, Catch, Collect, FanOut, Input, Literal, Next, Operation, Phi, Reduce,
+    Window, Workflow,
 };
 use namu_core::types::{Defs, Type};
 
@@ -69,6 +69,8 @@ impl ValueArena {
 pub struct Graph<T> {
     pub arena: NodeArena,
     pub blocks: Vec<BasicBlock>,
+    /// The workflow's parameters, in order.
+    pub inputs: Vec<Input>,
     /// Each value's type, by value id.
     pub types: Vec<Option<Type>>,
     pub defs: Defs,
@@ -79,12 +81,14 @@ impl<T> Graph<T> {
     pub fn new(
         arena: NodeArena,
         blocks: Vec<BasicBlock>,
+        inputs: Vec<Input>,
         types: Vec<Option<Type>>,
         defs: Defs,
     ) -> Self {
         Self {
             arena,
             blocks,
+            inputs,
             types,
             defs,
             _phantom: PhantomData,
@@ -167,10 +171,9 @@ impl<T> Graph<T> {
                             size: *size,
                         }));
                     }
-                    NodeKind::Builtin { op, ty, inputs } => {
+                    NodeKind::Builtin { op, inputs } => {
                         pending.builtins.push(Builtin {
-                            op: *op,
-                            ty: *ty,
+                            op: op.clone(),
                             inputs: inputs.clone(),
                             output: node.outputs[0],
                         });
@@ -268,6 +271,7 @@ impl<T> Graph<T> {
             .collect();
         Workflow {
             name,
+            inputs: self.inputs.clone(),
             operations: ops,
             types,
             defs: self.defs.clone(),
@@ -308,14 +312,10 @@ impl<T> Graph<T> {
                     NodeKind::Window { input, size } => {
                         format!("  let var{node_id} = window(var{input}, {size});\n")
                     }
-                    NodeKind::Builtin { op, ty, inputs } => {
+                    NodeKind::Builtin { op, inputs } => {
                         let inputs: Vec<String> =
                             inputs.iter().map(|v| format!("var{v}")).collect();
-                        format!(
-                            "  let var{} = {op:?}::<{ty:?}>({});\n",
-                            node_id,
-                            inputs.join(", ")
-                        )
+                        format!("  let var{node_id} = {op:?}({});\n", inputs.join(", "))
                     }
                     NodeKind::Phi { from } => {
                         let from_str: Vec<String> = from

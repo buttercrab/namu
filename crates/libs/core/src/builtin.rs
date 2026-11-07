@@ -1,16 +1,73 @@
 //! What built-in expressions mean (design §4.3): the engine evaluates them where a branch stands,
-//! with no task call. Operands are read as the expression's [`ScalarType`] and the result is a
-//! value of that type (or a `bool`, for comparisons and logic). Integer arithmetic is checked:
-//! an overflow, or a division by zero, is an error, which fails the branch, rather than a wrong
-//! number.
+//! with no task call. An error fails the branch, as a task's would.
+//!
+//! - Arithmetic, comparisons and logic read their operands as the expression's [`ScalarType`]; the
+//!   result is a value of that type (or a `bool`, for comparisons and logic). Integer arithmetic is
+//!   checked: an overflow, or a division by zero, is an error rather than a wrong number.
+//! - Field access, indexing and tuples take values apart and put them together as MessagePack, as
+//!   they cross every boundary: a field is a slice of its struct's bytes, not decoded.
+//! - `format!` writes scalars as Rust's `Display` does.
 
 use anyhow::{Context, anyhow, bail};
+use bytes::Bytes;
 
-use crate::ir::{BuiltinOp, ScalarType};
+use crate::ir::{BuiltinOp, ScalarOp, ScalarType};
+use crate::msgpack;
 use crate::value::{Data, Value};
 
-/// Evaluates `op` on `inputs`, read as `ty`.
-pub fn eval(op: BuiltinOp, ty: ScalarType, inputs: &[Value]) -> anyhow::Result<Value> {
+/// Evaluates `op` on `inputs`.
+pub fn eval(op: &BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value> {
+    match op {
+        BuiltinOp::Scalar { op, ty } => scalar(*op, *ty, inputs),
+        BuiltinOp::Field { name } => {
+            let [value] = encoded::<1>(inputs)?;
+            let at = msgpack::field(&value, name)?.with_context(|| format!("no field {name:?}"))?;
+            Ok(Value::encoded(value.slice(at)))
+        }
+        BuiltinOp::Index => {
+            let [list, index] = encoded::<2>(inputs)?;
+            let index: usize = Value::encoded(index).take()?;
+            let at = msgpack::element(&list, index)?;
+            Ok(Value::encoded(list.slice(at)))
+        }
+        BuiltinOp::Tuple => {
+            let parts = inputs
+                .iter()
+                .map(Value::encode)
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            Ok(Value::encoded(msgpack::array(&parts)))
+        }
+        BuiltinOp::Format { pieces } => {
+            anyhow::ensure!(
+                pieces.len() == inputs.len() + 1,
+                "a format of {} pieces takes {} values, not {}",
+                pieces.len(),
+                pieces.len().saturating_sub(1),
+                inputs.len()
+            );
+            let mut text = pieces[0].clone();
+            for (input, piece) in inputs.iter().zip(&pieces[1..]) {
+                msgpack::display(&input.encode()?, &mut text)?;
+                text.push_str(piece);
+            }
+            Ok(Value::new(text))
+        }
+    }
+}
+
+/// `N` inputs, as MessagePack.
+fn encoded<const N: usize>(inputs: &[Value]) -> anyhow::Result<[Bytes; N]> {
+    let parts = inputs
+        .iter()
+        .map(Value::encode)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    parts
+        .try_into()
+        .map_err(|parts: Vec<Bytes>| anyhow!("takes {N} operands, not {}", parts.len()))
+}
+
+/// Evaluates the scalar `op` on `inputs`, read as `ty`.
+fn scalar(op: ScalarOp, ty: ScalarType, inputs: &[Value]) -> anyhow::Result<Value> {
     match ty {
         ScalarType::Bool => logic(op, inputs),
         ScalarType::I32 => integer(
@@ -59,7 +116,7 @@ pub fn eval(op: BuiltinOp, ty: ScalarType, inputs: &[Value]) -> anyhow::Result<V
     }
 }
 
-fn read<T: Data, const N: usize>(op: BuiltinOp, inputs: &[Value]) -> anyhow::Result<[T; N]> {
+fn read<T: Data, const N: usize>(op: ScalarOp, inputs: &[Value]) -> anyhow::Result<[T; N]> {
     let values: Vec<T> = inputs
         .iter()
         .map(Value::to::<T>)
@@ -71,18 +128,18 @@ fn read<T: Data, const N: usize>(op: BuiltinOp, inputs: &[Value]) -> anyhow::Res
 }
 
 /// A comparison of `T`s, if `op` is one.
-fn compare<T: Data + PartialOrd>(op: BuiltinOp, inputs: &[Value]) -> anyhow::Result<Option<Value>> {
+fn compare<T: Data + PartialOrd>(op: ScalarOp, inputs: &[Value]) -> anyhow::Result<Option<Value>> {
     let ordering = |test: fn(&T, &T) -> bool| -> anyhow::Result<Option<Value>> {
         let [a, b] = read::<T, 2>(op, inputs)?;
         Ok(Some(Value::new(test(&a, &b))))
     };
     match op {
-        BuiltinOp::Eq => ordering(T::eq),
-        BuiltinOp::Ne => ordering(T::ne),
-        BuiltinOp::Lt => ordering(T::lt),
-        BuiltinOp::Le => ordering(T::le),
-        BuiltinOp::Gt => ordering(T::gt),
-        BuiltinOp::Ge => ordering(T::ge),
+        ScalarOp::Eq => ordering(T::eq),
+        ScalarOp::Ne => ordering(T::ne),
+        ScalarOp::Lt => ordering(T::lt),
+        ScalarOp::Le => ordering(T::le),
+        ScalarOp::Gt => ordering(T::gt),
+        ScalarOp::Ge => ordering(T::ge),
         _ => Ok(None),
     }
 }
@@ -91,7 +148,7 @@ type Checked<T> = fn(T, T) -> Option<T>;
 
 #[allow(clippy::too_many_arguments)]
 fn integer<T: Data + PartialOrd + Copy>(
-    op: BuiltinOp,
+    op: ScalarOp,
     inputs: &[Value],
     add: Checked<T>,
     sub: Checked<T>,
@@ -110,12 +167,12 @@ fn integer<T: Data + PartialOrd + Copy>(
             .ok_or_else(|| anyhow!("{what} {}", std::any::type_name::<T>()))
     };
     match op {
-        BuiltinOp::Add => checked(add, "overflow adding"),
-        BuiltinOp::Sub => checked(sub, "overflow subtracting"),
-        BuiltinOp::Mul => checked(mul, "overflow multiplying"),
-        BuiltinOp::Div => checked(div, "division by zero or overflow dividing"),
-        BuiltinOp::Rem => checked(rem, "division by zero or overflow in a remainder of"),
-        BuiltinOp::Neg => {
+        ScalarOp::Add => checked(add, "overflow adding"),
+        ScalarOp::Sub => checked(sub, "overflow subtracting"),
+        ScalarOp::Mul => checked(mul, "overflow multiplying"),
+        ScalarOp::Div => checked(div, "division by zero or overflow dividing"),
+        ScalarOp::Rem => checked(rem, "division by zero or overflow in a remainder of"),
+        ScalarOp::Neg => {
             let [a] = read::<T, 1>(op, inputs)?;
             neg(a)
                 .map(Value::new)
@@ -125,7 +182,7 @@ fn integer<T: Data + PartialOrd + Copy>(
     }
 }
 
-fn float<T>(op: BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value>
+fn float<T>(op: ScalarOp, inputs: &[Value]) -> anyhow::Result<Value>
 where
     T: Data
         + PartialOrd
@@ -144,12 +201,12 @@ where
         Ok(Value::new(f(a, b)))
     };
     match op {
-        BuiltinOp::Add => arith(T::add),
-        BuiltinOp::Sub => arith(T::sub),
-        BuiltinOp::Mul => arith(T::mul),
-        BuiltinOp::Div => arith(T::div),
-        BuiltinOp::Rem => arith(T::rem),
-        BuiltinOp::Neg => {
+        ScalarOp::Add => arith(T::add),
+        ScalarOp::Sub => arith(T::sub),
+        ScalarOp::Mul => arith(T::mul),
+        ScalarOp::Div => arith(T::div),
+        ScalarOp::Rem => arith(T::rem),
+        ScalarOp::Neg => {
             let [a] = read::<T, 1>(op, inputs)?;
             Ok(Value::new(-a))
         }
@@ -157,24 +214,24 @@ where
     }
 }
 
-fn logic(op: BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value> {
+fn logic(op: ScalarOp, inputs: &[Value]) -> anyhow::Result<Value> {
     if let Some(value) = compare::<bool>(op, inputs)? {
         return Ok(value);
     }
     match op {
-        BuiltinOp::And => read::<bool, 2>(op, inputs).map(|[a, b]| Value::new(a && b)),
-        BuiltinOp::Or => read::<bool, 2>(op, inputs).map(|[a, b]| Value::new(a || b)),
-        BuiltinOp::Not => read::<bool, 1>(op, inputs).map(|[a]| Value::new(!a)),
+        ScalarOp::And => read::<bool, 2>(op, inputs).map(|[a, b]| Value::new(a && b)),
+        ScalarOp::Or => read::<bool, 2>(op, inputs).map(|[a, b]| Value::new(a || b)),
+        ScalarOp::Not => read::<bool, 1>(op, inputs).map(|[a]| Value::new(!a)),
         _ => bail!("{op:?} is not defined on bool"),
     }
 }
 
-fn string(op: BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value> {
+fn string(op: ScalarOp, inputs: &[Value]) -> anyhow::Result<Value> {
     if let Some(value) = compare::<String>(op, inputs)? {
         return Ok(value);
     }
     match op {
-        BuiltinOp::Add => read::<String, 2>(op, inputs).map(|[a, b]| Value::new(a + &b)),
+        ScalarOp::Add => read::<String, 2>(op, inputs).map(|[a, b]| Value::new(a + &b)),
         _ => bail!("{op:?} is not defined on String"),
     }
 }
@@ -183,8 +240,8 @@ fn string(op: BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value> {
 mod tests {
     use super::*;
 
-    fn run<T: Data>(op: BuiltinOp, ty: ScalarType, inputs: &[Value]) -> anyhow::Result<T> {
-        eval(op, ty, inputs)?.take()
+    fn run<T: Data>(op: ScalarOp, ty: ScalarType, inputs: &[Value]) -> anyhow::Result<T> {
+        eval(&BuiltinOp::Scalar { op, ty }, inputs)?.take()
     }
 
     #[test]
@@ -192,7 +249,7 @@ mod tests {
         let (two, three) = (Value::new(2i64), Value::new(3i64));
         assert_eq!(
             run::<i64>(
-                BuiltinOp::Add,
+                ScalarOp::Add,
                 ScalarType::I64,
                 &[two.clone(), three.clone()]
             )
@@ -201,22 +258,22 @@ mod tests {
         );
         assert_eq!(
             run::<i64>(
-                BuiltinOp::Rem,
+                ScalarOp::Rem,
                 ScalarType::I64,
                 &[three.clone(), two.clone()]
             )
             .unwrap(),
             1
         );
-        assert!(run::<bool>(BuiltinOp::Lt, ScalarType::I64, &[two.clone(), three]).unwrap());
+        assert!(run::<bool>(ScalarOp::Lt, ScalarType::I64, &[two.clone(), three]).unwrap());
         let max = Value::new(i32::MAX);
-        let overflow = run::<i32>(BuiltinOp::Add, ScalarType::I32, &[max, Value::new(1i32)]);
+        let overflow = run::<i32>(ScalarOp::Add, ScalarType::I32, &[max, Value::new(1i32)]);
         assert!(overflow.unwrap_err().to_string().contains("overflow"));
-        let zero = run::<i64>(BuiltinOp::Div, ScalarType::I64, &[two, Value::new(0i64)]);
+        let zero = run::<i64>(ScalarOp::Div, ScalarType::I64, &[two, Value::new(0i64)]);
         assert!(zero.unwrap_err().to_string().contains("division by zero"));
         assert!(
             run::<u32>(
-                BuiltinOp::Sub,
+                ScalarOp::Sub,
                 ScalarType::U32,
                 &[Value::new(1u32), Value::new(2u32)]
             )
@@ -231,7 +288,7 @@ mod tests {
         let ten = Value::encoded(rmp_serde::to_vec(&10).unwrap());
         assert_eq!(
             run::<i64>(
-                BuiltinOp::Mul,
+                ScalarOp::Mul,
                 ScalarType::I64,
                 &[ten.clone(), Value::new(3i64)]
             )
@@ -239,7 +296,7 @@ mod tests {
             30
         );
         assert_eq!(
-            run::<f64>(BuiltinOp::Div, ScalarType::F64, &[ten, Value::new(4.0f64)]).unwrap(),
+            run::<f64>(ScalarOp::Div, ScalarType::F64, &[ten, Value::new(4.0f64)]).unwrap(),
             2.5
         );
     }
@@ -247,15 +304,15 @@ mod tests {
     #[test]
     fn logic_and_strings() {
         let (t, f) = (Value::new(true), Value::new(false));
-        assert!(!run::<bool>(BuiltinOp::And, ScalarType::Bool, &[t.clone(), f.clone()]).unwrap());
-        assert!(run::<bool>(BuiltinOp::Or, ScalarType::Bool, &[t.clone(), f]).unwrap());
-        assert!(!run::<bool>(BuiltinOp::Not, ScalarType::Bool, &[t]).unwrap());
+        assert!(!run::<bool>(ScalarOp::And, ScalarType::Bool, &[t.clone(), f.clone()]).unwrap());
+        assert!(run::<bool>(ScalarOp::Or, ScalarType::Bool, &[t.clone(), f]).unwrap());
+        assert!(!run::<bool>(ScalarOp::Not, ScalarType::Bool, &[t]).unwrap());
         let (a, b) = (Value::new("na".to_string()), Value::new("mu".to_string()));
         assert_eq!(
-            run::<String>(BuiltinOp::Add, ScalarType::String, &[a.clone(), b.clone()]).unwrap(),
+            run::<String>(ScalarOp::Add, ScalarType::String, &[a.clone(), b.clone()]).unwrap(),
             "namu"
         );
-        assert!(run::<bool>(BuiltinOp::Gt, ScalarType::String, &[a.clone(), b.clone()]).unwrap());
-        assert!(eval(BuiltinOp::Sub, ScalarType::String, &[a, b]).is_err());
+        assert!(run::<bool>(ScalarOp::Gt, ScalarType::String, &[a.clone(), b.clone()]).unwrap());
+        assert!(scalar(ScalarOp::Sub, ScalarType::String, &[a, b]).is_err());
     }
 }

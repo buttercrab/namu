@@ -56,6 +56,10 @@ Minimal example:
 `runtime` is `wasm` (a WASM component, runs anywhere) or `native` (a shared library, runs only on
 the platform it was built for). Set `"checkpoint": true` for tasks with external side effects:
 their branch is logged past them before it continues, so crash recovery never runs them again.
+`"retries": N` tries a call that fails again, up to N more times, under the same call key:
+first after `"retry_backoff_ms"` (default 100), then twice as long each time, up to 30 s. Only
+the task's own failures are retried (an error it returns, a trap, a Python process that dies);
+once they run out, the last one fails the branch.
 For a stream task, `"window"` limits how many of its items are in flight at once (default 1024).
 For a batch task, `"batch_size"` is how many items a session holds at once (default 32),
 `"max_wait_ms"` makes an idle session wait for a full batch (unset: it steps at once), and

@@ -67,11 +67,10 @@ pub fn index_report(chunks_per_article: Vec<i64>) -> Result<IndexReport>;
 /// - Chunks are upserted by their own ids, so recovery never stores one twice; a write that fails
 ///   is tried again, up to three times, before its chunk counts as not stored.
 /// - Two fan-ins count the chunks per article, then the articles.
+///
+/// A run gives the number of articles, the chunk size in words, and the Qdrant collection.
 #[workflow(id = "index_wikipedia")]
-pub fn index_wikipedia() -> IndexReport {
-    let limit = 300;
-    let words = 200;
-    let collection = "wikipedia";
+pub fn index_wikipedia(limit: i32, words: i32, collection: String) -> IndexReport {
     let article = articles(limit);
     let chunks = chunk(article, words);
     let embedded = embed(chunks);

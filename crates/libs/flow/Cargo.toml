@@ -1,8 +1,10 @@
 [package]
 name = "namu-flow"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The graph builder behind NAMU's workflow macros"
 
 [dependencies]
 namu-core = { path = "../core", version = "0.1.0" }

@@ -88,6 +88,11 @@ impl Inner {
 
     pub(super) fn on_ack(self: &Arc<Self>, from: WorkerId, seqs: Vec<u64>, load: Load) {
         self.routes.report(from, load);
+        self.acknowledged(seqs);
+    }
+
+    /// Lets go of the kept messages `seqs`, counting their releases done.
+    pub(super) fn acknowledged(self: &Arc<Self>, seqs: Vec<u64>) {
         for seq in seqs {
             let kept = self.outbox.lock().unwrap().remove(&seq);
             self.idle.notify_waiters();
@@ -114,6 +119,29 @@ impl Inner {
                 worker.release(&release);
             }
         });
+    }
+
+    /// Re-sends every message kept for `peer`, which restarted: it lost what it was sent and had
+    /// not acknowledged. Receivers count what they get once, so sending again is safe.
+    pub(super) fn resend_to(self: &Arc<Self>, peer: WorkerId) {
+        let kept: Vec<Message> = {
+            let outbox = self.outbox.lock().unwrap();
+            outbox
+                .values()
+                .filter(|kept| kept.sent_to == peer)
+                .map(|kept| kept.message.clone())
+                .collect()
+        };
+        if !kept.is_empty() {
+            tracing::info!(
+                peer,
+                messages = kept.len(),
+                "re-sending to a peer that restarted"
+            );
+        }
+        for message in kept {
+            self.deliver(peer, message);
+        }
     }
 
     /// Re-sends kept messages whose receiver is no longer where they were sent.

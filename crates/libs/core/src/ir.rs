@@ -6,6 +6,10 @@ use crate::{OpId, ValueId};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Workflow {
     pub name: String,
+    /// What a run starts with: the workflow's parameters, in order. Their values are in the
+    /// run's root context before its first op.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Input>,
     pub operations: Vec<Operation>,
     /// Every value's type, by value id; empty in a workflow written without them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -19,11 +23,19 @@ impl Workflow {
     pub fn new(name: String, operations: Vec<Operation>) -> Self {
         Self {
             name,
+            inputs: Vec::new(),
             operations,
             types: Vec::new(),
             defs: Defs::new(),
         }
     }
+}
+
+/// A workflow parameter: a run gives it a value, by `name`, bound to `output`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Input {
+    pub name: String,
+    pub output: ValueId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -33,19 +45,33 @@ pub struct Literal {
     pub value: String,
 }
 
-/// An expression the engine evaluates itself, where it stands: arithmetic, a comparison, logic.
-/// `ty` is its operands' type, which says how to read them; see [`crate::builtin`].
+/// An expression the engine evaluates itself, where a branch stands, with no task call; see
+/// [`crate::builtin`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Builtin {
     pub op: BuiltinOp,
-    pub ty: ScalarType,
     pub inputs: Vec<ValueId>,
     pub output: ValueId,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinOp {
+    /// Arithmetic, a comparison or logic, on operands read as `ty`.
+    Scalar { op: ScalarOp, ty: ScalarType },
+    /// A struct's field, by name, or a tuple's element, by position (`"0"`, `"1"`, ...).
+    Field { name: String },
+    /// `list[index]`: the list, then the index.
+    Index,
+    /// `(a, b, ...)`: the inputs, as a tuple.
+    Tuple,
+    /// `format!`: `pieces[0]`, then each input (a scalar) followed by the next piece.
+    Format { pieces: Vec<String> },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalarOp {
     Add,
     Sub,
     Mul,

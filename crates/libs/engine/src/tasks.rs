@@ -126,6 +126,36 @@ pub struct Task {
     /// Whether the task has external side effects that must not be repeated by recovery (design
     /// §7.5). The branch is recorded past such a task before it continues.
     pub checkpoint: bool,
+    /// How a call that fails is tried again.
+    pub retry: Retry,
+}
+
+/// How a call that fails is tried again, under the same call key: up to `attempts` more times,
+/// first after `backoff`, then twice as long each time (up to [`MAX_BACKOFF`]). For failures that
+/// pass (a server that says to wait, a model that runs out of memory once). Only the task's own
+/// failures are tried again; once they run out, the last fails the branch as usual.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Retry {
+    pub attempts: u32,
+    pub backoff: Duration,
+}
+
+/// The longest a retry waits.
+pub const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+impl Retry {
+    /// `attempts` more tries, the first after `backoff`.
+    pub fn new(attempts: u32, backoff: Duration) -> Self {
+        Self { attempts, backoff }
+    }
+
+    /// How long to wait before try `n` again (`n` from 0), if there is one.
+    pub fn wait(&self, n: u32) -> Option<Duration> {
+        (n < self.attempts).then(|| {
+            let doubled = self.backoff.saturating_mul(1 << n.min(16));
+            doubled.min(MAX_BACKOFF)
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -158,6 +188,7 @@ impl Task {
         Self {
             kind,
             checkpoint: false,
+            retry: Retry::default(),
         }
     }
 }
@@ -470,6 +501,12 @@ impl FnTasks {
     /// Marks `task` as a checkpoint: it has side effects that recovery must not repeat.
     pub fn checkpoint(mut self, task: &str) -> Self {
         self.registered(task).checkpoint = true;
+        self
+    }
+
+    /// Tries a failed call of `task` again, as `retry` says.
+    pub fn retry(mut self, task: &str, retry: Retry) -> Self {
+        self.registered(task).retry = retry;
         self
     }
 }

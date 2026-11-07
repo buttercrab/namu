@@ -17,6 +17,10 @@ use crate::common::{add, double, json, sum};
 #[task(stream)]
 fn numbers(n: i32, delay_ms: i32) -> Result<impl Iterator<Item = Result<i32>>>;
 
+/// `0, 1, .., n - 1` at once, then `pause_ms` before the stream ends.
+#[task(stream)]
+fn numbers_ending_late(n: i32, pause_ms: i32) -> Result<impl Iterator<Item = Result<i32>>>;
+
 /// Like `numbers`, but fails after `n` items.
 #[task(stream)]
 fn numbers_then_fail(n: i32) -> Result<impl Iterator<Item = Result<i32>>>;
@@ -58,6 +62,13 @@ fn tasks(probe: Arc<Probe>) -> FnTasks {
                 true => Err("the source broke".to_string()),
                 false => Ok(i),
             }))
+        })
+        .with_stream("numbers_ending_late", |(n, pause): (i32, u64)| {
+            let end = std::iter::from_fn(move || {
+                std::thread::sleep(Duration::from_millis(pause));
+                None
+            });
+            Ok::<_, String>((0..n).map(Ok::<_, String>).chain(end))
         })
         .with("add", |(a, b): (i32, i32)| Ok::<_, String>(a + b))
         .with("double", |x: i32| Ok::<_, String>(x * 2))
@@ -383,6 +394,32 @@ async fn a_stream_goes_out_in_windows_as_it_flows() {
         let cluster = cluster(workers, tasks(Arc::default()));
         let outcome = run_on(&cluster, wf().to_serializable("w".into())).await;
         // [0..4], [4..8], [8, 9]; collected in window order.
+        assert_eq!(
+            json(&outcome.results),
+            [json!([6, 22, 17])],
+            "{workers} workers: {:?}",
+            outcome.failures
+        );
+    }
+}
+
+/// The last, partial window goes out when the stream ends, even if every item ended before it
+/// did: what sends it is the scope learning its count, not only an item ending.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_last_window_goes_out_when_its_stream_ends_after_its_items() {
+    #[workflow]
+    fn wf() -> Vec<i32> {
+        let n = 10;
+        let pause = 200;
+        let x = each(numbers_ending_late(n, pause));
+        let batch = window(x, 4);
+        let total = sum(batch);
+        listing(total)
+    }
+
+    for workers in [1, 3] {
+        let cluster = cluster(workers, tasks(Arc::default()));
+        let outcome = run_on(&cluster, wf().to_serializable("w".into())).await;
         assert_eq!(
             json(&outcome.results),
             [json!([6, 22, 17])],

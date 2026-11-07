@@ -82,6 +82,16 @@ pub fn doc_stats() -> Summary {
     summarize(stats)
 }
 
+/// `doc_stats`, with what it hard-codes given by the run: `namu run doc_stats_of 0.1.0 --input
+/// n=48 --input min_len=6 --input rounds=4000` gives `doc_stats`' result.
+#[workflow(id = "doc_stats_of")]
+pub fn doc_stats_of(n: i32, min_len: i32, rounds: i32) -> Summary {
+    let cfg = make_config(min_len, rounds);
+    let docs = split_docs(n);
+    let stats = analyze(docs, cfg);
+    summarize(stats)
+}
+
 /// Sequential loop of trivial WASM calls on one worker: measures per-step overhead.
 #[workflow(id = "bench_local")]
 pub fn bench_local() -> i64 {
@@ -182,6 +192,14 @@ pub fn stream_docs(n: i32, delay_ms: i32) -> Result<impl Iterator<Item = Result<
 
 /// `doc_stats` with the documents streamed in: each is analyzed as soon as it arrives, while the
 /// rest are still coming. Same result as `doc_stats`.
+/// Every document's id, from a stream, each its own result: results arrive as the documents do,
+/// long before the run ends (`namu results --follow`).
+#[workflow(id = "doc_ids_streamed")]
+pub fn doc_ids_streamed(n: i32, delay_ms: i32) -> i64 {
+    let doc = each(stream_docs(n, delay_ms));
+    doc_id(doc)
+}
+
 #[workflow(id = "stream_stats")]
 pub fn stream_stats() -> Summary {
     let min_len = 6;
@@ -323,4 +341,29 @@ pub fn doc_stats_py() -> Summary {
     let docs = split_docs(n);
     let stats = analyze(docs, cfg);
     summarize_py(stats)
+}
+
+/// The documents given, yielded one at a time by a Python stream that, reopened after a crash,
+/// goes on where it stopped.
+#[task(stream)]
+pub fn replay_py(docs: Vec<String>) -> Result<impl Iterator<Item = Result<String>>>;
+
+/// `classify`, in Python: a dynamic batch task.
+#[task(batch)]
+pub fn classify_py(docs: Vec<String>) -> Vec<Result<String>>;
+
+/// `refine`, in Python: a continuous batch task.
+#[task(batch)]
+pub fn refine_py(labels: Vec<String>) -> Vec<Result<String>>;
+
+/// `label_stats` in Python: the documents streamed in, labeled by a model-like batch task and
+/// refined by a decoder-like continuous one, each in Python processes of their own. The same
+/// labels.
+#[workflow(id = "label_stats_py")]
+pub fn label_stats_py() -> std::collections::BTreeMap<String, usize> {
+    let n = 48;
+    let docs = replay_py(split_docs(n));
+    let topics = classify_py(docs);
+    let labels = refine_py(topics);
+    tally(labels)
 }

@@ -17,6 +17,35 @@ fn demo() -> i32 {
 }
 ```
 
+## Inputs
+A workflow's parameters are its inputs: what a run gives it, so one published version serves any
+number of runs.
+
+```rust
+#[workflow]
+fn index(limit: i32, collection: String) -> IndexReport {
+    let article = articles(limit);
+    // ...
+}
+```
+
+A parameter is a plain name with a type (`mut` if loops reassign it). Runs give each by name:
+
+```bash
+namu run index 0.1.0 --input limit=300 --input collection=wikipedia --wait
+```
+
+```rust
+let inputs = namu::Inputs::new().with("limit", 300).with("collection", "wikipedia".to_string());
+cluster.run_with(index().to_serializable("index".into()), inputs).await?;
+```
+
+Inputs are checked before the run starts: a missing one, one the workflow does not have, or one of
+the wrong type is refused with what is wrong, e.g. ``invalid inputs: `limit`: expected i32, got a
+string``. Through the API, inputs are JSON, written as serde writes the type: a struct as an
+object (a missing `Option` field is `None`), a newtype as what it wraps, an enum's unit variant as
+its name and any other as `{"Variant": ..}`. Map inputs need string keys.
+
 ## Types
 The values passed between tasks are `namu::Data`: the standard types are, and your own derive it,
 which also gives the IR their shape:
@@ -95,7 +124,23 @@ let label = exclaim(name) + "?";   // + on strings concatenates
 - Types: `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `String`. Both sides of an operator
   have one type; rustc checks it.
 - Integer arithmetic is checked: an overflow or a division by zero fails the branch.
-- Not yet: field and index access, tuples built from values, `format!`. Use a task.
+
+Values are taken apart and put together the same way:
+
+```rust
+let page = fetch(url);
+let first = page.links[0];               // a field, then an element
+let (lo, hi) = (page.span.0, page.span.1);
+let row = (page.url, page.words * 2);    // a tuple
+let line = format!("{} has {} words", page.url, page.words);
+```
+
+- Field access on structs (`page.url`) and tuples (`pair.0`), and indexing lists (`xs[i]`, with
+  `i` a `usize`): rustc checks the access as it would in Rust. An index out of bounds fails the
+  branch. The engine finds the part in the value's bytes, without decoding the rest.
+- Tuples of up to 8 values.
+- `format!` with `{}` and `{name}` placeholders, each a scalar (one of the types above), written
+  as `Display` writes it. Formatting options (`{:.2}`, `{:>8}`) are a task's to do.
 
 ## Supported control flow
 - `if` / `if-else`

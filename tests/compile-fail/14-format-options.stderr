@@ -1,0 +1,5 @@
+error: `{:.2}`: a workflow formats with `{}` or `{name}` only; a task can format any other way
+ --> tests/compile-fail/14-format-options.rs:9:13
+  |
+9 |     format!("{:.2}", s)
+  |             ^^^^^^^

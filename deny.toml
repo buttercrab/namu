@@ -7,6 +7,9 @@ ignore = []
 [licenses]
 allow = [
   "Apache-2.0",
+  # rustls's stack (ring, rustls-webpki, untrusted) and subtle: permissive, OSI-approved.
+  "BSD-3-Clause",
+  "ISC",
   "MIT",
   "Unicode-3.0",
 ]
@@ -17,7 +20,11 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow = []
 deny = []
-skip = []
+# ring, under rustls, pins these; everything else uses newer ones.
+skip = [
+  { crate = "getrandom@0.2.17", reason = "ring 0.17 depends on getrandom 0.2" },
+  { crate = "windows-sys@0.52.0", reason = "ring 0.17 depends on windows-sys 0.52" },
+]
 skip-tree = []
 
 [sources]

@@ -41,6 +41,8 @@ pub struct TaskConfig {
     pub runtime: TaskRuntime,
     pub trust: TaskTrust,
     pub checkpoint: bool,
+    pub retries: u32,
+    pub retry_backoff_ms: Option<u64>,
     pub window: Option<usize>,
     pub batch_size: Option<usize>,
     pub max_wait_ms: Option<u64>,
@@ -219,11 +221,12 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
             .get("checkpoint")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let integer = |field: &str| entry.get(field).and_then(|v| v.as_integer());
-        let window = integer("window").map(|v| v as usize);
-        let batch_size = integer("batch_size").map(|v| v as usize);
-        let max_wait_ms = integer("max_wait_ms").map(|v| v as u64);
-        let batch_slots = integer("batch_slots").map(|v| v as usize);
+        let retries = count::<u32>(entry, id, "retries")?.unwrap_or(0);
+        let retry_backoff_ms = count(entry, id, "retry_backoff_ms")?;
+        let window = count(entry, id, "window")?;
+        let batch_size = count(entry, id, "batch_size")?;
+        let max_wait_ms = count(entry, id, "max_wait_ms")?;
+        let batch_slots = count(entry, id, "batch_slots")?;
         let requires_gpu = entry
             .get("requires_gpu")
             .and_then(|v| v.as_bool())
@@ -272,6 +275,8 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
                 runtime,
                 trust,
                 checkpoint,
+                retries,
+                retry_backoff_ms,
                 window,
                 batch_size,
                 max_wait_ms,
@@ -288,6 +293,24 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
     }
 
     Ok(tasks)
+}
+
+/// The non-negative integer `field` of task `id`'s entry, if it is set: one that does not fit `T`
+/// is an error, not a number wrapped into range.
+fn count<T: TryFrom<i64>>(
+    entry: &toml::map::Map<String, toml::Value>,
+    id: &str,
+    field: &str,
+) -> anyhow::Result<Option<T>> {
+    let Some(value) = entry.get(field) else {
+        return Ok(None);
+    };
+    let n = value
+        .as_integer()
+        .ok_or_else(|| anyhow!("tasks.{id}.{field} must be an integer"))?;
+    T::try_from(n)
+        .map(Some)
+        .map_err(|_| anyhow!("tasks.{id}.{field} = {n} is out of range"))
 }
 
 fn parse_workflows(doc: &toml::Value) -> anyhow::Result<WorkflowsConfig> {
@@ -379,4 +402,21 @@ fn get_string(table: &toml::value::Table, key: &str) -> anyhow::Result<String> {
 
 fn toml_value_to_json(value: &toml::Value) -> JsonValue {
     serde_json::to_value(value).unwrap_or(JsonValue::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_out_of_range_are_refused_not_wrapped() {
+        let entry: toml::Value =
+            toml::from_str("retries = -1\nwindow = 8\nmax_wait_ms = 1.5").unwrap();
+        let entry = entry.as_table().unwrap();
+        let err = count::<u32>(entry, "fetch", "retries").unwrap_err();
+        assert_eq!(err.to_string(), "tasks.fetch.retries = -1 is out of range");
+        assert_eq!(count::<usize>(entry, "fetch", "window").unwrap(), Some(8));
+        assert!(count::<u64>(entry, "fetch", "max_wait_ms").is_err());
+        assert_eq!(count::<u64>(entry, "fetch", "batch_slots").unwrap(), None);
+    }
 }

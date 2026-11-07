@@ -20,23 +20,26 @@ mod view;
 mod windows;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
+use namu_core::ValueId;
 use namu_core::ir::Workflow;
+use namu_core::value::Value;
 use tokio::sync::{Notify, Semaphore, mpsc, oneshot, watch};
 
 use self::delivery::Outgoing;
 use self::scopes::Ending;
 use crate::ids::{Minter, NodeId, RunId, ScopeId, WorkerId};
 use crate::kernel::Start;
-use crate::log::{Log, Record};
-use crate::message::{Branch, BranchId, FetchRun, Message, Resume};
+use crate::log::{Log, Logged, Record};
+use crate::message::{Branch, BranchId, FetchRun, Message, Report, Resume};
 use crate::routes::{Load, Routes};
-use crate::run::{RunInfo, RunOutcome, RunSpec, WorkerStats};
-use crate::scope::{Finish, Scope, Then};
+use crate::run::{RunInfo, RunSpec, WorkerStats};
+use crate::scope::{Scope, Then};
 use crate::tasks::{TaskRef, Tasks};
+use crate::telemetry;
 use crate::transport::Transport;
 use crate::tree::{Node, Nodes};
 
@@ -89,8 +92,9 @@ struct Run {
     nodes: Arc<Nodes>,
     /// The scopes this worker owns that are open: opened here, or taken over from a dead worker.
     scopes: Mutex<HashMap<ScopeId, Scope>>,
-    /// The run's outcome as it is collected, on the worker that owns the run (or took it over).
-    finish: Mutex<Option<Finish>>,
+    /// Whether this worker holds the run's root scope, where its reports come: it owns the run,
+    /// or took it over.
+    root: AtomicBool,
     calls: AtomicU64,
     fetches: AtomicU64,
 }
@@ -144,11 +148,18 @@ impl Worker {
             }
         });
         tokio::spawn(inner.clone().watch_members());
+        tokio::spawn(sample(Arc::downgrade(&inner)));
         Self { inner }
     }
 
     pub fn id(&self) -> WorkerId {
         self.inner.id
+    }
+
+    /// `peer` restarted (the control plane, which keeps its id): it is sent again what it had
+    /// not acknowledged.
+    pub fn peer_restarted(&self, peer: WorkerId) {
+        self.inner.resend_to(peer);
     }
 
     /// One task call per CPU.
@@ -236,16 +247,23 @@ impl Inner {
             Message::Start {
                 run,
                 workflow,
+                inputs,
                 task_versions,
                 reply_to,
             } => {
                 let worker = self.clone();
                 tokio::spawn(async move {
-                    worker.start(run, workflow, task_versions, reply_to).await;
+                    worker
+                        .start(run, workflow, inputs, task_versions, reply_to)
+                        .await;
                 });
             }
+            Message::Recorded { run, .. } => {
+                tracing::warn!(%run, "a run's report sent to a worker; only its starter takes them");
+            }
+            Message::Stored { seqs } => self.acknowledged(seqs),
             Message::Finished { run, .. } => {
-                tracing::warn!(%run, "run outcome sent to a worker; only the control plane takes them");
+                tracing::warn!(%run, "a run's end sent to a worker; only its starter takes it");
             }
             Message::Handoff(handoff) => self.on_handoff(handoff),
             Message::End(end) => self.on_end(end),
@@ -272,12 +290,21 @@ impl Inner {
         self: &Arc<Self>,
         id: RunId,
         workflow: Workflow,
+        inputs: Vec<(ValueId, Value)>,
         task_versions: BTreeMap<String, String>,
         reply_to: WorkerId,
     ) {
-        let known = self.run_state(id).is_some();
-        if known || matches!(self.log.run(id).await, Ok(Some(_))) {
-            return tracing::info!(%id, "run already started; its owner's successor carries it on");
+        if self.run_state(id).is_some() {
+            return tracing::info!(%id, "run already started here");
+        }
+        match self.log.run(id).await {
+            Ok(Logged::Unknown) => {}
+            Ok(Logged::Running(_)) => {
+                return tracing::info!(%id, "run already started; its owner's successor carries it on");
+            }
+            Ok(Logged::Ended) => return tracing::info!(%id, "run already ended; not started again"),
+            // Starting needs the log too: if it cannot be written, the run is not started.
+            Err(err) => tracing::warn!(%id, "the log cannot say whether the run started: {err:#}"),
         }
         let info = Arc::new(RunInfo {
             id,
@@ -290,11 +317,15 @@ impl Inner {
         let spec = match RunSpec::from_info(info.clone()) {
             Ok(spec) => Arc::new(spec),
             Err(err) => {
-                let outcome = RunOutcome {
-                    failures: vec![format!("run did not start: {err:#}")],
-                    ..RunOutcome::default()
+                // The run's one report, from its root branch.
+                let branch = BranchId {
+                    scope: info.root_scope,
+                    index: 0,
                 };
-                return self.deliver(reply_to, Message::Finished { run: id, outcome });
+                let failure = Report::Failure(format!("run did not start: {err:#}"));
+                self.send_recorded(reply_to, id, branch, failure, None);
+                let workers = BTreeMap::new();
+                return self.deliver(reply_to, Message::Finished { run: id, workers });
             }
         };
         if let Err(err) = self.tasks.prepare(&spec).await {
@@ -302,8 +333,9 @@ impl Inner {
         }
         let run = self.install_spec(spec);
 
-        let root = run.nodes.hold(Arc::new(Node::root(info.root)));
-        *run.finish.lock().unwrap() = Some(Finish::default());
+        // The root context holds the run's inputs, so every branch sees them.
+        let root = run.nodes.hold(Arc::new(Node::root(info.root, inputs)));
+        run.root.store(true, Ordering::Release);
         // The root scope has one branch: the run's root branch.
         let root_scope = Scope::new(Then::Finish, Some(1));
         run.open_scope(info.root_scope, root_scope);
@@ -379,7 +411,7 @@ impl Inner {
                         spec,
                         nodes: Arc::default(),
                         scopes: Mutex::default(),
-                        finish: Mutex::default(),
+                        root: AtomicBool::new(false),
                         calls: AtomicU64::new(0),
                         fetches: AtomicU64::new(0),
                     })
@@ -444,6 +476,30 @@ impl Inner {
         if let Some(delivery) = message.delivery() {
             self.ack(delivery);
         }
+    }
+}
+
+/// Samples what the worker holds, for its gauges, until it is gone.
+async fn sample(worker: std::sync::Weak<Inner>) {
+    let mut every = tokio::time::interval(telemetry::SAMPLE_EVERY);
+    loop {
+        every.tick().await;
+        let Some(worker) = worker.upgrade() else {
+            return;
+        };
+        let runs: Vec<Arc<Run>> = worker.runs.lock().unwrap().values().cloned().collect();
+        telemetry::sampled(telemetry::Sample {
+            runs: runs.len(),
+            scopes_open: runs
+                .iter()
+                .map(|run| run.scopes.lock().unwrap().len())
+                .sum(),
+            branches_driving: worker.driving.load(Ordering::Relaxed),
+            task_slots_busy: (worker.slots as usize)
+                .saturating_sub(worker.task_slots.available_permits()),
+            unacknowledged: worker.outbox.lock().unwrap().len(),
+            releases_pending: worker.releasing.load(Ordering::Relaxed),
+        });
     }
 }
 

@@ -72,9 +72,10 @@ curl -sf -X PUT "$QDRANT_URL/collections/wikipedia" -H 'Content-Type: applicatio
 echo "   collection wikipedia (384 dimensions, cosine) at $QDRANT_URL"
 
 # Every worker runs native tasks (the stream, the model, the store) and WASM ones (chunking).
+INPUTS="limit=$ARTICLES words=200 collection=wikipedia"
 cluster() {
   POC_DIR="$RUN_DIR" TASKS_DIR=examples/rag/tasks WORKFLOWS=namu-rag-workflows \
-    WORKFLOW=index_wikipedia WORKERS="wasm,native wasm,native wasm,native" "$@"
+    WORKFLOW=index_wikipedia WORKERS="wasm,native wasm,native wasm,native" INPUTS="$INPUTS" "$@"
 }
 
 echo "== index_wikipedia on 3 workers"
@@ -83,8 +84,11 @@ if [[ ${CHECK:-0} == 1 ]]; then
   # and store chunks again; stored by their own ids, they are not doubled.
   KEEP=1 RUNS=1 cluster ./scripts/poc-local.sh >"$RUN_DIR.log" 2>&1
   read -r -a cluster_pids <<<"$(sed -n 's/^left running (pids: \(.*\))$/\1/p' "$RUN_DIR.log")"
-  NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
-    run index_wikipedia 0.1.0 --wait >"$RUN_DIR/crashed.json" &
+  # shellcheck source=/dev/null
+  source "$RUN_DIR/env"
+  "$ROOT_DIR/target/release/namu" \
+    run index_wikipedia 0.1.0 --input "limit=$ARTICLES" --input words=200 \
+    --input collection=wikipedia --wait >"$RUN_DIR/crashed.json" &
   run_pid=$!
   sleep 4
   kill -9 "${cluster_pids[3]}"
@@ -116,6 +120,28 @@ calls = runs[-1]["calls_by_worker"]
 print(f"   {report['articles']} articles, {report['chunks']} chunks, {points} points in Qdrant, "
       f"{runs[-1]['elapsed_ms'] / 1000:.1f} s; calls by worker {dict(calls)}")
 PY
+
+if [[ ${CHECK:-0} == 1 ]]; then
+  # Retrieval quality: each golden question has the article that answers it. Of those whose
+  # article is in this corpus (Wikipedia's category changes), the article must be among the top 5
+  # hits for at least 80%.
+  echo "== recall@5 on golden questions"
+  "$QUERY" --top 5 --golden examples/rag/golden.json >"$RUN_DIR/golden.jsonl"
+  python3 - "$RUN_DIR/golden.jsonl" "$RAG_CORPUS" <<'PY'
+import json, sys
+cases = [json.loads(line) for line in open(sys.argv[1])]
+titles = {json.loads(line)["title"] for line in open(sys.argv[2])}
+present = [case for case in cases if case["title"] in titles]
+assert len(present) >= 8, f"only {len(present)} golden articles are in this corpus"
+hits = [case for case in present if case["title"] in case["found"]]
+recall = len(hits) / len(present)
+for case in present:
+    if case not in hits:
+        print(f"   miss: {case['question']!r} -> {case['found']}")
+assert recall >= 0.8, f"recall@5 {recall:.2f}"
+print(f"   ok: recall@5 {recall:.2f} ({len(hits)} of {len(present)} golden questions)")
+PY
+fi
 
 echo "== search"
 if (($# == 0)); then

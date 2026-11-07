@@ -11,6 +11,14 @@
 //! while a frame is written go out in the same flush. The receiver answers on the same connection
 //! with the number of messages of the session it has delivered.
 //!
+//! With [`MeshTls`], every connection is mutual TLS: each side proves it is a member of the
+//! cluster before a byte of a session crosses (see `tls`). Without it, connections are plain TCP,
+//! for a cluster on one trusted machine.
+//!
+//! A receiver that restarts (the orchestrator, which keeps its id) has forgotten its sessions; the
+//! next connection of each takes up where its sender stands, and what was delivered but not yet
+//! acknowledged before the restart comes again.
+//!
 //! A worker can hear from a peer before it learns where the peer listens: a worker that just
 //! joined is in the membership the orchestrator gives it, but its peers learn of it only at their
 //! next heartbeat. Messages to such a peer wait in its session until its address arrives.
@@ -21,12 +29,14 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter, ReadHalf, WriteHalf,
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 
 use super::Transport;
+use super::tls::MeshTls;
 use crate::ids::WorkerId;
 use crate::message::Message;
 
@@ -38,6 +48,13 @@ const MAX_BACKOFF: Duration = Duration::from_secs(1);
 
 type SessionId = u64;
 
+/// A connection: TCP, or TLS over it.
+trait Stream: AsyncRead + AsyncWrite + Send + Unpin {}
+
+impl<S: AsyncRead + AsyncWrite + Send + Unpin> Stream for S {}
+
+type Connection = Box<dyn Stream>;
+
 #[derive(Debug, Default)]
 pub struct TcpTransport {
     peers: Mutex<Peers>,
@@ -47,6 +64,7 @@ pub struct TcpTransport {
 
 #[derive(Debug, Default)]
 struct Peers {
+    tls: Option<MeshTls>,
     sessions: HashMap<WorkerId, Session>,
     /// Peers that left the membership. They never return: a worker that rejoins has a new id.
     gone: HashSet<WorkerId>,
@@ -67,16 +85,18 @@ enum Place {
 }
 
 impl TcpTransport {
-    /// Listens on `addr`. Returns the transport, the address it listens on, and the inbox that
-    /// receives every message sent to it.
+    /// Listens on `addr`, with mutual TLS if `tls` is given. Returns the transport, the address
+    /// it listens on, and the inbox that receives every message sent to it.
     pub async fn bind(
         addr: SocketAddr,
+        tls: Option<MeshTls>,
     ) -> io::Result<(Arc<Self>, SocketAddr, mpsc::UnboundedReceiver<Message>)> {
         let listener = TcpListener::bind(addr).await?;
         let local = listener.local_addr()?;
         let (inbox, messages) = mpsc::unbounded_channel();
         let transport = Arc::new(Self::default());
-        tokio::spawn(accept(listener, inbox, transport.delivered.clone()));
+        transport.peers.lock().unwrap().tls = tls.clone();
+        tokio::spawn(accept(listener, tls, inbox, transport.delivered.clone()));
         Ok((transport, local, messages))
     }
 
@@ -126,10 +146,11 @@ impl Peers {
         if self.gone.contains(&worker) {
             return None;
         }
+        let tls = self.tls.clone();
         Some(self.sessions.entry(worker).or_insert_with(|| {
             let (queue, messages) = mpsc::unbounded_channel();
             let (place, placed) = watch::channel(Place::Unknown);
-            tokio::spawn(run_session(worker, placed, messages));
+            tokio::spawn(run_session(worker, tls, placed, messages));
             Session { queue, place }
         }))
     }
@@ -158,13 +179,14 @@ impl Transport for TcpTransport {
 /// Runs the sending side of a session until its peer leaves.
 async fn run_session(
     to: WorkerId,
+    tls: Option<MeshTls>,
     mut place: watch::Receiver<Place>,
     mut queue: mpsc::UnboundedReceiver<Message>,
 ) {
     let session: SessionId = uuid::Uuid::new_v4().as_u64_pair().0;
     let mut outgoing = Outgoing::default();
-    while let Some(stream) = connect(&mut place).await {
-        let (read, write) = stream.into_split();
+    while let Some(stream) = connect(tls.as_ref(), &mut place).await {
+        let (read, write) = tokio::io::split(stream);
         let (acks, mut acked) = mpsc::unbounded_channel();
         let reader = tokio::spawn(read_acks(read, acks));
         let mut link = Link {
@@ -228,7 +250,7 @@ enum Ended {
 
 /// One connection of a session.
 struct Link<'a> {
-    write: BufWriter<OwnedWriteHalf>,
+    write: BufWriter<WriteHalf<Connection>>,
     acked: &'a mut mpsc::UnboundedReceiver<u64>,
 }
 
@@ -269,7 +291,7 @@ impl Link<'_> {
     }
 }
 
-async fn read_acks(read: OwnedReadHalf, acks: mpsc::UnboundedSender<u64>) {
+async fn read_acks(read: ReadHalf<Connection>, acks: mpsc::UnboundedSender<u64>) {
     let mut read = BufReader::new(read);
     while let Ok(delivered) = read.read_u64().await {
         if acks.send(delivered).is_err() {
@@ -280,19 +302,19 @@ async fn read_acks(read: OwnedReadHalf, acks: mpsc::UnboundedSender<u64>) {
 
 /// Connects to the peer once its address is known, retrying until it accepts. `None` once the
 /// peer has left.
-async fn connect(place: &mut watch::Receiver<Place>) -> Option<TcpStream> {
+async fn connect(tls: Option<&MeshTls>, place: &mut watch::Receiver<Place>) -> Option<Connection> {
     let mut backoff = Duration::from_millis(10);
     loop {
         let current = *place.borrow_and_update();
         match current {
             Place::Gone => return None,
             Place::Unknown => {}
-            Place::At(addr) => match TcpStream::connect(addr).await {
-                Ok(stream) => {
-                    let _ = stream.set_nodelay(true);
-                    return Some(stream);
-                }
-                Err(_) => {
+            Place::At(addr) => match open(tls, addr).await {
+                Ok(stream) => return Some(stream),
+                Err(err) => {
+                    if err.kind() == io::ErrorKind::InvalidData {
+                        tracing::warn!(%addr, "TLS handshake failed: {err}");
+                    }
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
                         _ = place.changed() => {}
@@ -308,8 +330,23 @@ async fn connect(place: &mut watch::Receiver<Place>) -> Option<TcpStream> {
     }
 }
 
+/// A connection to `addr`: TCP, then TLS if the mesh has it.
+async fn open(tls: Option<&MeshTls>, addr: SocketAddr) -> io::Result<Connection> {
+    let stream = TcpStream::connect(addr).await?;
+    let _ = stream.set_nodelay(true);
+    Ok(match tls {
+        Some(tls) => Box::new(
+            tls.connector()
+                .connect(MeshTls::server_name(), stream)
+                .await?,
+        ),
+        None => Box::new(stream),
+    })
+}
+
 async fn accept(
     listener: TcpListener,
+    tls: Option<MeshTls>,
     inbox: mpsc::UnboundedSender<Message>,
     delivered: Arc<Mutex<HashMap<SessionId, u64>>>,
 ) {
@@ -317,8 +354,19 @@ async fn accept(
         match listener.accept().await {
             Ok((stream, peer)) => {
                 let _ = stream.set_nodelay(true);
-                let (inbox, delivered) = (inbox.clone(), delivered.clone());
+                let (tls, inbox, delivered) = (tls.clone(), inbox.clone(), delivered.clone());
+                // The handshake runs here, not in the loop: a slow or hostile peer holds up only
+                // its own connection.
                 tokio::spawn(async move {
+                    let stream: Connection = match tls {
+                        Some(tls) => match tls.acceptor().accept(stream).await {
+                            Ok(stream) => Box::new(stream),
+                            Err(err) => {
+                                return tracing::warn!(%peer, "refused a connection: {err}");
+                            }
+                        },
+                        None => Box::new(stream),
+                    };
                     if let Err(err) = receive(stream, inbox, delivered).await
                         && err.kind() != io::ErrorKind::UnexpectedEof
                     {
@@ -334,11 +382,11 @@ async fn accept(
 /// Receives one connection of a session: delivers each message the session has not delivered
 /// yet, and acknowledges what it has.
 async fn receive(
-    stream: TcpStream,
+    stream: Connection,
     inbox: mpsc::UnboundedSender<Message>,
     delivered: Arc<Mutex<HashMap<SessionId, u64>>>,
 ) -> io::Result<()> {
-    let (read, write) = stream.into_split();
+    let (read, write) = tokio::io::split(stream);
     let (mut read, mut write) = (BufReader::new(read), BufWriter::new(write));
     let session = read.read_u64().await?;
     let mut frame = Vec::new();
@@ -356,7 +404,11 @@ async fn receive(
         let message = rmp_serde::from_slice::<Message>(&frame);
         let count = {
             let mut delivered = delivered.lock().unwrap();
-            let count = delivered.entry(session).or_default();
+            // A session this receiver has never seen starts where its sender stands: at 0, or,
+            // if this receiver restarted, past what its last life acknowledged. Then messages it
+            // delivered but did not acknowledge before it died come again: across a restart, a
+            // session is at least once.
+            let count = delivered.entry(session).or_insert(seq);
             if seq == *count {
                 // Delivered under the lock, so two connections of one session cannot reorder.
                 match message {
@@ -401,8 +453,8 @@ mod tests {
 
     #[tokio::test]
     async fn messages_wait_for_the_address_of_their_peer() {
-        let (sender, _, _) = TcpTransport::bind(any()).await.unwrap();
-        let (_, addr, mut inbox) = TcpTransport::bind(any()).await.unwrap();
+        let (sender, _, _) = TcpTransport::bind(any(), None).await.unwrap();
+        let (_, addr, mut inbox) = TcpTransport::bind(any(), None).await.unwrap();
         let run = uuid::Uuid::new_v4();
         sender.send(7, Message::RunOver { run });
         sender.set_peer(7, addr);
@@ -444,8 +496,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_cut_connection_loses_and_repeats_nothing() {
-        let (sender, _, _) = TcpTransport::bind(any()).await.unwrap();
-        let (_, addr, mut inbox) = TcpTransport::bind(any()).await.unwrap();
+        let (sender, _, _) = TcpTransport::bind(any(), None).await.unwrap();
+        let (_, addr, mut inbox) = TcpTransport::bind(any(), None).await.unwrap();
         let proxy = Proxy::start(addr).await;
         sender.set_peer(1, proxy.addr);
         let runs: Vec<RunId> = (0..500).map(|_| uuid::Uuid::new_v4()).collect();
@@ -470,5 +522,104 @@ mod tests {
         );
         let more = tokio::time::timeout(Duration::from_millis(200), inbox.recv()).await;
         assert!(more.is_err(), "a message arrived twice");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn members_of_a_cluster_talk_over_mutual_tls() {
+        let ca = crate::transport::certs::ClusterCa::new().unwrap();
+        let (sender, _, _) = TcpTransport::bind(any(), Some(ca.mesh_tls().unwrap()))
+            .await
+            .unwrap();
+        let (_, addr, mut inbox) = TcpTransport::bind(any(), Some(ca.mesh_tls().unwrap()))
+            .await
+            .unwrap();
+        // Through the proxy too: a cut TLS connection is replaced like a plain one.
+        let proxy = Proxy::start(addr).await;
+        sender.set_peer(1, proxy.addr);
+        let runs: Vec<RunId> = (0..50).map(|_| uuid::Uuid::new_v4()).collect();
+        for &run in &runs[..25] {
+            sender.send(1, Message::RunOver { run });
+        }
+        assert_eq!(received(&mut inbox).await, Some(runs[0]));
+        proxy.cut();
+        for &run in &runs[25..] {
+            sender.send(1, Message::RunOver { run });
+        }
+        let mut got = vec![runs[0]];
+        while let Some(run) = received(&mut inbox).await {
+            got.push(run);
+            if got.len() == runs.len() {
+                break;
+            }
+        }
+        assert_eq!(got, runs);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn strangers_cannot_reach_a_member() {
+        let ca = crate::transport::certs::ClusterCa::new().unwrap();
+        let other = crate::transport::certs::ClusterCa::new().unwrap();
+        let (_, addr, mut inbox) = TcpTransport::bind(any(), Some(ca.mesh_tls().unwrap()))
+            .await
+            .unwrap();
+
+        // A member of another cluster: its certificate does not chain to this one's CA.
+        let (stranger, _, _) = TcpTransport::bind(any(), Some(other.mesh_tls().unwrap()))
+            .await
+            .unwrap();
+        stranger.set_peer(1, addr);
+        stranger.send(
+            1,
+            Message::RunOver {
+                run: uuid::Uuid::new_v4(),
+            },
+        );
+
+        // Plain TCP, as the mesh was before.
+        let (plain, _, _) = TcpTransport::bind(any(), None).await.unwrap();
+        plain.set_peer(1, addr);
+        plain.send(
+            1,
+            Message::RunOver {
+                run: uuid::Uuid::new_v4(),
+            },
+        );
+
+        let arrived = tokio::time::timeout(Duration::from_millis(500), inbox.recv()).await;
+        assert!(
+            arrived.is_err(),
+            "a stranger's message arrived: {arrived:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restarted_receiver_takes_up_a_session_where_it_stands() {
+        let (sender, _, _) = TcpTransport::bind(any(), None).await.unwrap();
+        let (receiver, addr, mut inbox) = TcpTransport::bind(any(), None).await.unwrap();
+        let proxy = Proxy::start(addr).await;
+        sender.set_peer(1, proxy.addr);
+        let first = uuid::Uuid::new_v4();
+        sender.send(1, Message::RunOver { run: first });
+        assert_eq!(received(&mut inbox).await, Some(first));
+
+        // The receiver dies: its connections go, and with them what it knew of the session.
+        drop((receiver, inbox));
+        proxy.cut();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let later: Vec<RunId> = (0..20).map(|_| uuid::Uuid::new_v4()).collect();
+        for &run in &later {
+            sender.send(1, Message::RunOver { run });
+        }
+
+        // A new receiver, where the old one was reached: everything sent since arrives, in order.
+        let (_, moved, mut inbox) = TcpTransport::bind(any(), None).await.unwrap();
+        sender.set_peer(1, moved);
+        let mut got = Vec::new();
+        while got.len() < later.len()
+            && let Some(run) = received(&mut inbox).await
+        {
+            got.push(run);
+        }
+        assert_eq!(got, later);
     }
 }

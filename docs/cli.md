@@ -11,13 +11,30 @@ Run `namu --help` for the full command list. When working from source, use `carg
   - Syncs task dependencies into `Cargo.toml` and registry entries into `.cargo/config.toml`.
 - `namu publish --out-dir <dir>`
   - Uploads artifacts and workflow IR to the orchestrator.
-- `namu run <workflow_id> <version> [--wait]`
+- `namu run <workflow_id> <version> [--input NAME=VALUE]... [--wait]`
   - Creates a run; with `--wait`, waits and prints the status and results. Exits non-zero if the
     run did not succeed.
+  - `--input` gives a workflow parameter, once per parameter. The value is JSON (`limit=300`,
+    `tags=["a","b"]`, `id="42"` for a string of digits), or else a string (`collection=wikipedia`).
+    Inputs that do not fit the workflow are refused before the run starts.
 - `namu status <run_id>`
-  - Returns run status, results, failures, and task calls per worker.
+  - Returns run status, how many results and failures it has so far, and task calls per worker.
+- `namu results <run_id> [--follow] [--failures]`
+  - Prints the run's results (or failures), one JSON value per line, in the order they arrived.
+    With `--follow`, keeps printing them as they arrive until the run ends: an unbounded run's
+    results are only ever read this way. The API underneath is
+    `GET /runs/{id}/results?after=N&limit=M` (and `/failures`), pages with a `next` cursor.
+    With `&wait_ms=W`, a page that would be empty while the run goes on waits up to `W` ms
+    (30 s at most) for the next report or the run's end: `--follow` uses it, so each result
+    shows as soon as it is stored.
 - `namu workers`
   - Lists registered workers.
+- `namu token --role client|worker [--tokens FILE]`
+  - Makes an API token: prints it, and appends its hash to the orchestrator's tokens file.
+- `namu certs --out DIR [--host NAME]...`
+  - Makes a cluster CA and a member certificate, for development (`docs/operations/security.md`).
+
+Every command that reaches the orchestrator sends `NAMU_TOKEN`, and trusts `NAMU_TLS_CA` if set.
 - `namu login`
   - Stores orchestrator URL after a health check.
 

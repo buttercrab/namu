@@ -7,6 +7,7 @@
 //! `docs/design.md`.
 
 mod cluster;
+pub mod files;
 pub mod ids;
 pub mod kernel;
 pub mod log;
@@ -16,6 +17,7 @@ pub mod routes;
 pub mod run;
 pub mod scope;
 pub mod tasks;
+pub mod telemetry;
 pub mod transport;
 pub mod tree;
 mod worker;

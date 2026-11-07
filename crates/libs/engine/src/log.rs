@@ -5,7 +5,7 @@
 //! acknowledgements wait for that. Nothing reads the log on the common path: a successor reads a
 //! dead worker's estate, and workers read nodes whose holder is dead.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -93,6 +93,20 @@ pub enum Record {
         run: RunId,
         report: ReportRecord,
     },
+    /// The run's starter has stored branch `branch`'s report, and its end is in its scope: its
+    /// record goes.
+    ReportGone {
+        run: RunId,
+        branch: BranchId,
+    },
+    /// Every branch of `scope` before `below` has ended and is accounted for (the scope's
+    /// `settled_point`): their ends, from `from` on (the last point it was settled at), go.
+    Settled {
+        run: RunId,
+        scope: ScopeId,
+        from: u64,
+        below: u64,
+    },
     /// The run is over: everything about it can go.
     RunGone {
         run: RunId,
@@ -166,6 +180,9 @@ pub struct ScopeEstate {
     pub source: Option<Source>,
     /// How many branches the scope has, if known.
     pub count: Option<u64>,
+    /// Where it was last settled: every branch before it ended, accounted for.
+    pub settled: u64,
+    /// The ends since.
     pub ends: Vec<EndRecord>,
     /// How far its fold has got, if it folds: through which branch, and the accumulator there.
     pub folded: Option<(u64, Value)>,
@@ -185,19 +202,43 @@ pub trait Log: Send + Sync + 'static {
 
     async fn node(&self, run: RunId, id: NodeId) -> anyhow::Result<Option<Arc<Node>>>;
 
-    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>>;
+    /// What the log knows of `run`.
+    async fn run(&self, run: RunId) -> anyhow::Result<Logged>;
 
     /// Everything `worker` owned or held, per run, for its successor.
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>>;
 }
+
+/// What a log knows of a run.
+#[derive(Debug, Clone)]
+pub enum Logged {
+    /// It runs, as described.
+    Running(Arc<RunInfo>),
+    /// It ended, within [`ENDED_FOR`]: a `Start` for it comes from someone who has not heard,
+    /// and is not acted on.
+    Ended,
+    /// Never heard of, or ended long ago.
+    Unknown,
+}
+
+/// How long a log remembers that a run ended, once everything else about it is gone. A `Start`
+/// sent again (by a control plane that restarted, or to a dead owner's successor) must not run a
+/// run twice; it arrives within this, unless the control plane was down longer.
+pub const ENDED_FOR: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// A log in this process's memory: durable for as long as the process lives. It is what
 /// `LocalCluster` uses, which makes worker crashes testable in one process.
 #[derive(Debug, Default)]
 pub struct MemoryLog {
     runs: Mutex<HashMap<RunId, MemoryRun>>,
+    /// Runs that ended. Kept for as long as the process lives: it is for tests.
+    ended: Mutex<HashSet<RunId>>,
     /// The most nodes any run held at once.
     peak: std::sync::atomic::AtomicUsize,
+    /// The most reports any run held at once.
+    peak_reports: std::sync::atomic::AtomicUsize,
+    /// The most ends any scope held at once.
+    peak_ends: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Debug, Default)]
@@ -206,7 +247,7 @@ struct MemoryRun {
     nodes: HashMap<NodeId, Arc<Node>>,
     branches: HashMap<(WorkerId, BranchId, u64), Branch>,
     scopes: HashMap<ScopeId, ScopeEstate>,
-    reports: Vec<ReportRecord>,
+    reports: BTreeMap<BranchId, ReportRecord>,
     /// Nodes held after the last sweep.
     swept: usize,
 }
@@ -238,6 +279,16 @@ impl MemoryLog {
     /// The most nodes any run's log held at once.
     pub fn peak_nodes(&self) -> usize {
         self.peak.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The most reports any run's log held at once: those in flight, not every result.
+    pub fn peak_reports(&self) -> usize {
+        self.peak_reports.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The most ends any scope's log held at once: those since it last settled, not every one.
+    pub fn peak_ends(&self) -> usize {
+        self.peak_ends.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn apply(&self, records: Vec<Record>) {
@@ -287,6 +338,7 @@ impl MemoryLog {
                         continuation,
                         source,
                         count,
+                        settled: 0,
                         ends: Vec::new(),
                         folded: None,
                         feeds,
@@ -324,6 +376,19 @@ impl MemoryLog {
                     let run = runs.entry(run).or_default();
                     if let Some(scope) = run.scopes.get_mut(&scope) {
                         scope.ends.push(end);
+                        self.peak_ends
+                            .fetch_max(scope.ends.len(), std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                Record::Settled {
+                    run, scope, below, ..
+                } => {
+                    let scope = runs
+                        .get_mut(&run)
+                        .and_then(|run| run.scopes.get_mut(&scope));
+                    if let Some(scope) = scope {
+                        scope.settled = scope.settled.max(below);
+                        scope.ends.retain(|end| end.index >= below);
                     }
                 }
                 Record::Fed {
@@ -353,10 +418,19 @@ impl MemoryLog {
                     }
                 }
                 Record::Report { run, report } => {
-                    runs.entry(run).or_default().reports.push(report);
+                    let reports = &mut runs.entry(run).or_default().reports;
+                    reports.insert(report.branch, report);
+                    self.peak_reports
+                        .fetch_max(reports.len(), std::sync::atomic::Ordering::Relaxed);
+                }
+                Record::ReportGone { run, branch } => {
+                    if let Some(run) = runs.get_mut(&run) {
+                        run.reports.remove(&branch);
+                    }
                 }
                 Record::RunGone { run, .. } => {
                     runs.remove(&run);
+                    self.ended.lock().unwrap().insert(run);
                 }
             }
         }
@@ -377,9 +451,20 @@ impl Log for MemoryLog {
         Ok(runs.get(&run).and_then(|run| run.nodes.get(&id).cloned()))
     }
 
-    async fn run(&self, run: RunId) -> anyhow::Result<Option<Arc<RunInfo>>> {
-        let runs = self.runs.lock().unwrap();
-        Ok(runs.get(&run).and_then(|run| run.info.clone()))
+    async fn run(&self, run: RunId) -> anyhow::Result<Logged> {
+        if let Some(info) = self
+            .runs
+            .lock()
+            .unwrap()
+            .get(&run)
+            .and_then(|r| r.info.clone())
+        {
+            return Ok(Logged::Running(info));
+        }
+        Ok(match self.ended.lock().unwrap().contains(&run) {
+            true => Logged::Ended,
+            false => Logged::Unknown,
+        })
     }
 
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>> {
@@ -389,7 +474,7 @@ impl Log for MemoryLog {
             RunEstate {
                 info: run.info.clone(),
                 reports: match owns_run {
-                    true => run.reports.clone(),
+                    true => run.reports.values().cloned().collect(),
                     false => Vec::new(),
                 },
                 scopes: run

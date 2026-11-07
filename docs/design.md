@@ -55,6 +55,15 @@ the answer is to add machines while it runs.
 A Rust function annotated with `#[workflow]`. The macro reads its syntax and emits IR; the body
 never runs as Rust.
 
+Its parameters are the run's **inputs**: `fn index(limit: i32, collection: String)` is published
+once and run with any `limit` and `collection`. Rust types them, and in the body they are values
+like any other (a `mut` parameter is a variable loops can carry). A run binds each by name; the
+values sit in the run's root context, so every branch sees them, and they are logged with it, so
+recovery has them. Inputs are checked against the parameters' types before a run starts: through
+the API they arrive as JSON and are checked against the IR's types, as serde writes each type in
+JSON; in process they are Rust values, whose types are compared. A wrong, missing or unknown
+input refuses the run, rather than failing it halfway.
+
 ### 4.2 Control flow
 
 All structured control flow is supported: `if`/`else`, `match`, `while`, `break`, `continue`,
@@ -80,6 +89,13 @@ with no task call: a loop of arithmetic and comparisons never leaves its worker.
 `a + b` lowers to a generic helper over the operands' type, so `String - String` or `i32 < String`
 is a compile error, and the IR records the type, so the engine reads the operands exactly.
 Integer arithmetic is checked; an overflow or a division by zero fails the branch with a message.
+
+Field access, indexing and tuples work on values as they cross every boundary, MessagePack (a
+struct as a map of its fields, a tuple or a list as an array): a field is a range of its struct's
+bytes, found without decoding the rest, and a tuple is its parts' bytes under an array header.
+The generated code carries the access as Rust too (`field(b, page, "url", |v| &v.url)`), never
+run, so rustc checks the field exists and gives its type. `format!` takes `{}` and `{name}` over
+scalars, written as `Display` writes them.
 
 ### 4.4 Errors
 
@@ -178,6 +194,8 @@ come first, and no design decision may rule out unbounded streams.
   type may contain itself. They come from Rust: `Data` describes a type, `#[derive(Data)]` a
   struct's or enum's shape, and the builder records the type of every value it makes, so an
   untyped value cannot reach the IR.
+- A workflow's **inputs** are its parameters: a name and a value id each, typed like any value.
+  They are defined before the first op, in the root context.
 - The IR is versioned and language-neutral.
 
 ## 6. Execution model
@@ -399,7 +417,7 @@ the last durable point, and duplicates of recomputed work are recognized and dro
   when it continues after the collect.
 - A branch's **hop** counts its handoffs, so each stop of a branch on a worker is a distinct
   record.
-- **Scope owners drop a second `End` from the same branch, and run owners a second `Report`.**
+- **Scope owners drop a second `End` from the same branch, and a run's starter a second report.**
   So if recovery executes a branch again, it still counts once: effects on NAMU state are
   exactly-once, while task execution is at-least-once.
 
@@ -415,7 +433,7 @@ except the acknowledgement that releases the sender's copy.
 | Branch (context, resume point, scopes) | the worker holding it | when the branch arrives there |
 | Scope (the branch that opened it, its collect, its count if known) | the scope's owner | when it fans out; a stream's count when the stream ends |
 | End (branch index, collected item) | the scope's owner | when a branch ends in the scope |
-| Report (branch id, result or failure) | the run's owner | when a branch reports |
+| Report (branch id, result or failure) | the run's owner | when a branch reports; it goes once the run's starter has stored it and the branch's end is in its scope |
 | Nodes | whoever writes a record that refers to them | with that record |
 
 **Nodes are logged only when something durable refers to them.** A record refers to a context.
@@ -641,9 +659,9 @@ stopping the run.
 
 ## 11. Service API
 
-API-first: publish workflow and task versions; start runs (by API call, schedule, or event);
-query run status, events, and results; stream the results of unbounded runs.
-Auth and multi-tenancy come later, but the API shapes should not preclude them.
+API-first: publish workflow and task versions; start runs with their inputs (by API call,
+schedule, or event); query run status, events, and results; stream the results of unbounded
+runs. Auth and multi-tenancy come later, but the API shapes should not preclude them.
 
 ## 12. Performance targets
 
@@ -680,10 +698,12 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Dedup | ✅ Constants are hoisted into the root context. Every other op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor (§13 q7) |
 | Fan-out / fan-in | ✅ Type-driven via `IntoArg`, or explicit with `each`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine). Reduce: an ordered fold at the scope's owner as branches end, durable step by step. Window: every `n` items in branch order go on as a branch, over lists and unbounded streams (§4.5) | Windows by time; the log still keeps a reducing or windowed scope's items until it is over |
 | `return` in a branch | ✅ Ends the branch; before a collect it drops the item (filter) | |
+| Inputs | ✅ A workflow's parameters are its inputs: typed in the IR, bound by name when a run starts (a JSON object through `POST /runs` and `namu run --input`, Rust values in process), checked against their types first, and held in the root context (§4.1) | |
+| Results | ✅ Each report goes to the run's starter once its owner has logged it, kept until the starter has stored it, so results arrive as a run goes, an unbounded run's too; a successor sends again what it finds in the log, and the starter keeps each branch's report once. Read in pages with a cursor (`GET /runs/{id}/results`); a follower's page waits for the next report (`wait_ms`, a long poll), so it is told of each as soon as it is stored (`namu results --follow`) | |
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |
-| Expressions | ✅ Built-ins: `+ - * / %`, unary `-`, comparisons, `&& || !` and compound assignment on `bool`, integers, floats and strings (`+` concatenates), typed by rustc and evaluated in the kernel; checked integer arithmetic (§4.3) | Field and index access, tuples, string formatting |
+| Expressions | ✅ Built-ins: `+ - * / %`, unary `-`, comparisons, `&& || !` and compound assignment on `bool`, integers, floats and strings (`+` concatenates), typed by rustc and evaluated in the kernel; checked integer arithmetic; field access, indexing and tuples on MessagePack without decoding; `format!` over scalars (§4.3) | Formatting options; method calls (`len()`) |
 | Types | ✅ Every value in the IR has a type (`types`, by value id) and named types have their shapes (`defs`), from `Data` and `#[derive(Data)]` (§5) | Checked against task signatures at publish time; typed WIT task signatures; serde renames reflected in field names |
 | Errors in DSL | ✅ `match attempt(task(..)) { Ok(..) => .., Err(e) => .. }`: the call gets an error edge in the IR (§4.4); a failure nobody attempts drops the branch and is recorded in run failures | Typed errors: a task's own error type, not only its message |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
@@ -692,7 +712,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Streams | ✅ Fused with their fan-out, per-item credits at the source, resumable by position (§6.5). Guest streams yield no cursors yet; a resumed stream is reopened and skipped forward | Cursors from guest streams; windows for unbounded streams |
 | Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
 | Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v6; `#[task]` declares signatures only; `FnTasks` for in-process Rust | Typed WIT signatures with generated stubs; Python SDK |
-| Runtimes | ✅ Per-task `wasm`, `native` or `python`, routed by runtime and platform. Python: a pool of processes per task on the worker, speaking MessagePack frames, called as an async task (`sdk/python`) | Python streams and batches; a Python environment per task; containers, GPU |
-| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, and nodes no live record reaches are swept whenever a run's nodes double (§7.5) | Reports, which are the run's results, stay until it ends |
+| Runtimes | ✅ Per-task `wasm`, `native` or `python`, routed by runtime and platform. Python (`sdk/python`): single tasks, streams (with cursors), dynamic and continuous batches; calls in a pool of processes per task, called as an async task, and each stream or batch session in a process of its own, speaking MessagePack frames | A Python environment per task; containers, GPU |
+| Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, ends before the point a scope is settled at go while it lasts (an unbounded stream's too), and nodes no live record reaches are swept whenever a run's nodes double (§7.5)  A report goes once the run's starter (the control plane) has stored it and its branch's end is logged in its scope, so the log holds the reports in flight, not a run's results | |
 | Fan-in termination | ✅ Counting at scope owners: every branch of a scope is created by its owner, so it knows the count; ended indices are a watermark plus the out-of-order window | |
 | Membership | ✅ Join (register + heartbeats); a worker whose heartbeats stop is replaced by a successor (§7.4). Drain on SIGTERM (§10.4): routed around, branches move on at their next task call, stream sources stop at an item, and once nothing is in flight and everything is durable the worker leaves and its successor takes over its scopes from the log, with nothing run twice | Heartbeats tied to the registering process, not just its id |

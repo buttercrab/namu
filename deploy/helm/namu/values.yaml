@@ -1,0 +1,97 @@
+# NAMU on Kubernetes: one orchestrator, and workers that come and go while runs go on.
+# See docs/operations/kubernetes.md.
+
+image:
+  orchestrator:
+    repository: namu-orchestrator
+    tag: ""            # the chart's appVersion if empty
+  worker:
+    repository: namu-worker
+    tag: ""
+  pullPolicy: IfNotPresent
+
+# Redis (MemoryDB on AWS): the control plane's state and the workers' durable log. The URL, with
+# its password, comes from a Secret: `rediss://user:password@host:6379/`.
+redis:
+  existingSecret: namu-redis
+  key: url
+
+# Where task packages are kept: `s3://bucket/prefix` (give the orchestrator's service account
+# access, e.g. IRSA), or empty for a directory in the orchestrator's pod, lost with it.
+artifacts:
+  url: ""
+
+# The cluster's TLS: the API's HTTPS and the mesh's mutual TLS. A Secret with `ca.crt`, `tls.crt`
+# and `tls.key`, whose certificate names `namu.mesh` and the orchestrator's service (see
+# `orchestratorHosts` in NOTES). Or let cert-manager issue it from a CA issuer.
+tls:
+  existingSecret: namu-tls
+  certManager:
+    enabled: false
+    # A cert-manager Issuer or ClusterIssuer that signs with the cluster's CA.
+    issuerRef:
+      name: namu-ca
+      kind: Issuer
+    duration: 2160h      # 90 days
+    renewBefore: 360h
+    # Other names the API is reached by, e.g. a load balancer's.
+    extraDnsNames: []
+
+# API tokens: a Secret with `tokens` (the orchestrator's file of hashes, `namu token` makes its
+# lines) and `worker` (a worker token, in clear).
+tokens:
+  existingSecret: namu-tokens
+
+# Only for a cluster nobody else reaches: an open API and a plaintext mesh.
+insecure: false
+
+telemetry:
+  logFormat: json
+  metricsPort: 9100
+  # e.g. http://adot-collector.observability:4318
+  otlpEndpoint: ""
+  traceRatio: "1"
+
+orchestrator:
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { memory: 1Gi }
+  serviceAccount:
+    # e.g. eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/namu-orchestrator
+    annotations: {}
+  service:
+    type: ClusterIP
+    annotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+
+worker:
+  replicas: 3
+  runtimes: wasm,native,python
+  # Task calls at once per worker; the CPUs it gets if empty.
+  taskSlots: ""
+  resources:
+    requests: { cpu: "1", memory: 1Gi }
+    limits: { memory: 4Gi }
+  # How long a worker has to drain on SIGTERM (scale-down, spot interruption, rollout): it takes
+  # no new work, hands on what it holds, and leaves once everything is durable. A spot instance
+  # gives two minutes.
+  terminationGracePeriodSeconds: 110
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+  # At most this many workers drain at once in a voluntary disruption (node drains, upgrades).
+  maxUnavailable: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  extraEnv: []
+
+# Restrict the mesh port to NAMU's own pods (the cluster's network policy support must be on).
+networkPolicy:
+  enabled: false

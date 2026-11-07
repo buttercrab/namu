@@ -1,0 +1,20 @@
+NAMU is running: one orchestrator, {{ if .Values.worker.autoscaling.enabled }}{{ .Values.worker.autoscaling.minReplicas }} to {{ .Values.worker.autoscaling.maxReplicas }}{{ else }}{{ .Values.worker.replicas }}{{ end }} workers.
+
+The API is at {{ include "namu.orchestratorUrl" . }} inside the cluster. From your machine:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "namu.orchestrator" . }} 8080:8080
+  export NAMU_ORCH_URL={{ ternary "http" "https" .Values.insecure }}://localhost:8080
+{{- if not .Values.insecure }}
+  export NAMU_TLS_CA=<the cluster's CA certificate> NAMU_TOKEN=<a client token>
+{{- end }}
+  namu workers
+{{- if not .Values.insecure }}
+
+The orchestrator's certificate must name what clients reach it by: localhost (port-forward),
+{{ include "namu.orchestrator" . }}.{{ .Release.Namespace }}.svc (workers), and any load balancer's name.
+{{- end }}
+{{- if not .Values.artifacts.url }}
+
+artifacts.url is not set: task packages are kept in the orchestrator's pod, and lost with it.
+Set it to an S3 bucket for anything but a try.
+{{- end }}

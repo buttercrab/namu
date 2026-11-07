@@ -12,18 +12,18 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use namu_core::value::Value;
 
-use super::scopes::record_report;
 use super::view::View;
 use super::{Inner, Run};
 use crate::ids::{RunId, ScopeId, WorkerId, owner};
-use crate::log::{Record, ReportRecord, RunEstate, ScopeEstate};
+use crate::log::{Logged, Record, RunEstate, ScopeEstate};
 use crate::message::{Branch, End, FetchRun, Message, Reported};
 use crate::run::RunInfo;
-use crate::scope::{Continuation, Finish, Fold, Scope, Then};
+use crate::scope::{Continuation, Fold, Scope, Then};
 use crate::tree::Node;
 
 /// How long to wait before trying a failed log read again.
@@ -112,20 +112,16 @@ impl Inner {
         };
         let mut feeding = Vec::new();
         for scope in estate.scopes {
-            let reports = match scope.continuation {
-                None => estate.reports.as_slice(),
-                Some(_) => &[],
-            };
-            feeding.extend(self.adopt_scope(&run, scope, reports).await?);
+            feeding.extend(self.adopt_scope(&run, scope).await?);
         }
         // Once every scope is open here, the windows' scopes among them too.
         for scope in feeding {
             self.send_windows(&run, scope);
         }
-        // A reported branch whose end may not have reached its scope: end it again. The scope's
-        // owner counts it once.
+        // A report still in the log may not have reached the run's starter, nor its branch's end
+        // its scope: pass it on again. Each counts it once.
         for report in estate.reports {
-            self.send_end(&run, report.branch, None, None);
+            self.pass_on(&run, report.branch, report.report);
         }
         for branch in estate.branches {
             self.adopt_branch(&run, dead, branch);
@@ -138,7 +134,6 @@ impl Inner {
         self: &Arc<Self>,
         run: &Arc<Run>,
         estate: ScopeEstate,
-        reports: &[ReportRecord],
     ) -> anyhow::Result<Option<ScopeId>> {
         let id = estate.scope;
         if run.scopes.lock().unwrap().contains_key(&id) {
@@ -162,16 +157,13 @@ impl Inner {
                 Then::Continue { continuation, ctx }
             }
             None => {
-                // The root scope: this worker now collects the run's outcome.
-                let mut finish = Finish::default();
-                for report in reports {
-                    record_report(&mut finish, report.branch, report.report.clone());
-                }
-                *run.finish.lock().unwrap() = Some(finish);
+                // The root scope: the run's reports come here now.
+                run.root.store(true, Ordering::Release);
                 Then::Finish
             }
         };
         let mut scope = Scope::new(then, estate.count);
+        scope.settle(estate.settled);
         for end in estate.ends {
             scope.end(end.index, end.item);
         }
@@ -252,8 +244,10 @@ impl Inner {
             Message::FetchRun(FetchRun { run, reply_to }) => {
                 let (run, reply_to) = (*run, *reply_to);
                 return match self.log.run(run).await {
-                    Ok(Some(info)) => self.deliver(reply_to, Message::Run { info }),
-                    Ok(None) => self.deliver(reply_to, Message::RunOver { run }),
+                    Ok(Logged::Running(info)) => self.deliver(reply_to, Message::Run { info }),
+                    Ok(Logged::Ended | Logged::Unknown) => {
+                        self.deliver(reply_to, Message::RunOver { run })
+                    }
                     Err(err) => self.retry(message, run, err),
                 };
             }
@@ -262,9 +256,9 @@ impl Inner {
         let info = match self.run_state(run) {
             Some(state) => state.spec.info.clone(),
             None => match self.log.run(run).await {
-                Ok(Some(info)) => info,
+                Ok(Logged::Running(info)) => info,
                 // The run is over.
-                Ok(None) => return self.drop_late(message),
+                Ok(Logged::Ended | Logged::Unknown) => return self.drop_late(message),
                 Err(err) => return self.retry(message, run, err),
             },
         };
