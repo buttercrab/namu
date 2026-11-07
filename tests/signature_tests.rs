@@ -91,6 +91,27 @@ async fn a_call_that_does_not_fit_is_refused_before_anything_runs() {
     assert!(err.ends_with("result: `i32` is read as `String`"), "{err}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_must_fit_every_worker_that_serves_its_task() {
+    // Two workers serve `language`, and only one's takes a page: a call may go to either.
+    let fetch = |url: String| Ok::<_, String>(Page { url, words: 3 });
+    let fits = FnTasks::new()
+        .with("fetch", fetch)
+        .with("language", |doc: Doc| Ok::<_, String>(doc.url));
+    let other = FnTasks::new()
+        .with("fetch", fetch)
+        .with("language", |titled: Titled| Ok::<_, String>(titled.title));
+    let tasks: Vec<Arc<dyn Tasks>> = vec![Arc::new(fits), Arc::new(other)];
+    let err = LocalCluster::new(tasks)
+        .run(wf().to_serializable("wf".into()))
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("`Page` has no field `title`"),
+        "{err:#}"
+    );
+}
+
 #[derive(Serialize, Deserialize, namu::Describe)]
 #[serde(rename_all = "camelCase")]
 pub struct Camel {

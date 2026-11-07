@@ -154,3 +154,52 @@ class Signatures(unittest.TestCase):
             self.signature(source, "loose"),
             {"input": {"tuple": [{"named": ""}, page]}, "output": {"named": "Unknown"}, "defs": defs},
         )
+
+    def test_a_typed_dicts_keys_that_may_be_missing_are_options(self):
+        source = """
+            from typing import NotRequired, Required, TypedDict
+            import namu
+
+            class Partial(TypedDict, total=False):
+                url: str
+                words: Required[int]
+
+            class Query(TypedDict):
+                text: str
+                limit: NotRequired[int]
+
+            @namu.task
+            def search(query: Query, partial: Partial) -> None:
+                ...
+        """
+        i64 = {"int": {"bits": 64, "signed": True}}
+        self.assertEqual(
+            self.signature(source, "search")["defs"],
+            {
+                "tasks.Query": {"struct": [["text", "string"], ["limit", {"option": i64}]]},
+                "tasks.Partial": {"struct": [["url", {"option": "string"}], ["words", i64]]},
+            },
+        )
+
+
+class Values(unittest.TestCase):
+    def test_a_task_is_given_what_it_is_annotated_with(self):
+        import collections.abc
+        import dataclasses
+        from typing import Optional
+
+        from namu.worker import from_value, to_value
+
+        @dataclasses.dataclass
+        class Page:
+            url: str
+
+        page = {"url": "u"}
+        self.assertEqual(from_value(Optional[Page], page), Page("u"))
+        self.assertEqual(from_value(Page | None, page), Page("u"))
+        self.assertEqual(from_value(collections.abc.Sequence[Page], [page]), [Page("u")])
+        self.assertEqual(from_value(collections.abc.Mapping[str, Page], {"a": page}), {"a": Page("u")})
+        self.assertEqual(from_value(frozenset[int], [1, 2, 2]), frozenset({1, 2}))
+        self.assertEqual(from_value(set, [1]), {1})
+        self.assertEqual(from_value(bytearray, b"ab"), bytearray(b"ab"))
+        self.assertEqual(to_value({1, 2}), [1, 2])

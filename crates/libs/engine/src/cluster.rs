@@ -308,28 +308,34 @@ impl LocalCluster {
     }
 
     /// Checks `workflow`'s calls against the signatures of the tasks the workers serve, as the
-    /// orchestrator does when a workflow is published.
+    /// orchestrator does when a workflow is published. A call may be routed to any worker that
+    /// serves its task, so it must fit each one's.
     fn check(&self, workflow: &Workflow) -> anyhow::Result<()> {
-        let live = self.live();
-        let signatures: HashMap<&str, Signature> = workflow
+        let tasks: BTreeSet<&str> = workflow
             .operations
             .iter()
             .filter_map(Operation::task_id)
-            .filter_map(|id| {
-                let task = TaskRef {
-                    id: id.to_string(),
-                    version: String::new(),
-                };
-                let signature = live.iter().find_map(|worker| worker.signature(&task))?;
-                Some((id, signature))
-            })
             .collect();
-        let report = namu_core::signature::check(workflow, |task| signatures.get(task));
+        let mut problems = BTreeSet::new();
+        for worker in self.live() {
+            let signatures: HashMap<&str, Signature> = tasks
+                .iter()
+                .filter_map(|&id| {
+                    let task = TaskRef {
+                        id: id.to_string(),
+                        version: String::new(),
+                    };
+                    Some((id, worker.signature(&task)?))
+                })
+                .collect();
+            let report = namu_core::signature::check(workflow, |task| signatures.get(task));
+            problems.extend(report.problems);
+        }
         anyhow::ensure!(
-            report.problems.is_empty(),
+            problems.is_empty(),
             "workflow {} does not fit its tasks:\n{}",
             workflow.name,
-            report.problems.join("\n")
+            problems.into_iter().collect::<Vec<_>>().join("\n")
         );
         Ok(())
     }

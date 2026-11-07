@@ -17,11 +17,15 @@ unknown, and not checked.
     int                         i64
     float                       f64
     str, bool, bytes, None      String, bool, bytes, ()
-    list[T], Sequence[T], ...   Vec<T>
+    list[T], set[T], Sequence[T]    Vec<T>
     tuple[A, B]                 (A, B)        tuple[T, ...]   Vec<T>
     dict[K, V], Mapping[K, V]   Map<K, V>
     T | None, Optional[T]       Option<T>
-    a dataclass or TypedDict    a struct of its annotated fields, if defined in the module
+    a dataclass or TypedDict    a struct of its annotated fields, if defined in the module (a
+                                TypedDict's keys that may be missing as options)
+
+These are the annotations the worker reads values as (`namu.worker.from_value`), so what the
+signature says a task takes is what it is given.
 """
 
 from __future__ import annotations
@@ -44,7 +48,8 @@ SCALARS: dict[str, Type] = {
     "None": "unit",
     "NoneType": "unit",
 }
-LISTS = {"list", "List", "Sequence", "MutableSequence", "Iterable", "Collection", "set", "frozenset"}
+# As the worker reads them (`namu.worker.from_value`): a task is given what it is annotated with.
+LISTS = {"list", "List", "Sequence", "MutableSequence", "set", "Set", "frozenset", "FrozenSet"}
 MAPS = {"dict", "Dict", "Mapping", "MutableMapping"}
 ITERATORS = {"Iterator", "Iterable", "Generator", "AsyncIterator", "AsyncGenerator"}
 KINDS = {"task": "single", "stream": "stream", "batch": "batch", "continuous": "continuous"}
@@ -105,7 +110,7 @@ class Module:
             return {"option": self.type(args[0])}
         if outer == "Union":
             return self.union(args)
-        if outer == "Annotated":
+        if outer in ("Annotated", "Required", "NotRequired"):
             return self.type(args[0])
         return unknown(f"{outer}[{ast.unparse(arg)}]")
 
@@ -124,22 +129,33 @@ class Module:
         return unknown(" | ".join(ast.unparse(part) for part in flat))
 
     def named(self, cls: ast.ClassDef) -> Type:
-        """A dataclass or TypedDict as a struct of its fields, defined once."""
+        """A dataclass or TypedDict as a struct of its fields, defined once. A TypedDict's keys
+        that may be missing (`NotRequired[T]`, or any not `Required[T]` with `total=False`) are
+        options."""
         name = f"{self.name}.{cls.name}"
         record = any(name_of(d.func if isinstance(d, ast.Call) else d) == "dataclass" for d in cls.decorator_list)
-        record |= any(name_of(base) == "TypedDict" for base in cls.bases)
-        if not record:
+        typed_dict = any(name_of(base) == "TypedDict" for base in cls.bases)
+        if not (record or typed_dict):
             return unknown(name)
+        total = not any(
+            keyword.arg == "total" and isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+            for keyword in cls.keywords
+        )
         if name not in self.defs:
             self.defs[name] = {"struct": []}
-            fields = [
-                [stmt.target.id, self.type(stmt.annotation)]
-                for stmt in cls.body
-                if isinstance(stmt, ast.AnnAssign)
-                and isinstance(stmt.target, ast.Name)
-                and name_of(stmt.annotation.value if isinstance(stmt.annotation, ast.Subscript) else stmt.annotation)
-                != "ClassVar"
-            ]
+            fields = []
+            for stmt in cls.body:
+                if not (isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)):
+                    continue
+                annotation = stmt.annotation
+                wrapper = name_of(annotation.value) if isinstance(annotation, ast.Subscript) else None
+                if wrapper == "ClassVar":
+                    continue
+                ty = self.type(annotation)
+                required = {"Required": True, "NotRequired": False}.get(wrapper or "", total)
+                if typed_dict and not required and not (isinstance(ty, dict) and "option" in ty):
+                    ty = {"option": ty}
+                fields.append([stmt.target.id, ty])
             self.defs[name] = {"struct": fields}
         return {"named": name}
 
