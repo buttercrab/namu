@@ -82,6 +82,16 @@ pub fn doc_stats() -> Summary {
     summarize(stats)
 }
 
+/// `doc_stats`, with what it hard-codes given by the run: `namu run doc_stats_of 0.1.0 --input
+/// n=48 --input min_len=6 --input rounds=4000` gives `doc_stats`' result.
+#[workflow(id = "doc_stats_of")]
+pub fn doc_stats_of(n: i32, min_len: i32, rounds: i32) -> Summary {
+    let cfg = make_config(min_len, rounds);
+    let docs = split_docs(n);
+    let stats = analyze(docs, cfg);
+    summarize(stats)
+}
+
 /// Sequential loop of trivial WASM calls on one worker: measures per-step overhead.
 #[workflow(id = "bench_local")]
 pub fn bench_local() -> i64 {

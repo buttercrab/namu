@@ -30,6 +30,9 @@ PY
 }
 
 check doc_stats '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
+# The same, with what doc_stats hard-codes given as the run's inputs.
+INPUTS="n=48 min_len=6 rounds=4000" \
+  check doc_stats_of '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 # The same, with the summary folded document by document (a reduce) rather than collected.
 check doc_stats_reduced '{"status": "succeeded", "failures": 0, "docs": 48, "words": 30750, "checksum": 9482608591355693952}'
 # The summary written in Python, run by a pool of Python processes on the workers.
@@ -76,6 +79,20 @@ teardown() {
 }
 trap teardown EXIT
 # pids: redis, orchestrator, worker-1, worker-2, worker-3
+
+# Inputs that do not fit the workflow are refused before a run starts.
+if refused=$(NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
+  run doc_stats_of 0.1.0 --input n=lots --input min_len=6 2>&1); then
+  echo "a run with wrong inputs started: $refused" >&2
+  exit 1
+fi
+for problem in "400" "\`n\`: expected i32, got a string" "\`rounds\` (i32) is missing"; do
+  if [[ $refused != *"$problem"* ]]; then
+    echo "expected \"$problem\" in: $refused" >&2
+    exit 1
+  fi
+done
+echo "   ok: wrong inputs refused ($refused)"
 # Alongside it, a run that delivers a side effect per document, keyed by the call.
 NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
   run doc_stats_slow 0.1.0 --wait >"$crash_dir/crashed.json" &

@@ -28,10 +28,7 @@ exactly as many points as chunks were made, and asks the index three questions.
 
 ```rust
 #[workflow(id = "index_wikipedia")]
-pub fn index_wikipedia() -> IndexReport {
-    let limit = 300;
-    let words = 200;
-    let collection = "wikipedia";
+pub fn index_wikipedia(limit: i32, words: i32, collection: String) -> IndexReport {
     let article = articles(limit);              // a stream: a branch per article, as it arrives
     let chunks = chunk(article, words);         // Vec<Chunk>
     let embedded = embed(chunks);               // a branch per chunk; batched across all of them
@@ -49,6 +46,12 @@ pub fn index_wikipedia() -> IndexReport {
     let per_article = count_stored(stored);     // fan-in: chunks per article
     index_report(per_article)                   // fan-in: articles
 }
+```
+
+Its parameters are the run's inputs; `rag.sh` gives them:
+
+```bash
+namu run index_wikipedia 0.1.0 --input limit=300 --input words=200 --input collection=wikipedia --wait
 ```
 
 | Task | Runtime | What it does |

@@ -12,4 +12,6 @@ inventory = { workspace = true }
 bytes = { workspace = true }
 rmp-serde = { workspace = true }
 serde = { workspace = true }
+serde-transcode = "1.1"
 serde_bytes = "0.11"
+serde_json = { workspace = true }

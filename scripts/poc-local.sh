@@ -8,7 +8,8 @@
 # WORKERS is a space-separated list, one entry per worker, each a comma-separated list of
 # runtimes. TASKS_DIR and WORKFLOWS (the workflow crate) pick another example, e.g.
 # TASKS_DIR=examples/rag/tasks WORKFLOWS=namu-rag-workflows. RUNS=N runs the workflow N times (the first run includes cold start: artifact download
-# and WASM compilation). KEEP=1 leaves everything running afterwards.
+# and WASM compilation). KEEP=1 leaves everything running afterwards. INPUTS gives the workflow's
+# inputs, space-separated `name=value` pairs (as `namu run --input` takes them).
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,6 +24,11 @@ WORKFLOWS=${WORKFLOWS:-namu-distributed-workflows}
 RUNS=${RUNS:-1}
 POC_DIR=${POC_DIR:-$ROOT_DIR/data/poc}
 BIN="$ROOT_DIR/target/release"
+# What `namu run` is given after the workflow: never empty, which bash 3 refuses under `set -u`.
+run_args=(--wait)
+for input in ${INPUTS:-}; do
+  run_args+=(--input "$input")
+done
 
 PIDS=()
 
@@ -88,7 +94,7 @@ done
 
 for run in $(seq 1 "$RUNS"); do
   set +e
-  "$BIN/namu" run "$WORKFLOW" 0.1.0 --wait >"$POC_DIR/run-$run.json"
+  "$BIN/namu" run "$WORKFLOW" 0.1.0 "${run_args[@]}" >"$POC_DIR/run-$run.json"
   set -e
   python3 - "$POC_DIR/run-$run.json" "$run" <<'PY'
 import json, sys

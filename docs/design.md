@@ -55,6 +55,15 @@ the answer is to add machines while it runs.
 A Rust function annotated with `#[workflow]`. The macro reads its syntax and emits IR; the body
 never runs as Rust.
 
+Its parameters are the run's **inputs**: `fn index(limit: i32, collection: String)` is published
+once and run with any `limit` and `collection`. Rust types them, and in the body they are values
+like any other (a `mut` parameter is a variable loops can carry). A run binds each by name; the
+values sit in the run's root context, so every branch sees them, and they are logged with it, so
+recovery has them. Inputs are checked against the parameters' types before a run starts: through
+the API they arrive as JSON and are checked against the IR's types, as serde writes each type in
+JSON; in process they are Rust values, whose types are compared. A wrong, missing or unknown
+input refuses the run, rather than failing it halfway.
+
 ### 4.2 Control flow
 
 All structured control flow is supported: `if`/`else`, `match`, `while`, `break`, `continue`,
@@ -178,6 +187,8 @@ come first, and no design decision may rule out unbounded streams.
   type may contain itself. They come from Rust: `Data` describes a type, `#[derive(Data)]` a
   struct's or enum's shape, and the builder records the type of every value it makes, so an
   untyped value cannot reach the IR.
+- A workflow's **inputs** are its parameters: a name and a value id each, typed like any value.
+  They are defined before the first op, in the root context.
 - The IR is versioned and language-neutral.
 
 ## 6. Execution model
@@ -641,9 +652,9 @@ stopping the run.
 
 ## 11. Service API
 
-API-first: publish workflow and task versions; start runs (by API call, schedule, or event);
-query run status, events, and results; stream the results of unbounded runs.
-Auth and multi-tenancy come later, but the API shapes should not preclude them.
+API-first: publish workflow and task versions; start runs with their inputs (by API call,
+schedule, or event); query run status, events, and results; stream the results of unbounded
+runs. Auth and multi-tenancy come later, but the API shapes should not preclude them.
 
 ## 12. Performance targets
 
@@ -680,6 +691,7 @@ Auth and multi-tenancy come later, but the API shapes should not preclude them.
 | Dedup | ✅ Constants are hoisted into the root context. Every other op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor (§13 q7) |
 | Fan-out / fan-in | ✅ Type-driven via `IntoArg`, or explicit with `each`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine). Reduce: an ordered fold at the scope's owner as branches end, durable step by step. Window: every `n` items in branch order go on as a branch, over lists and unbounded streams (§4.5) | Windows by time; the log still keeps a reducing or windowed scope's items until it is over |
 | `return` in a branch | ✅ Ends the branch; before a collect it drops the item (filter) | |
+| Inputs | ✅ A workflow's parameters are its inputs: typed in the IR, bound by name when a run starts (a JSON object through `POST /runs` and `namu run --input`, Rust values in process), checked against their types first, and held in the root context (§4.1) | |
 | Phis | ✅ Applied in parallel (regression test `loop_phis_are_parallel_assignments`) | |
 | Literals | ✅ JSON text in the IR, decoded once per run; string literals are `String` | |
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |

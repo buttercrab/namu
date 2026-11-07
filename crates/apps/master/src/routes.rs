@@ -7,7 +7,10 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use bytes::Bytes;
+use namu_core::ValueId;
+use namu_core::inputs::Inputs;
 use namu_core::ir::Workflow;
+use namu_core::value::Value;
 use namu_engine::RunOutcome;
 use namu_engine::message::Message;
 use namu_engine::transport::Transport;
@@ -228,6 +231,12 @@ pub async fn create_run(
         .await
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "unknown workflow".to_string()))?;
+    // Inputs are checked before anything starts, and kept, for a successor that starts the run
+    // again.
+    let inputs = serde_json::to_string(&req.inputs).map_err(internal)?;
+    let bound = Inputs::from_json(req.inputs)
+        .bind(&start.0)
+        .map_err(bad_request)?;
     let workers: Vec<Member> = membership(&state)
         .await
         .map_err(internal)?
@@ -253,6 +262,7 @@ pub async fn create_run(
                 ("owner", owner.id.to_string()),
                 ("workflow_id", req.workflow_id.clone()),
                 ("version", req.version.clone()),
+                ("inputs", inputs),
                 ("created_at_ms", now_ms().to_string()),
             ],
         )
@@ -262,7 +272,7 @@ pub async fn create_run(
         .query_async(&mut redis)
         .await
         .map_err(internal)?;
-    send_start(&state, owner, run_id, start).map_err(internal)?;
+    send_start(&state, owner, run_id, start, bound).map_err(internal)?;
     Ok(Json(RunCreateResponse { run_id }))
 }
 
@@ -286,6 +296,7 @@ fn send_start(
     owner: &Member,
     run: Uuid,
     start: StartPayload,
+    inputs: Vec<(ValueId, Value)>,
 ) -> anyhow::Result<()> {
     let (workflow, task_versions) = start;
     state.mesh.set_peer(owner.id, owner.addr.parse()?);
@@ -294,6 +305,7 @@ fn send_start(
         Message::Start {
             run,
             workflow,
+            inputs,
             task_versions,
             reply_to: 0,
         },
@@ -360,8 +372,13 @@ pub async fn sweep(state: &AppState) -> anyhow::Result<()> {
             continue;
         };
         if let Some(start) = load_start(&mut redis, workflow_id, version).await? {
+            let inputs = match fields.get("inputs") {
+                Some(inputs) => serde_json::from_str(inputs)?,
+                None => serde_json::Map::new(),
+            };
+            let inputs = Inputs::from_json(inputs).bind(&start.0)?;
             let _: () = redis.hset(keys::run_state(run), "owner", successor).await?;
-            send_start(state, member, run, start)?;
+            send_start(state, member, run, start, inputs)?;
         }
     }
     Ok(())

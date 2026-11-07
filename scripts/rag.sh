@@ -72,9 +72,10 @@ curl -sf -X PUT "$QDRANT_URL/collections/wikipedia" -H 'Content-Type: applicatio
 echo "   collection wikipedia (384 dimensions, cosine) at $QDRANT_URL"
 
 # Every worker runs native tasks (the stream, the model, the store) and WASM ones (chunking).
+INPUTS="limit=$ARTICLES words=200 collection=wikipedia"
 cluster() {
   POC_DIR="$RUN_DIR" TASKS_DIR=examples/rag/tasks WORKFLOWS=namu-rag-workflows \
-    WORKFLOW=index_wikipedia WORKERS="wasm,native wasm,native wasm,native" "$@"
+    WORKFLOW=index_wikipedia WORKERS="wasm,native wasm,native wasm,native" INPUTS="$INPUTS" "$@"
 }
 
 echo "== index_wikipedia on 3 workers"
@@ -84,7 +85,8 @@ if [[ ${CHECK:-0} == 1 ]]; then
   KEEP=1 RUNS=1 cluster ./scripts/poc-local.sh >"$RUN_DIR.log" 2>&1
   read -r -a cluster_pids <<<"$(sed -n 's/^left running (pids: \(.*\))$/\1/p' "$RUN_DIR.log")"
   NAMU_ORCH_URL="http://127.0.0.1:${ORCH_PORT:-8090}" "$ROOT_DIR/target/release/namu" \
-    run index_wikipedia 0.1.0 --wait >"$RUN_DIR/crashed.json" &
+    run index_wikipedia 0.1.0 --input "limit=$ARTICLES" --input words=200 \
+    --input collection=wikipedia --wait >"$RUN_DIR/crashed.json" &
   run_pid=$!
   sleep 4
   kill -9 "${cluster_pids[3]}"

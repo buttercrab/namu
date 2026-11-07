@@ -12,7 +12,10 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use namu_core::ValueId;
+use namu_core::inputs::Inputs;
 use namu_core::ir::{Operation, Workflow};
+use namu_core::value::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 
@@ -35,7 +38,7 @@ pub struct LocalCluster {
     control: Arc<dyn Transport>,
     waiting: Arc<Mutex<HashMap<RunId, oneshot::Sender<RunOutcome>>>>,
     /// Runs that have not finished: who owns them and how to start them again.
-    running: Arc<Mutex<HashMap<RunId, (WorkerId, Workflow)>>>,
+    running: Arc<Mutex<HashMap<RunId, (WorkerId, Started)>>>,
     /// Workers draining: still running, but given no new work.
     leaving: Mutex<HashSet<WorkerId>>,
     dead: Arc<Dead>,
@@ -43,6 +46,13 @@ pub struct LocalCluster {
     tasks: Mutex<BTreeSet<TaskRef>>,
     next_owner: AtomicUsize,
     log: Arc<MemoryLog>,
+}
+
+/// A run as it was started: what its owner, or the owner's successor, starts it with.
+#[derive(Clone)]
+struct Started {
+    workflow: Workflow,
+    inputs: Vec<(ValueId, Value)>,
 }
 
 /// Workers that were killed: nothing they send or log arrives anywhere.
@@ -136,7 +146,7 @@ impl LocalCluster {
         routes.set_workers(workers.iter().map(Worker::id).collect());
 
         let waiting: Arc<Mutex<HashMap<RunId, oneshot::Sender<RunOutcome>>>> = Arc::default();
-        let running: Arc<Mutex<HashMap<RunId, (WorkerId, Workflow)>>> = Arc::default();
+        let running: Arc<Mutex<HashMap<RunId, (WorkerId, Started)>>> = Arc::default();
         let (control, mut inbox) = control;
         let (finished, over) = (waiting.clone(), running.clone());
         tokio::spawn(async move {
@@ -200,8 +210,15 @@ impl LocalCluster {
         Ok(())
     }
 
-    /// Runs `workflow` to completion.
+    /// Runs `workflow`, which takes no inputs, to its end.
     pub async fn run(&self, workflow: Workflow) -> anyhow::Result<RunOutcome> {
+        self.run_with(workflow, Inputs::new()).await
+    }
+
+    /// Runs `workflow` with `inputs` to its end. Inputs that do not match the workflow's
+    /// parameters are refused before anything runs.
+    pub async fn run_with(&self, workflow: Workflow, inputs: Inputs) -> anyhow::Result<RunOutcome> {
+        let inputs = inputs.bind(&workflow)?;
         let tasks = workflow
             .operations
             .iter()
@@ -219,18 +236,21 @@ impl LocalCluster {
         let run = RunId::new_v4();
         let (done, outcome) = oneshot::channel();
         self.waiting.lock().unwrap().insert(run, done);
+        let started = Started { workflow, inputs };
         self.running
             .lock()
             .unwrap()
-            .insert(run, (owner, workflow.clone()));
-        self.start(owner, run, workflow);
+            .insert(run, (owner, started.clone()));
+        self.start(owner, run, started);
         outcome.await.context("run abandoned")
     }
 
-    fn start(&self, owner: WorkerId, run: RunId, workflow: Workflow) {
+    fn start(&self, owner: WorkerId, run: RunId, started: Started) {
+        let Started { workflow, inputs } = started;
         let start = Message::Start {
             run,
             workflow,
+            inputs,
             task_versions: BTreeMap::new(),
             reply_to: CONTROL,
         };
@@ -265,19 +285,19 @@ impl LocalCluster {
         self.reroute()?;
         // As the orchestrator does: a run whose owner died before logging it starts again on the
         // successor, which ignores the start if it can take the run over from the log instead.
-        let orphaned: Vec<(RunId, Workflow)> = self
+        let orphaned: Vec<(RunId, Started)> = self
             .running
             .lock()
             .unwrap()
             .iter_mut()
             .filter(|(_, (owner, _))| *owner == worker)
-            .map(|(&run, (owner, workflow))| {
+            .map(|(&run, (owner, started))| {
                 *owner = successor;
-                (run, workflow.clone())
+                (run, started.clone())
             })
             .collect();
-        for (run, workflow) in orphaned {
-            self.start(successor, run, workflow);
+        for (run, started) in orphaned {
+            self.start(successor, run, started);
         }
         Ok(())
     }

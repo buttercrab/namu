@@ -4,6 +4,9 @@ The IR is a JSON description of a workflow, produced by `#[workflow]` and run by
 deterministic, compact, and language-agnostic.
 
 ## What it contains
+A workflow has **inputs**, its parameters: `{ "name": "limit", "output": 0 }` binds the value a run
+gives for `limit` to value `0`, in the root context, before the first operation.
+
 A workflow is a list of **operations**. Each operation does, in order:
 
 1. **Literals**: constants, as JSON text.

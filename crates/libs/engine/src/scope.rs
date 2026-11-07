@@ -370,7 +370,7 @@ mod tests {
             scopes: Arc::from([0]),
             collect: Some(9),
         };
-        let ctx = Arc::new(Node::root(0));
+        let ctx = Arc::new(Node::root(0, Vec::new()));
         Then::Feed {
             into: 1,
             continuation,

@@ -57,6 +57,10 @@ enum Commands {
     Run {
         workflow_id: String,
         version: String,
+        /// A value for a workflow parameter, `name=value`; repeat for each. The value is JSON
+        /// (`limit=300`, `tags=["a","b"]`), or else a string (`collection=wikipedia`).
+        #[arg(long = "input", value_name = "NAME=VALUE", value_parser = parse_input)]
+        inputs: Vec<(String, serde_json::Value)>,
         /// Wait for the run to finish and print its status and results
         #[arg(long)]
         wait: bool,
@@ -101,9 +105,10 @@ async fn main() {
         Commands::Run {
             workflow_id,
             version,
+            inputs,
             wait,
         } => {
-            run_workflow(&workflow_id, &version, wait).await;
+            run_workflow(&workflow_id, &version, inputs.into_iter().collect(), wait).await;
         }
         Commands::Status { run_id } => {
             run_status(&run_id).await;
@@ -525,7 +530,22 @@ async fn publish(out_dir: &Path) -> bool {
     ok
 }
 
-async fn run_workflow(workflow_id: &str, version: &str, wait: bool) {
+/// `name=value`, the value as JSON, or else as a string.
+fn parse_input(arg: &str) -> Result<(String, serde_json::Value), String> {
+    let (name, value) = arg
+        .split_once('=')
+        .ok_or_else(|| format!("expected NAME=VALUE, got {arg:?}"))?;
+    let value = serde_json::from_str(value)
+        .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+    Ok((name.to_string(), value))
+}
+
+async fn run_workflow(
+    workflow_id: &str,
+    version: &str,
+    inputs: serde_json::Map<String, serde_json::Value>,
+    wait: bool,
+) {
     let master_url = match get_master_url() {
         Ok(url) => url,
         Err(e) => {
@@ -539,6 +559,7 @@ async fn run_workflow(workflow_id: &str, version: &str, wait: bool) {
     let req = RunCreateRequest {
         workflow_id: workflow_id.to_string(),
         version: version.to_string(),
+        inputs,
     };
     let resp = match client
         .post(format!("{master_url}/runs"))

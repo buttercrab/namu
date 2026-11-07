@@ -17,6 +17,35 @@ fn demo() -> i32 {
 }
 ```
 
+## Inputs
+A workflow's parameters are its inputs: what a run gives it, so one published version serves any
+number of runs.
+
+```rust
+#[workflow]
+fn index(limit: i32, collection: String) -> IndexReport {
+    let article = articles(limit);
+    // ...
+}
+```
+
+A parameter is a plain name with a type (`mut` if loops reassign it). Runs give each by name:
+
+```bash
+namu run index 0.1.0 --input limit=300 --input collection=wikipedia --wait
+```
+
+```rust
+let inputs = namu::Inputs::new().with("limit", 300).with("collection", "wikipedia".to_string());
+cluster.run_with(index().to_serializable("index".into()), inputs).await?;
+```
+
+Inputs are checked before the run starts: a missing one, one the workflow does not have, or one of
+the wrong type is refused with what is wrong, e.g. ``invalid inputs: `limit`: expected i32, got a
+string``. Through the API, inputs are JSON, written as serde writes the type: a struct as an
+object (a missing `Option` field is `None`), a newtype as what it wraps, an enum's unit variant as
+its name and any other as `{"Variant": ..}`. Map inputs need string keys.
+
 ## Types
 The values passed between tasks are `namu::Data`: the standard types are, and your own derive it,
 which also gives the IR their shape:

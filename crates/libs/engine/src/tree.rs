@@ -98,12 +98,12 @@ struct Parent {
 }
 
 impl Node {
-    pub fn root(id: NodeId) -> Self {
+    pub fn root(id: NodeId, values: Vec<(ValueId, Value)>) -> Self {
         Self {
             id,
             parent: None,
-            values: Vec::new(),
-            lineage: OnceLock::from(Lineage::root(&[])),
+            lineage: OnceLock::from(Lineage::root(&values)),
+            values,
             encoded: OnceLock::new(),
         }
     }
@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn a_context_keeps_its_chain_and_nothing_else() {
         let nodes = Nodes::default();
-        let root = nodes.hold(Arc::new(Node::root(1)));
+        let root = nodes.hold(Arc::new(Node::root(1, Vec::new())));
         let kept = nodes.hold(Arc::new(Node::new(2, root.clone(), Vec::new())));
         let dropped = nodes.hold(Arc::new(Node::new(3, root, Vec::new())));
         drop(dropped);
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn nodes_that_arrive_link_to_their_parents() {
         let nodes = Nodes::default();
-        let root = nodes.hold(Arc::new(Node::root(1)));
+        let root = nodes.hold(Arc::new(Node::root(1, Vec::new())));
         let wire = rmp_serde::to_vec_named(&Node::new(2, root.clone(), Vec::new())).unwrap();
         let child: Node = rmp_serde::from_slice(&wire).unwrap();
         assert!(child.parent().is_none());
@@ -398,7 +398,7 @@ mod tests {
         }
         impl namu_core::value::Data for Counted {}
 
-        let root = Arc::new(Node::root(1));
+        let root = Arc::new(Node::root(1, Vec::new()));
         let node = Node::new(2, root, vec![(0, Value::new(Counted(7)))]);
         let first = rmp_serde::to_vec(&node).unwrap();
         let second = rmp_serde::to_vec(&node).unwrap();
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn a_long_chain_drops_without_recursion() {
-        let mut chain = Arc::new(Node::root(0));
+        let mut chain = Arc::new(Node::root(0, Vec::new()));
         for id in 1..300_000 {
             chain = Arc::new(Node::new(id, chain, Vec::new()));
         }
@@ -435,7 +435,7 @@ mod tests {
     fn lookups_jump_to_the_defining_node() {
         // A chain of 2,000 nodes, each defining a few of 50 values, so most values are
         // redefined (shadowed) many times.
-        let mut chain = Arc::new(Node::root(0));
+        let mut chain = Arc::new(Node::root(0, Vec::new()));
         let mut seed = 1u64;
         for id in 1..2000 {
             let values = (0..3)
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn a_chain_that_arrived_finds_once_it_is_held() {
-        let root = Arc::new(Node::root(1));
+        let root = Arc::new(Node::root(1, Vec::new()));
         let a = Arc::new(Node::new(2, root.clone(), vec![(7, Value::new(1i64))]));
         let b = Node::new(3, a.clone(), vec![(8, Value::new(2i64))]);
         let wire = |node: &Node| -> Node {

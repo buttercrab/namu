@@ -11,9 +11,12 @@ Run `namu --help` for the full command list. When working from source, use `carg
   - Syncs task dependencies into `Cargo.toml` and registry entries into `.cargo/config.toml`.
 - `namu publish --out-dir <dir>`
   - Uploads artifacts and workflow IR to the orchestrator.
-- `namu run <workflow_id> <version> [--wait]`
+- `namu run <workflow_id> <version> [--input NAME=VALUE]... [--wait]`
   - Creates a run; with `--wait`, waits and prints the status and results. Exits non-zero if the
     run did not succeed.
+  - `--input` gives a workflow parameter, once per parameter. The value is JSON (`limit=300`,
+    `tags=["a","b"]`, `id="42"` for a string of digits), or else a string (`collection=wikipedia`).
+    Inputs that do not fit the workflow are refused before the run starts.
 - `namu status <run_id>`
   - Returns run status, results, failures, and task calls per worker.
 - `namu workers`

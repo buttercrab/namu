@@ -7,8 +7,8 @@ use quote::{format_ident, quote};
 use syn::punctuated::Punctuated;
 use syn::visit_mut::{self, VisitMut};
 use syn::{
-    Block, Expr, ExprIf, ExprMatch, Ident, ItemFn, Pat, ReturnType, Stmt, Token, parse_macro_input,
-    parse_quote,
+    Block, Expr, ExprIf, ExprMatch, FnArg, Ident, ItemFn, Pat, PatIdent, ReturnType, Stmt, Token,
+    parse_macro_input, parse_quote,
 };
 
 struct WorkflowVisitor {
@@ -797,8 +797,16 @@ pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let builder_ident = format_ident!("__builder");
+    let inputs = match workflow_inputs(&func, &builder_ident) {
+        Ok(inputs) => inputs,
+        Err(err) => return err.to_compile_error().into(),
+    };
     let mut visitor = WorkflowVisitor::new(builder_ident.clone());
     visitor.enter_scope();
+    // A `mut` parameter is a variable loops carry, as a `let mut` is.
+    for input in inputs.iter().filter(|input| input.mutable) {
+        visitor.insert_var(input.name.clone());
+    }
     visitor.visit_block_mut(&mut func_body);
     visitor.exit_scope();
     if let Some(err) = visitor.error {
@@ -831,12 +839,15 @@ pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    let input_lets = inputs.iter().map(|input| &input.binding);
+
     let expanded = quote! {
         #[allow(unused_assignments)]
         #[allow(unused_braces)]
         #[allow(unused_mut)]
         pub fn #func_name() -> ::namu::__macro_exports::Graph<#return_type> {
             let #builder_ident = ::namu::__macro_exports::Builder::<#return_type>::new();
+            #(#input_lets)*
 
             #body_and_seal
 
@@ -856,4 +867,48 @@ pub fn workflow(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+/// A workflow parameter, which is one of its inputs.
+struct WorkflowInput {
+    name: Ident,
+    mutable: bool,
+    /// The `let` that binds the name to the input's value.
+    binding: proc_macro2::TokenStream,
+}
+
+/// The workflow's parameters. A parameter is a plain name with a type.
+fn workflow_inputs(func: &ItemFn, builder: &Ident) -> syn::Result<Vec<WorkflowInput>> {
+    func.sig
+        .inputs
+        .iter()
+        .map(|arg| {
+            let FnArg::Typed(arg) = arg else {
+                return Err(syn::Error::new_spanned(arg, "a workflow takes no `self`"));
+            };
+            let Pat::Ident(PatIdent {
+                ident,
+                mutability,
+                by_ref: None,
+                subpat: None,
+                ..
+            }) = &*arg.pat
+            else {
+                return Err(syn::Error::new_spanned(
+                    &arg.pat,
+                    "a workflow parameter is a plain name with a type: `name: Type`",
+                ));
+            };
+            let ty = &arg.ty;
+            let name = ident.to_string();
+            let binding = quote! {
+                let #mutability #ident = ::namu::__macro_exports::input::<#ty, _>(&#builder, #name);
+            };
+            Ok(WorkflowInput {
+                name: ident.clone(),
+                mutable: mutability.is_some(),
+                binding,
+            })
+        })
+        .collect()
 }

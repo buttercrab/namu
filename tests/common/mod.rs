@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use namu::Value;
 use namu::prelude::*;
+use namu_core::inputs::Inputs;
 use namu_core::ir::Workflow;
 use namu_engine::{FnTasks, LocalCluster, RunOutcome, Tasks};
 use serde_json::Value as Json;
@@ -131,20 +132,29 @@ impl Outcome {
 /// Runs `workflow` on one worker, on three, and on three talking over TCP, checks that all give
 /// the same outcome, and returns it.
 pub async fn run(workflow: Workflow) -> Outcome {
+    run_with(workflow, Inputs::new()).await
+}
+
+/// [`run`], with `inputs`.
+pub async fn run_with(workflow: Workflow, inputs: Inputs) -> Outcome {
     let tasks: Arc<dyn Tasks> = Arc::new(tasks());
     let one = LocalCluster::uniform(1, tasks.clone());
     let three = LocalCluster::uniform(3, tasks.clone());
     let tcp = LocalCluster::tcp(vec![tasks; 3])
         .await
         .expect("bind localhost");
-    let alone = sorted(one.run(workflow.clone()).await.expect("run on one worker"));
+    let alone = sorted(
+        one.run_with(workflow.clone(), inputs.clone())
+            .await
+            .expect("run on one worker"),
+    );
     let spread = sorted(
         three
-            .run(workflow.clone())
+            .run_with(workflow.clone(), inputs.clone())
             .await
             .expect("run on three workers"),
     );
-    let networked = sorted(tcp.run(workflow).await.expect("run over TCP"));
+    let networked = sorted(tcp.run_with(workflow, inputs).await.expect("run over TCP"));
     assert_eq!(alone, spread, "one worker and three workers disagree");
     assert_eq!(alone, networked, "in-process and TCP workers disagree");
     alone

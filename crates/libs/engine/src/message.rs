@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use namu_core::OpId;
 use namu_core::ir::Workflow;
 use namu_core::value::Value;
+use namu_core::{OpId, ValueId};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{Lineage, NodeId, RunId, ScopeId, WorkerId};
@@ -75,10 +75,12 @@ pub struct Delivery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
-    /// Start a run owned by the receiving worker; `Finished` goes to `reply_to` when it is over.
+    /// Start a run owned by the receiving worker, with its inputs bound to their values;
+    /// `Finished` goes to `reply_to` when it is over.
     Start {
         run: RunId,
         workflow: Workflow,
+        inputs: Vec<(ValueId, Value)>,
         task_versions: BTreeMap<String, String>,
         reply_to: WorkerId,
     },

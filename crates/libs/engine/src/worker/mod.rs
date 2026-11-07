@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
+use namu_core::ValueId;
 use namu_core::ir::Workflow;
+use namu_core::value::Value;
 use tokio::sync::{Notify, Semaphore, mpsc, oneshot, watch};
 
 use self::delivery::Outgoing;
@@ -236,12 +238,15 @@ impl Inner {
             Message::Start {
                 run,
                 workflow,
+                inputs,
                 task_versions,
                 reply_to,
             } => {
                 let worker = self.clone();
                 tokio::spawn(async move {
-                    worker.start(run, workflow, task_versions, reply_to).await;
+                    worker
+                        .start(run, workflow, inputs, task_versions, reply_to)
+                        .await;
                 });
             }
             Message::Finished { run, .. } => {
@@ -272,6 +277,7 @@ impl Inner {
         self: &Arc<Self>,
         id: RunId,
         workflow: Workflow,
+        inputs: Vec<(ValueId, Value)>,
         task_versions: BTreeMap<String, String>,
         reply_to: WorkerId,
     ) {
@@ -302,7 +308,8 @@ impl Inner {
         }
         let run = self.install_spec(spec);
 
-        let root = run.nodes.hold(Arc::new(Node::root(info.root)));
+        // The root context holds the run's inputs, so every branch sees them.
+        let root = run.nodes.hold(Arc::new(Node::root(info.root, inputs)));
         *run.finish.lock().unwrap() = Some(Finish::default());
         // The root scope has one branch: the run's root branch.
         let root_scope = Scope::new(Then::Finish, Some(1));

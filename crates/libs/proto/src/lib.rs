@@ -163,6 +163,9 @@ pub struct WorkflowUploadRequest {
 pub struct RunCreateRequest {
     pub workflow_id: String,
     pub version: String,
+    /// A value for each of the workflow's parameters, by name.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub inputs: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

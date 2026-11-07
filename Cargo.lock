@@ -1741,7 +1741,9 @@ dependencies = [
  "inventory",
  "rmp-serde",
  "serde",
+ "serde-transcode",
  "serde_bytes",
+ "serde_json",
 ]
 
 [[package]]
@@ -1766,7 +1768,6 @@ dependencies = [
  "namu-core",
  "rmp-serde",
  "serde",
- "serde-transcode",
  "serde_bytes",
  "serde_json",
  "tokio",

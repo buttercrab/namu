@@ -155,6 +155,45 @@ async fn a_run_survives_a_crash_at_any_moment() {
     }
 }
 
+/// A run's inputs live in its root context: a successor that takes the run over, or starts it
+/// again because its owner died before logging it, has them.
+#[tokio::test(flavor = "multi_thread")]
+async fn inputs_survive_the_owner_crashing_at_any_moment() {
+    #[workflow]
+    fn doubled_sum_of(start: i32, end: i32) -> i32 {
+        let xs = range(start, end);
+        let ys = slow(xs);
+        let zs = slow(ys);
+        sum(zs)
+    }
+
+    for delay in [0, 1, 5, 20, 50, 80] {
+        let marks = Arc::new(AtomicUsize::new(0));
+        let cluster = Arc::new(LocalCluster::new(vec![tasks(marks); 3]));
+        let run = tokio::spawn({
+            let cluster = cluster.clone();
+            let inputs = namu::Inputs::new().with("start", 1).with("end", 25);
+            async move {
+                let workflow = doubled_sum_of().to_serializable("doubled_sum_of".into());
+                cluster.run_with(workflow, inputs).await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        // The first run on a fresh cluster is owned by worker 1.
+        cluster.kill(1).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap_or_else(|_| panic!("stuck after killing the owner at {delay} ms"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            json(&outcome.results),
+            [json!(DOUBLED_SUM)],
+            "killing the owner at {delay} ms"
+        );
+    }
+}
+
 /// Like `tasks`, counting every call of `slow`.
 fn counted(calls: Arc<AtomicUsize>) -> Arc<dyn Tasks> {
     Arc::new(

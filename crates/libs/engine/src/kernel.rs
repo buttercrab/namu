@@ -23,14 +23,7 @@ impl Literals {
         let ops = workflow.operations.iter().map(|op| {
             op.literals
                 .iter()
-                .map(|literal| {
-                    let mut bytes = Vec::new();
-                    let mut json = serde_json::Deserializer::from_str(&literal.value);
-                    let mut msgpack = rmp_serde::Serializer::new(&mut bytes).with_struct_map();
-                    serde_transcode::transcode(&mut json, &mut msgpack)
-                        .with_context(|| format!("literal {:?} is not JSON", literal.value))?;
-                    Ok(Value::encoded(bytes))
-                })
+                .map(|literal| namu_core::json::decode(&literal.value))
                 .collect::<anyhow::Result<Vec<_>>>()
         });
         Ok(Self(ops.collect::<anyhow::Result<_>>()?))

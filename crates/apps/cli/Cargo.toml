@@ -9,6 +9,8 @@ description = "The NAMU command line: build task artifacts, publish workflows, a
 [[bin]]
 name = "namu"
 path = "src/main.rs"
+# Shares its name with the `namu` library, whose docs are the ones to build.
+doc = false
 
 [dependencies]
 anyhow = { workspace = true }

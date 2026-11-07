@@ -9,7 +9,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use namu_core::ValueId;
-use namu_core::ir::{BuiltinOp, ScalarType};
+use namu_core::ir::{BuiltinOp, Input, ScalarType};
 use namu_core::types::{Defs, Type};
 use namu_core::value::Data;
 use serde::Serialize;
@@ -24,6 +24,8 @@ struct BuilderInner {
     val_arena: ValueArena,
     blocks: Vec<BasicBlock>,
     current_block_id: BlockId,
+    /// The workflow's parameters, in order.
+    inputs: Vec<Input>,
     /// Each value's type, by value id, as it is made.
     types: Vec<Option<Type>>,
     defs: Defs,
@@ -47,6 +49,7 @@ impl<T> Builder<T> {
                 val_arena: ValueArena::default(),
                 blocks: vec![BasicBlock::default()],
                 current_block_id: 0,
+                inputs: Vec::new(),
                 types: Vec::new(),
                 defs: Defs::new(),
             }),
@@ -84,6 +87,15 @@ impl<T> Builder<T> {
         let current_block_id = inner.current_block_id;
         inner.blocks[current_block_id].instructions.push(node_id);
         outputs
+    }
+
+    /// Declares the workflow parameter `name` and returns its value, which a run gives.
+    pub fn input(&self, name: &str) -> ValueId {
+        let mut inner = self.inner.borrow_mut();
+        let output = inner.val_arena.new_value();
+        let name = name.to_string();
+        inner.inputs.push(Input { name, output });
+        output
     }
 
     pub fn call(&self, task_id: String, inputs: Vec<ValueId>, arity: usize) -> Vec<ValueId> {
@@ -177,7 +189,13 @@ impl<T> Builder<T> {
 
     pub fn build(self) -> Graph<T> {
         let inner = self.inner.into_inner();
-        Graph::new(inner.node_arena, inner.blocks, inner.types, inner.defs)
+        Graph::new(
+            inner.node_arena,
+            inner.blocks,
+            inner.inputs,
+            inner.types,
+            inner.defs,
+        )
     }
 }
 
@@ -287,6 +305,13 @@ pub fn reduce<G, A: Data, T>(
     let output = builder.reduce(task_id.to_string(), init, item.id);
     builder.typed::<A>(output);
     TracedValue::new(output)
+}
+
+/// The workflow parameter `name`, a `T`.
+pub fn input<T: Data, U>(builder: &Builder<U>, name: &str) -> TracedValue<T> {
+    let id = builder.input(name);
+    builder.typed::<T>(id);
+    TracedValue::new(id)
 }
 
 pub fn literal<T: Data + Debug, U>(builder: &Builder<U>, value: T) -> TracedValue<T> {

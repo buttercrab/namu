@@ -6,6 +6,10 @@ use crate::{OpId, ValueId};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Workflow {
     pub name: String,
+    /// What a run starts with: the workflow's parameters, in order. Their values are in the
+    /// run's root context before its first op.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Input>,
     pub operations: Vec<Operation>,
     /// Every value's type, by value id; empty in a workflow written without them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -19,11 +23,19 @@ impl Workflow {
     pub fn new(name: String, operations: Vec<Operation>) -> Self {
         Self {
             name,
+            inputs: Vec::new(),
             operations,
             types: Vec::new(),
             defs: Defs::new(),
         }
     }
+}
+
+/// A workflow parameter: a run gives it a value, by `name`, bound to `output`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Input {
+    pub name: String,
+    pub output: ValueId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
