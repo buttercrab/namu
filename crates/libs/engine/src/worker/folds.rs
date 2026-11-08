@@ -61,16 +61,14 @@ impl Inner {
                     run.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     output
                 }
-                None => Ok(Err(
-                    "not served by the worker that owns its scope".to_string()
-                )),
+                None => Ok(Err("not served by the worker that owns its scope".into())),
             };
             let accumulator = match output {
                 Ok(Ok(next)) => next,
                 // A step that fails drops its item, as a failed branch is dropped from a collect.
                 failed => {
                     let message = match failed {
-                        Ok(Err(message)) => message,
+                        Ok(Err(failure)) => failure.message,
                         Err(err) => format!("{err:#}"),
                         Ok(Ok(_)) => unreachable!(),
                     };

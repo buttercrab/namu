@@ -22,7 +22,7 @@ use crate::kernel::{self, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Report, Resume};
 use crate::scope::{Continuation, Fold, Position, Scope, Source, Then};
-use crate::tasks::{Args, CallKey, Kind, Stream, StreamTask, Task, TaskStream};
+use crate::tasks::{Args, CallKey, Failure, Kind, Stream, StreamTask, Task, TaskStream};
 use crate::tree::Node;
 
 impl Inner {
@@ -272,19 +272,19 @@ impl Inner {
         stream: &Stream,
         args: Args,
         key: CallKey,
-    ) -> anyhow::Result<Result<Value, String>> {
+    ) -> anyhow::Result<Result<Value, Failure>> {
         let _slot = self.task_slots.acquire().await?;
         let task = stream.task.clone();
         run_task(|| {
             let mut stream = match task.open(args, None, key)? {
                 Ok(stream) => stream,
-                Err(message) => return Ok(Err(message)),
+                Err(message) => return Ok(Err(message.into())),
             };
             let mut items = Vec::new();
             while let Some(item) = stream.next()? {
                 match item {
                     Ok(item) => items.push(item.value),
-                    Err(message) => return Ok(Err(message)),
+                    Err(message) => return Ok(Err(message.into())),
                 }
             }
             Ok(Ok(Value::list(items)))

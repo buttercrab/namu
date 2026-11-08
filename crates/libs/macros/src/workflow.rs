@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use darling::FromMeta;
 use darling::ast::NestedMeta;
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::punctuated::Punctuated;
 use syn::visit_mut::{self, VisitMut};
 use syn::{
@@ -511,30 +511,60 @@ impl WorkflowVisitor {
         self.two_way(id, [evaluate, seal], &mut if_expr.then_branch, else_expr)
     }
 
-    /// `match attempt(task(..)) { Ok(v) => .., Err(e) => .. }`: the call gets an error edge
-    /// (design §4.4). `v` is bound to its outputs where it succeeded, `e` to its error message
-    /// where it failed.
+    /// `match`: on an attempt (`match attempt(task(..)) { Ok(..) => .., Err(..) => .. }`), or on
+    /// an enum's variants.
     fn handle_match(&mut self, match_expr: &mut ExprMatch) -> Expr {
+        if match_expr
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident(ARMS))
+        {
+            return self.handle_arms(match_expr);
+        }
+        if attempted(&match_expr.expr).is_some() {
+            return self.handle_attempt(match_expr);
+        }
+        if let Some(arm) = match_expr
+            .arms
+            .iter()
+            .find(|arm| result_arm(&arm.pat).is_some())
+        {
+            self.fail(
+                &arm.pat,
+                "a task's failure is matched on through an attempt: \
+                 `match attempt(task(..)) { Ok(..) => .., Err(..) => .. }`",
+            );
+            return Expr::Match(match_expr.clone());
+        }
+        self.handle_enum_match(match_expr)
+    }
+
+    /// `match attempt(task(..)) { Ok(v) => .., Err(e) => .. }`: the call gets an error edge
+    /// (design §4.4). `v` is bound to its outputs where it succeeded, `e` to its error where it
+    /// failed: the task's own error value, if it fails with a type of its own, else its message.
+    /// Several `Err` arms match on the error's variants.
+    fn handle_attempt(&mut self, match_expr: &mut ExprMatch) -> Expr {
         const USAGE: &str =
             "only `match attempt(task(..)) { Ok(..) => .., Err(..) => .. }` is supported";
-        let Some(call) = attempted(&match_expr.expr) else {
-            self.fail(&match_expr.expr, USAGE);
-            return Expr::Match(match_expr.clone());
-        };
-        let mut call = call.clone();
-        let (mut ok, mut err) = (None, None);
+        let (call, task) = attempted(&match_expr.expr).expect("an attempt");
+        let (mut call, task) = (call.clone(), task.clone());
+        let (mut ok, mut errs) = (None, Vec::new());
         for arm in &match_expr.arms {
             let Some((variant, pat)) = result_arm(&arm.pat) else {
                 self.fail(&arm.pat, USAGE);
                 return Expr::Match(match_expr.clone());
             };
-            let slot = if variant == "Ok" { &mut ok } else { &mut err };
-            if slot.replace((pat.clone(), arm.body.clone())).is_some() {
-                self.fail(&arm.pat, "each of `Ok` and `Err` takes one arm");
+            if variant == "Err" {
+                errs.push(syn::Arm {
+                    pat: pat.clone(),
+                    ..arm.clone()
+                });
+            } else if ok.replace((pat.clone(), arm.body.clone())).is_some() {
+                self.fail(&arm.pat, "an attempt takes one `Ok` arm");
                 return Expr::Match(match_expr.clone());
             }
         }
-        let (Some((ok_pat, ok_body)), Some((err_pat, err_body))) = (ok, err) else {
+        let Some((ok_pat, ok_body)) = ok.filter(|_| !errs.is_empty()) else {
             self.fail(&match_expr, "an attempt needs an `Ok` arm and an `Err` arm");
             return Expr::Match(match_expr.clone());
         };
@@ -548,7 +578,11 @@ impl WorkflowVisitor {
         self.visit_expr_mut(&mut call);
         let evaluate = quote! { let #value = #call; };
         let seal = quote! {
-            let #error = ::namu::__macro_exports::catch(&#builder, #then_block, #else_block);
+            let #error = ::namu::__macro_exports::catch::<_, #task>(
+                &#builder,
+                #then_block,
+                #else_block,
+            );
         };
         let bind = |pat: &Pat, from: &Ident, body: &Expr| -> Block {
             match pat {
@@ -557,12 +591,125 @@ impl WorkflowVisitor {
             }
         };
         let mut ok_block = bind(&ok_pat, &value, &ok_body);
+        let err_block = match &errs[..] {
+            [arm] if catch_all(&arm.pat).is_some() => bind(&arm.pat, &error, &arm.body),
+            // The error is matched on, as an enum.
+            _ => {
+                let arms = errs.into_iter();
+                parse_quote!({ match #error { #(#arms)* } })
+            }
+        };
         let mut err_expr = Expr::Block(syn::ExprBlock {
             attrs: Vec::new(),
             label: None,
-            block: bind(&err_pat, &error, &err_body),
+            block: err_block,
         });
         self.two_way(id, [evaluate, seal], &mut ok_block, Some(&mut err_expr))
+    }
+
+    /// `match value { Enum::A => .., Enum::B(x) => .., Enum::C { f, .. } => .., _ => .. }`: a
+    /// split per arm, in order, on whether the value is the arm's variant (a built-in), whose
+    /// fields the arm binds. rustc checks the arms against the enum, in a match that never runs:
+    /// that they are its variants, and cover it.
+    fn handle_enum_match(&mut self, match_expr: &mut ExprMatch) -> Expr {
+        let id = self.new_control_flow_id();
+        let value = format_ident!("__match_{}", id);
+        let mut scrutinee = (*match_expr.expr).clone();
+        self.visit_expr_mut(&mut scrutinee);
+        let checks = match_expr.arms.iter().map(|arm| {
+            let pat = &arm.pat;
+            quote! { #pat => {} }
+        });
+        let mut arms = ExprMatch {
+            attrs: vec![parse_quote!(#[__namu_arms])],
+            expr: parse_quote!(#value),
+            ..match_expr.clone()
+        };
+        let lowered = self.handle_arms(&mut arms);
+        // Where rustc says what the arms miss: at the `match`.
+        let span = match_expr.match_token.span;
+        let check = quote_spanned! {span=>
+            #[allow(unused_variables, unreachable_patterns)]
+            ::namu::__macro_exports::check_arms(&#value, |__value| match __value {
+                #(#checks)*
+            });
+        };
+        parse_quote!({
+            let #value = #scrutinee;
+            #check
+            #lowered
+        })
+    }
+
+    /// The arms of an enum `match`, on the value `match_expr.expr` names: the first arm's split,
+    /// whose other side is the rest of the arms.
+    fn handle_arms(&mut self, match_expr: &mut ExprMatch) -> Expr {
+        let Expr::Path(value) = &*match_expr.expr else {
+            unreachable!("the arms are on a value the macro bound")
+        };
+        let value = value.path.get_ident().expect("a name").clone();
+        let Some((arm, rest)) = match_expr.arms.split_first() else {
+            self.fail(&match_expr, "a workflow's `match` needs an arm");
+            return Expr::Match(match_expr.clone());
+        };
+        let body = &arm.body;
+        if let Some(binding) = catch_all(&arm.pat) {
+            if let Some(next) = rest.first() {
+                self.fail(&next.pat, "arms after one that matches anything never run");
+                return Expr::Match(match_expr.clone());
+            }
+            let mut block: Expr = match binding {
+                Some(name) => parse_quote!({ let #name = #value; #body }),
+                None => parse_quote!({ #body }),
+            };
+            self.visit_expr_mut(&mut block);
+            return block;
+        }
+        let (variant, bindings) = match variant_arm(&arm.pat) {
+            Ok(arm) => arm,
+            Err(err) => {
+                self.error.get_or_insert(err);
+                return Expr::Match(match_expr.clone());
+            }
+        };
+        let builder = self.builder_ident.clone();
+        let name = variant.segments.last().expect("a path").ident.to_string();
+        let bind = bindings.iter().map(|(field, binding, part)| {
+            quote! {
+                #[allow(unreachable_patterns)]
+                let #binding = ::namu::__variant_part!(
+                    #builder,
+                    #value,
+                    #name,
+                    #field,
+                    |__value| match __value { #part => __part, _ => unreachable!() }
+                );
+            }
+        });
+        let mut then: Block = parse_quote!({ #(#bind)* #body });
+        // The last arm is what remains: rustc has checked that the arms cover the enum.
+        if rest.is_empty() {
+            let mut block = Expr::Block(syn::ExprBlock {
+                attrs: Vec::new(),
+                label: None,
+                block: then,
+            });
+            self.visit_expr_mut(&mut block);
+            return block;
+        }
+        let id = self.new_control_flow_id();
+        let (then_block, else_block, _) = two_way_blocks(id);
+        let evaluate = quote! {
+            let __if_condition = ::namu::__macro_exports::is_variant(&#builder, &#value, #name);
+        };
+        let seal = quote! {
+            ::namu::__macro_exports::branch(&#builder, __if_condition, #then_block, #else_block);
+        };
+        let mut others = Expr::Match(ExprMatch {
+            arms: rest.to_vec(),
+            ..match_expr.clone()
+        });
+        self.two_way(id, [evaluate, seal], &mut then, Some(&mut others))
     }
 
     /// Lowers a two-way split: `evaluate` (already visited) computes what decides it, which may
@@ -912,8 +1059,8 @@ fn two_way_blocks(id: usize) -> (Ident, Ident, Ident) {
     )
 }
 
-/// The call in `attempt(call)`.
-fn attempted(expr: &Expr) -> Option<&Expr> {
+/// The call in `attempt(call)`, and the path of the task it calls.
+fn attempted(expr: &Expr) -> Option<(&Expr, &syn::Path)> {
     let Expr::Call(outer) = expr else {
         return None;
     };
@@ -924,7 +1071,13 @@ fn attempted(expr: &Expr) -> Option<&Expr> {
         return None;
     }
     let call = &outer.args[0];
-    matches!(call, Expr::Call(_)).then_some(call)
+    let Expr::Call(inner) = call else {
+        return None;
+    };
+    let Expr::Path(task) = &*inner.func else {
+        return None;
+    };
+    Some((call, &task.path))
 }
 
 /// `Ok(pat)` or `Err(pat)`: the variant and the pattern inside.
@@ -938,6 +1091,98 @@ fn result_arm(pat: &Pat) -> Option<(&'static str, &Pat)> {
     match pat.elems.len() {
         1 => Some((variant, &pat.elems[0])),
         _ => None,
+    }
+}
+
+/// Marks a `match` the macro made of the arms left after a split, on a value already bound.
+const ARMS: &str = "__namu_arms";
+
+/// An arm's pattern that matches anything: `_` (`Some(None)`) or a name for the value (by Rust's
+/// naming, a name that starts with a capital is a unit variant instead).
+fn catch_all(pat: &Pat) -> Option<Option<&Ident>> {
+    match pat {
+        Pat::Wild(_) => Some(None),
+        Pat::Ident(PatIdent {
+            ident,
+            subpat: None,
+            by_ref: None,
+            ..
+        }) if !ident.to_string().starts_with(char::is_uppercase) => Some(Some(ident)),
+        _ => None,
+    }
+}
+
+/// A binding of a variant's field: the field (as written in Rust; a tuple variant's by position),
+/// the name it is bound to, and a pattern that binds it alone, as `__part`.
+type Binding = (String, Ident, proc_macro2::TokenStream);
+
+/// A variant pattern: the variant's path, and what it binds. Its fields are bound to names or
+/// left out (`_`, `..`); a pattern inside a field is not supported.
+fn variant_arm(pat: &Pat) -> syn::Result<(syn::Path, Vec<Binding>)> {
+    const FIELDS: &str = "a variant's fields are bound to names, or left out with `_` or `..`";
+    let named = |pat: &Pat| -> syn::Result<Option<Ident>> {
+        match pat {
+            Pat::Wild(_) => Ok(None),
+            Pat::Ident(PatIdent {
+                ident,
+                subpat: None,
+                by_ref: None,
+                ..
+            }) => Ok(Some(ident.clone())),
+            _ => Err(syn::Error::new_spanned(pat, FIELDS)),
+        }
+    };
+    match pat {
+        Pat::Path(path) => Ok((path.path.clone(), Vec::new())),
+        Pat::Ident(ident) if ident.subpat.is_none() => Ok((ident.ident.clone().into(), Vec::new())),
+        Pat::TupleStruct(tuple) => {
+            let path = &tuple.path;
+            let elems: Vec<&Pat> = tuple.elems.iter().collect();
+            let rest = elems.iter().position(|pat| matches!(pat, Pat::Rest(_)));
+            if rest.is_some_and(|at| at + 1 != elems.len()) {
+                return Err(syn::Error::new_spanned(
+                    pat,
+                    "`..` goes last in a variant's fields",
+                ));
+            }
+            let fields = &elems[..rest.unwrap_or(elems.len())];
+            let mut bindings = Vec::new();
+            for (index, field) in fields.iter().enumerate() {
+                let Some(name) = named(field)? else {
+                    continue;
+                };
+                let blanks = (0..fields.len()).map(|at| {
+                    if at == index {
+                        quote!(__part)
+                    } else {
+                        quote!(_)
+                    }
+                });
+                let part = quote! { #path(#(#blanks,)* ..) };
+                bindings.push((index.to_string(), name, part));
+            }
+            Ok((path.clone(), bindings))
+        }
+        Pat::Struct(fields) => {
+            let path = &fields.path;
+            let mut bindings = Vec::new();
+            for field in &fields.fields {
+                let syn::Member::Named(member) = &field.member else {
+                    return Err(syn::Error::new_spanned(field, FIELDS));
+                };
+                let Some(name) = named(&field.pat)? else {
+                    continue;
+                };
+                let part = quote! { #path { #member: __part, .. } };
+                bindings.push((member.to_string(), name, part));
+            }
+            Ok((path.clone(), bindings))
+        }
+        _ => Err(syn::Error::new_spanned(
+            pat,
+            "an arm of a workflow's `match` is a variant (`E::A`, `E::B(x)`, `E::C { f, .. }`), \
+             `_`, or a name",
+        )),
     }
 }
 

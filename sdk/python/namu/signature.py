@@ -54,6 +54,9 @@ MAPS = {"dict", "Dict", "Mapping", "MutableMapping"}
 ITERATORS = {"Iterator", "Iterable", "Generator", "AsyncIterator", "AsyncGenerator"}
 KINDS = {"task": "single", "stream": "stream", "batch": "batch", "continuous": "continuous"}
 
+#: Bases of an enum whose members cross by name.
+ENUMS = {"Enum", "StrEnum", "IntEnum"}
+
 
 def name_of(node: ast.expr) -> str | None:
     """`x` for `x` or `a.b.x`."""
@@ -131,10 +134,20 @@ class Module:
     def named(self, cls: ast.ClassDef) -> Type:
         """A dataclass or TypedDict as a struct of its fields, defined once. A TypedDict's keys
         that may be missing (`NotRequired[T]`, or any not `Required[T]` with `total=False`) are
-        options."""
+        options. An `enum.Enum` is an enum of unit variants, its members by name."""
         name = f"{self.name}.{cls.name}"
         record = any(name_of(d.func if isinstance(d, ast.Call) else d) == "dataclass" for d in cls.decorator_list)
         typed_dict = any(name_of(base) == "TypedDict" for base in cls.bases)
+        if any(name_of(base) in ENUMS for base in cls.bases):
+            members = [
+                target.id
+                for stmt in cls.body
+                if isinstance(stmt, ast.Assign)
+                for target in stmt.targets
+                if isinstance(target, ast.Name) and not target.id.startswith("_")
+            ]
+            self.defs[name] = {"enum": [[member, []] for member in members]}
+            return {"named": name}
         if not (record or typed_dict):
             return unknown(name)
         total = not any(
@@ -159,14 +172,18 @@ class Module:
             self.defs[name] = {"struct": fields}
         return {"named": name}
 
-    def task(self, task: str) -> tuple[str, ast.FunctionDef | ast.ClassDef]:
-        """The task named `task`, and what kind it is, from its decorator."""
+    def task(self, task: str) -> tuple[str, ast.FunctionDef | ast.ClassDef, ast.expr | None]:
+        """The task named `task`, what kind it is, and the type it fails with if it says
+        (`@namu.task(error=E)`), from its decorator."""
         for node in self.tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == task:
                 for decorator in node.decorator_list:
-                    kind = KINDS.get(name_of(decorator) or "")
+                    called = isinstance(decorator, ast.Call)
+                    kind = KINDS.get(name_of(decorator.func if called else decorator) or "")
                     if kind:
-                        return kind, node
+                        keywords = decorator.keywords if called else []
+                        error = next((k.value for k in keywords if k.arg == "error"), None)
+                        return kind, node, error
         raise SystemExit(f"{self.name} has no task {task} (a function decorated with @namu.task, ...)")
 
     def params(self, function: ast.FunctionDef) -> list[Type]:
@@ -178,7 +195,16 @@ class Module:
         return [self.type(param.annotation) for param in params]
 
     def signature(self, task: str) -> dict[str, Any]:
-        kind, node = self.task(task)
+        kind, node, error = self.task(task)
+        signature = self.shape(kind, node, task)
+        if error is not None:
+            signature["error"] = self.type(error)
+            if self.defs:
+                signature["defs"] = self.defs
+        return signature
+
+    def shape(self, kind: str, node: ast.FunctionDef | ast.ClassDef, task: str) -> dict[str, Any]:
+        """What the task takes and gives."""
         if kind == "continuous":
             assert isinstance(node, ast.ClassDef)
             step = next(

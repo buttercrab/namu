@@ -2246,6 +2246,7 @@ dependencies = [
 name = "namu-guest"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "namu-core",
  "namu-macros",
  "rmp-serde",

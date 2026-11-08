@@ -29,6 +29,16 @@ pub mod export {
     }
 }
 
+/// A field of a `match` arm's variant, as `#[workflow]` binds it (a macro, so the workflow macro
+/// leaves what is inside as it is).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __variant_part {
+    ($builder:ident, $value:ident, $variant:literal, $field:literal, $part:expr) => {
+        $crate::__macro_exports::variant_part(&$builder, &$value, $variant, $field, $part)
+    };
+}
+
 #[doc(hidden)]
 pub mod __macro_exports {
     pub use inventory;
@@ -36,10 +46,10 @@ pub mod __macro_exports {
     pub use namu_core::registry::WorkflowEntry;
     pub use namu_core::types::{Def, Defs, Describe, Type, named};
     pub use namu_flow::{
-        Builder, Graph, IntoArg, Node, NodeKind, TracedValue, arith, branch, call, call0, call1,
-        call2, call3, call4, call5, call6, call7, call8, call9, catch, compare, field, format,
-        format_arg, index, input, jump, literal, logic, negate, not, phi, plus, reduce,
-        return_unit, return_value, tuple, typed_like, window,
+        Builder, Graph, IntoArg, Node, NodeKind, Raises, TracedValue, arith, branch, call, call0,
+        call1, call2, call3, call4, call5, call6, call7, call8, call9, catch, check_arms, compare,
+        field, format, format_arg, index, input, is_variant, jump, literal, logic, negate, not,
+        phi, plus, reduce, return_unit, return_value, tuple, typed_like, variant_part, window,
     };
 }
 

@@ -53,6 +53,31 @@ other, and a float reads an integer: a value that does not fit fails its call. F
 names are serde's (`rename`, `rename_all`); a type whose shape serde changes in a way not modelled
 (`flatten`, `tag`, `untagged`, `default` on a field that is not an `Option`, ...) is not checked.
 
+## Errors
+A task that fails with `anyhow::Error` (`anyhow::Result<T>`) fails with a message. One that fails
+with a type of its own, which serializes, derives `Describe` and implements `Display`, gives that
+value to a workflow that attempts the call, beside its message (its `Display`):
+
+```rust
+#[derive(Serialize, Deserialize, namu_guest::Describe)]
+pub enum FetchError { NotFound, Moved(String), RateLimited { retry_after: u64 } }
+
+namu_guest::task! {
+    fn fetch(url: String) -> Result<Page, FetchError> { .. }
+}
+```
+
+The workflow declares it the same way (`#[task] fn fetch(url: String) -> Result<Page, FetchError>;`)
+and can match on its variants; `namu build` records the error type in the signature, and a
+workflow that catches another is refused. A dynamic batch task's items fail the same way
+(`Vec<Result<T, E>>`); a stream's and a continuous batch's errors are messages. A typed attempt
+catches only the error value: a trap or a panic fails the branch. In process,
+`FnTasks::raising("fetch", f)` registers a task whose `f` fails with a type of its own.
+
+A Python task declares it in its decorator, `@namu.task(error=FetchError)`, and raises
+`namu.Failed(error)`; anything else it raises is a message. An `enum.Enum` crosses as its members'
+names, so it reads as an enum of unit variants on the Rust side.
+
 ## Stream tasks
 A stream task yields its outputs one at a time, like a crawler or a reader over a large file:
 

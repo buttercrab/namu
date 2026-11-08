@@ -142,7 +142,11 @@ fn a_call_that_catches_its_failure_stays_in_the_branches() {
     let Some(Action::Call(load)) = &mut ops[1].action else {
         unreachable!()
     };
-    load.catch = Some(crate::ir::Catch { error: 9, next: 3 });
+    load.catch = Some(crate::ir::Catch {
+        error: 9,
+        next: 3,
+        typed: false,
+    });
     let wf = workflow(ops);
     assert_eq!(hoist(&wf, |_| SHAREABLE).unwrap(), wf);
 }

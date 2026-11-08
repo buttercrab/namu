@@ -4,10 +4,11 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use namu_core::raise::Raised;
 use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    Admitted, Args, BatchSession, BatchTask, CallKey, CallTask, Finished, StreamItem, StreamTask,
-    TaskStream,
+    Admitted, Args, BatchSession, BatchTask, CallKey, CallTask, Failure, Finished, StreamItem,
+    StreamTask, TaskStream,
 };
 use wasmtime::component::{Component, InstancePre, Linker, ResourceAny, ResourceTable, TypedFunc};
 use wasmtime::{Engine, Store};
@@ -27,7 +28,21 @@ impl WasiView for Host {
     }
 }
 
-type CallFunc = TypedFunc<(String, Vec<u8>), (Result<Vec<u8>, String>,)>;
+type CallFunc = TypedFunc<(String, Vec<u8>), (Result<Vec<u8>, WitFailure>,)>;
+
+/// `failure` of the `namu:task` WIT package: a task's own failure, as a component gives it.
+#[derive(wasmtime::component::ComponentType, wasmtime::component::Lift)]
+#[component(record)]
+struct WitFailure {
+    message: String,
+    error: Option<Vec<u8>>,
+}
+
+impl From<WitFailure> for Raised {
+    fn from(WitFailure { message, error }: WitFailure) -> Self {
+        Self { message, error }
+    }
+}
 
 /// A live instance. Instances are reused across calls, so a task keeps its state (e.g. a loaded
 /// model) between calls; an instance that traps is discarded.
@@ -72,7 +87,7 @@ impl WasmTask {
 }
 
 impl CallTask for WasmTask {
-    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
+    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, Failure>> {
         let input = encode_args(&args)?;
         let pooled = self.idle.lock().unwrap().pop();
         let mut instance = match pooled {
@@ -84,7 +99,7 @@ impl CallTask for WasmTask {
             .func
             .call(&mut instance.store, (key.to_string(), input.to_vec()))?;
         self.idle.lock().unwrap().push(instance);
-        Ok(super::output(result))
+        Ok(super::output(result.map_err(Raised::from)))
     }
 }
 
@@ -255,7 +270,13 @@ impl BatchSession for WasmSession {
             .map_err(|err| anyhow::anyhow!(err))?;
         Ok(finished
             .into_iter()
-            .map(|item| (item.id, super::output(item.output)))
+            .map(|item| {
+                let output = item.output.map_err(|failure| Raised {
+                    message: failure.message,
+                    error: failure.error,
+                });
+                (item.id, super::output(output))
+            })
             .collect())
     }
 }

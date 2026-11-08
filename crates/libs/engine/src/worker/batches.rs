@@ -15,9 +15,9 @@ use tokio::time::Instant;
 
 use super::Inner;
 use super::drive::run_task;
-use crate::tasks::{Admitted, Args, Batch, BatchPolicy, BatchSession, CallKey, TaskRef};
+use crate::tasks::{Admitted, Args, Batch, BatchPolicy, BatchSession, CallKey, Failure, TaskRef};
 
-type Outcome = anyhow::Result<Result<Value, String>>;
+type Outcome = anyhow::Result<Result<Value, Failure>>;
 
 /// The items waiting for one batch task's sessions on this worker.
 #[derive(Default)]
@@ -102,7 +102,7 @@ impl Inner {
                 match run_task(|| batch.task.clone().open()) {
                     Ok(Ok(opened)) => session = Some(opened),
                     Ok(Err(message)) => {
-                        fail_all(&mut active, |_| Ok(Err(message.clone())));
+                        fail_all(&mut active, |_| Ok(Err(message.clone().into())));
                         continue;
                     }
                     Err(err) => {

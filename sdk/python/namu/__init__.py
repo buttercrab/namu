@@ -26,7 +26,10 @@ lasts, so a model loaded once serves every step. Arguments and results cross as 
 between any two tasks: a struct is a map of its fields, and a parameter annotated with a
 dataclass gets one.
 
-- A task returns its output, or raises: its branch fails with the error.
+- A task returns its output, or raises: its branch fails with the error. A task that fails with
+  a type of its own declares it, `@namu.task(error=FetchError)`, and raises `namu.Failed(error)`:
+  a workflow that attempts the call gets the error value. Anything else it raises is a message,
+  which fails the branch of a workflow that attempts it typed.
 - A stream is a generator; each value it yields is an item. A stream that declares a keyword
   `cursor` can be reopened where it stopped: it yields `Item(value, cursor=...)`, and is given the
   last cursor when the engine opens it again after a crash.
@@ -46,17 +49,19 @@ import contextvars
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
 
-__all__ = ["task", "stream", "batch", "continuous", "Item", "call_key", "call_keys"]
+__all__ = ["task", "stream", "batch", "continuous", "Item", "Failed", "call_key", "call_keys"]
 
 T = TypeVar("T")
 
 
 @dataclass(frozen=True)
 class Task:
-    """A registered task: what it is (`single`, `stream`, `batch` or `continuous`) and its code."""
+    """A registered task: what it is (`single`, `stream`, `batch` or `continuous`), its code, and
+    the type it fails with, if it is one of its own."""
 
     kind: str
     code: Callable
+    error: Any = None
 
 
 #: Tasks by name, as the decorators register them.
@@ -66,14 +71,22 @@ _CALL_KEY: contextvars.ContextVar[str | None] = contextvars.ContextVar("namu_cal
 _CALL_KEYS: contextvars.ContextVar[list[str]] = contextvars.ContextVar("namu_call_keys", default=[])
 
 
-def _register(kind: str, code: T) -> T:
-    TASKS[code.__name__] = Task(kind, code)
+def _register(kind: str, code: T, error: Any = None) -> T:
+    TASKS[code.__name__] = Task(kind, code, error)
     return code
 
 
-def task(function: T) -> T:
-    """Registers `function` as the task of its name."""
-    return _register("single", function)
+def _registering(kind: str, code: Any, error: Any) -> Any:
+    """`@decorator` registers `code`; `@decorator(error=E)` returns what registers it."""
+    if code is None:
+        return lambda code: _register(kind, code, error)
+    return _register(kind, code, error)
+
+
+def task(function: T | None = None, *, error: Any = None) -> T:
+    """Registers `function` as the task of its name; `error` is the type it fails with, if it is
+    one of its own (it raises `Failed(error)`)."""
+    return _registering("single", function, error)
 
 
 def stream(generator: T) -> T:
@@ -81,14 +94,24 @@ def stream(generator: T) -> T:
     return _register("stream", generator)
 
 
-def batch(function: T) -> T:
-    """Registers a function from a list of inputs to a list of outputs as a batch task."""
-    return _register("batch", function)
+def batch(function: T | None = None, *, error: Any = None) -> T:
+    """Registers a function from a list of inputs to a list of outputs as a batch task; `error`
+    is the type an item fails with, if it is one of its own."""
+    return _registering("batch", function, error)
 
 
 def continuous(cls: T) -> T:
     """Registers a class with a `step` method as a continuous batch task."""
     return _register("continuous", cls)
+
+
+class Failed(Exception):
+    """Raised by a task that fails with a type of its own: `error` is the value an attempt of the
+    call gets, and `message` (by default, `str(error)`) what a failure reads as."""
+
+    def __init__(self, error: Any, message: str | None = None):
+        super().__init__(message if message is not None else str(error))
+        self.error = error
 
 
 @dataclass(frozen=True)

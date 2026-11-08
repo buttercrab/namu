@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 
 use namu_core::ValueId;
 use namu_core::ir::{BuiltinOp, Input, ScalarOp, ScalarType};
-use namu_core::types::{Defs, Type};
+use namu_core::types::{Def, Defs, Type};
 use namu_core::value::Data;
 use serde::Serialize;
 
@@ -59,9 +59,17 @@ impl<T> Builder<T> {
 
     /// Records that `value` is a `V`.
     pub fn typed<V: Data>(&self, value: ValueId) {
+        let ty = V::describe(&mut self.inner.borrow_mut().defs);
+        self.typed_as(value, ty, Defs::new());
+    }
+
+    /// Gives `value` the type `ty`, whose named types not described yet are in `defs`.
+    fn typed_as(&self, value: ValueId, ty: Type, defs: Defs) {
         let mut inner = self.inner.borrow_mut();
         let inner = &mut *inner;
-        let ty = V::describe(&mut inner.defs);
+        for (name, def) in defs {
+            inner.defs.entry(name).or_insert(def);
+        }
         if inner.types.len() <= value {
             inner.types.resize(value + 1, None);
         }
@@ -149,8 +157,9 @@ impl<T> Builder<T> {
     }
 
     /// Gives the call that ends the current block an error edge, and seals the block: control
-    /// goes to `ok` if the task succeeds, else to `err`. Returns the error message's value.
-    pub fn catch(&self, ok: BlockId, err: BlockId) -> ValueId {
+    /// goes to `ok` if the task succeeds, else to `err`. Returns the error's value: the task's own
+    /// error value if `typed`, else its message.
+    pub fn catch(&self, ok: BlockId, err: BlockId, typed: bool) -> ValueId {
         let error = {
             let mut inner = self.inner.borrow_mut();
             let inner = &mut *inner;
@@ -163,7 +172,12 @@ impl<T> Builder<T> {
             );
             inner.val_arena.new_value()
         };
-        self.seal_block(Terminator::Catch { ok, err, error });
+        self.seal_block(Terminator::Catch {
+            ok,
+            err,
+            error,
+            typed,
+        });
         error
     }
 
@@ -370,10 +384,24 @@ pub fn branch<T>(
     builder.seal_block(Terminator::branch(condition.id, true_target, false_target));
 }
 
-/// Ends the current block with the call just emitted, which may fail: see [`Builder::catch`].
-pub fn catch<T>(builder: &Builder<T>, ok: BlockId, err: BlockId) -> TracedValue<String> {
-    let error = builder.catch(ok, err);
-    builder.typed::<String>(error);
+/// What a task declared with `#[task]` fails with; the macro implements it on a type of the
+/// task's name.
+pub trait Raises {
+    /// What an attempt of it catches: its own error type, or its message (`String`).
+    type Error: Data;
+    /// Whether `Error` is its own error type, rather than its message.
+    const TYPED: bool;
+}
+
+/// Ends the current block with the call of `R` just emitted, which may fail: see
+/// [`Builder::catch`].
+pub fn catch<T, R: Raises>(
+    builder: &Builder<T>,
+    ok: BlockId,
+    err: BlockId,
+) -> TracedValue<R::Error> {
+    let error = builder.catch(ok, err, R::TYPED);
+    builder.typed::<R::Error>(error);
     TracedValue::new(error)
 }
 
@@ -512,6 +540,92 @@ pub fn field<G, T: Data, F: Data>(
     };
     shape(builder, op, vec![x.id])
 }
+
+/// An enum's variants by name, each with its fields, as [`Def::Enum`] holds them.
+type Variants = Vec<(String, Vec<(String, Type)>)>;
+
+/// The variants of the enum `E`, as serde names them, with their fields, and the named types
+/// they use; the enum must be one whose shape is modelled to be matched on.
+fn variants<E: Data>() -> (Variants, Defs) {
+    let mut defs = Defs::new();
+    let shape = match E::describe(&mut defs) {
+        Type::Named(name) => defs.get(&name).cloned(),
+        _ => None,
+    };
+    let Some(Def::Enum(variants)) = shape else {
+        panic!(
+            "a workflow cannot match on `{}`: it is not an enum whose shape NAMU knows (derive \
+             `Data` or `Describe`, and keep to serde's default, externally tagged, form)",
+            type_name::<E>()
+        )
+    };
+    (variants, defs)
+}
+
+/// Serde's name for `E`'s variant written `variant` in Rust, which must be one serde writes.
+fn variant_name<E: Data>(variant: &str) -> String {
+    let name = E::serde_name(variant, None).unwrap_or(variant);
+    assert!(
+        variants::<E>().0.iter().any(|(known, _)| known == name),
+        "`{}` has no variant `{variant}` that serde writes",
+        type_name::<E>()
+    );
+    name.to_string()
+}
+
+/// `match`: whether `value` is its enum's variant written `variant` in Rust.
+pub fn is_variant<G, E: Data>(
+    builder: &Builder<G>,
+    value: &TracedValue<E>,
+    variant: &str,
+) -> TracedValue<bool> {
+    let name = variant_name::<E>(variant);
+    shape(builder, BuiltinOp::Variant { name }, vec![value.id])
+}
+
+/// `match`: the field `field` of `value`'s variant `variant` (both as written in Rust; a tuple
+/// variant's fields by position), where `value` is that variant. `part` is the same access in
+/// Rust, never run: it is how rustc gives its type.
+pub fn variant_part<G, E: Data, T: Data>(
+    builder: &Builder<G>,
+    value: &TracedValue<E>,
+    variant: &str,
+    field: &str,
+    _part: fn(&E) -> &T,
+) -> TracedValue<T> {
+    let name = variant_name::<E>(variant);
+    let (variants, mut defs) = variants::<E>();
+    let fields = variants
+        .into_iter()
+        .find_map(|(known, fields)| (known == name).then_some(fields))
+        .unwrap_or_default();
+    // What a variant holds is its field of the variant's name; a newtype variant holds its one
+    // field itself, a tuple variant a tuple of them, and a struct variant a struct of them, named
+    // after it.
+    let positional = fields.iter().all(|(name, _)| name.parse::<usize>().is_ok());
+    let holds = BuiltinOp::Field { name: name.clone() };
+    if positional && fields.len() == 1 && field == "0" {
+        return shape(builder, holds, vec![value.id]);
+    }
+    let held = builder.builtin(holds, vec![value.id]);
+    let held_type = if positional {
+        Type::Tuple(fields.into_iter().map(|(_, ty)| ty).collect())
+    } else {
+        let variant = format!("{}::{name}", type_name::<E>());
+        defs.insert(variant.clone(), Def::Struct(fields));
+        Type::Named(variant)
+    };
+    builder.typed_as(held, held_type, defs);
+    let field = E::serde_name(variant, Some(field)).unwrap_or(field);
+    let op = BuiltinOp::Field {
+        name: field.to_string(),
+    };
+    shape(builder, op, vec![held])
+}
+
+/// `match`: what rustc checks of the arms, in a match that never runs: that their patterns are
+/// `E`'s, and cover it.
+pub fn check_arms<E>(_value: &TracedValue<E>, _arms: impl FnOnce(E)) {}
 
 /// `list[index]`. An index out of bounds fails the branch.
 pub fn index<G, T: Data>(

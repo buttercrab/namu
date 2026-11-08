@@ -159,10 +159,10 @@ let y = double(x);
 sum(y)                          // collects the rest
 ```
 
-- `match attempt(task(..))`: errors as values (below)
+- `match attempt(task(..))`: errors as values (below), and `match` on an enum's variants
 
 Not yet supported:
-- `match` on anything but an attempt
+- `match` on anything but an attempt or an enum (an `Option`, a number)
 - labeled `break` / `continue`, and `break` with a value
 
 ## Errors as values
@@ -177,8 +177,22 @@ let y = match attempt(fetch(x)) {
 };
 ```
 
-`Ok` binds the call's outputs (a tuple pattern for a task with several), `Err` its error message;
-either may be `_`. Both arms are needed, and they join afterwards like the arms of an `if`, so a
+`Ok` binds the call's outputs (a tuple pattern for a task with several), `Err` its error;
+either may be `_`. A task declared with an error type of its own,
+`fn fetch(url: String) -> Result<Page, FetchError>`, gives that value instead of its message, and
+the `Err` arms can match on its variants:
+
+```rust
+let page = match attempt(fetch(url)) {
+    Ok(page) => page,
+    Err(FetchError::NotFound) => placeholder(url),
+    Err(FetchError::Moved(to)) => fetch_again(to),
+    Err(FetchError::RateLimited { retry_after, .. }) => later(url, retry_after),
+};
+```
+
+A typed attempt catches only the task's own error. A failure with nothing of that type to give (a
+trap, a panic, a crashed process) fails the branch, as an unattempted failure does. Both arms are needed, and they join afterwards like the arms of an `if`, so a
 variable assigned in one arm has the right value after the `match`. Retries are a loop:
 
 ```rust
@@ -194,6 +208,23 @@ while less_than(tries, 3) {
 
 An attempt only catches the task's own failure. Crashes and lost workers are not errors a workflow
 sees: the engine recovers from them.
+
+## Matching on enums
+`match` works on any enum value, a task's result as well as an error, if the enum derives
+`namu::Data` (or `Describe`) and keeps to serde's default form:
+
+```rust
+match classify(doc) {
+    Kind::Spam => discard(doc),
+    Kind::Topic(name) => file_under(doc, name),
+    Kind::Mixed { topics, .. } => split(doc, topics),
+}
+```
+
+An arm is a variant, with its fields bound to names or left out (`_`, `..`), `_`, or a name for
+the value; rustc checks that the arms are the enum's and cover it. Variants are written with their
+path (`Kind::Spam`), or by a name that starts with a capital. Guards, `|` and patterns inside
+fields are not supported.
 
 ## Outputs
 Each `return` reached adds to the run's results. The run is `succeeded`, or `partial_failed` if any

@@ -1,4 +1,11 @@
 use namu_macros::{task, workflow};
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct task_a {}
+impl ::namu::__macro_exports::Raises for task_a {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn task_a<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     a: impl ::namu::__macro_exports::IntoArg<i32>,
@@ -7,6 +14,13 @@ fn task_a<G: 'static>(
         ::namu::__macro_exports::IntoArg::into_arg(a, __builder),
     ]);
     ::namu::__macro_exports::call(__builder, "task_a", __inputs)
+}
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct task_b {}
+impl ::namu::__macro_exports::Raises for task_b {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
 }
 fn task_b<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,

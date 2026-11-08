@@ -238,15 +238,29 @@ pub fn label_stats() -> std::collections::BTreeMap<String, usize> {
 #[task(single)]
 pub fn doc_id(doc: String) -> Result<i64>;
 
+/// Why a send did not go through: as `flaky_send` fails, a value a workflow matches on.
+#[derive(Clone, Debug, Serialize, Deserialize, namu::Data)]
+pub enum SendError {
+    Unavailable { attempt: i64 },
+    Refused(String),
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
 /// Turns down the first `id % 4` attempts for a document.
 #[task(single)]
-pub fn flaky_send(id: i64, attempt: i64) -> Result<i64>;
+pub fn flaky_send(id: i64, attempt: i64) -> Result<i64, SendError>;
 
 #[task(single)]
 pub fn retry_report(retries: Vec<i64>) -> Result<RetryReport>;
 
 /// Errors as values: every document goes to a flaky service, and its branch tries again until a
-/// send goes through (up to 5 tries). A failed send is matched on, not a failed branch.
+/// send goes through (up to 5 tries). A failed send is matched on by why it failed, not a failed
+/// branch: the service says which attempt it turned down.
 #[workflow(id = "retry_stats")]
 pub fn retry_stats() -> RetryReport {
     let n = 48;
@@ -257,7 +271,8 @@ pub fn retry_stats() -> RetryReport {
     while tries < 5 {
         match attempt(flaky_send(id, tries)) {
             Ok(_) => break,
-            Err(_) => retries += 1,
+            Err(SendError::Unavailable { attempt }) => retries = attempt + 1,
+            Err(SendError::Refused(_)) => break,
         }
         tries += 1;
     }

@@ -7,7 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::fmt::Display;
+use std::fmt::{self, Display};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use namu_core::OpId;
+use namu_core::raise::Raised;
 use namu_core::signature::Signature;
 use namu_core::types::{Defs, Type};
 use namu_core::value::{Data, Value, from_args};
@@ -207,11 +208,62 @@ impl Task {
     }
 }
 
-/// Errors, for every kind of task: `Ok(Err(message))` is the task's own failure, which fails its
-/// branch; `Err` is a failure of the machinery around it.
+/// A task's own failure: what went wrong, and, for a task that fails with a type of its own, the
+/// value it failed with, which an attempt of it catches. A failure with only a message (a crash,
+/// or a task that fails with messages) fails a branch that attempts a typed task.
+#[derive(Debug, Clone)]
+pub struct Failure {
+    pub message: String,
+    pub error: Option<Value>,
+}
+
+impl Failure {
+    /// The task failed with `error`, its own error value, which reads as `message`.
+    pub fn raised(message: impl Into<String>, error: Value) -> Self {
+        Self {
+            message: message.into(),
+            error: Some(error),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            error: None,
+        }
+    }
+}
+
+/// A failure as it crossed from a task: its error value, if it has one, stays MessagePack until
+/// something reads it.
+impl From<Raised> for Failure {
+    fn from(raised: Raised) -> Self {
+        Self {
+            message: raised.message,
+            error: raised.error.map(Value::encoded),
+        }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Errors, for every kind of task: `Ok(Err(failure))` is the task's own failure, which fails its
+/// branch unless the call is attempted; `Err` is a failure of the machinery around it.
 pub trait CallTask: Send + Sync {
     /// Runs the call named `key` on `args`.
-    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>>;
+    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, Failure>>;
 }
 
 /// A task the worker awaits rather than runs: one that mostly waits, on a model server, an API or
@@ -236,7 +288,7 @@ impl Async {
 
     /// Runs the call named `key`, once a place among its limit is free. `call_key()` gives the
     /// key inside it, wherever it runs.
-    pub async fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
+    pub async fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, Failure>> {
         let _permit = self.limit.acquire().await?;
         ASYNC_CALL_KEY.scope(key, self.task.call(args, key)).await
     }
@@ -245,7 +297,7 @@ impl Async {
 #[async_trait]
 pub trait AsyncTask: Send + Sync {
     /// Runs the call named `key` on `args`. Errors as for [`CallTask`].
-    async fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>>;
+    async fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, Failure>>;
 }
 
 pub trait StreamTask: Send + Sync {
@@ -296,8 +348,8 @@ pub struct Admitted {
     pub key: CallKey,
 }
 
-/// The items a batch step finished: each item's id, and its output or its own error.
-pub type Finished = Vec<(u64, Result<Value, String>)>;
+/// The items a batch step finished: each item's id, and its output or its own failure.
+pub type Finished = Vec<(u64, Result<Value, Failure>)>;
 
 /// How a batch task's sessions are run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,14 +438,39 @@ impl FnTasks {
         E: Display,
     {
         let call = move |args: Args| {
-            let input = from_args(args).map_err(|err| format!("bad input: {err:#}"))?;
-            f(input).map(Value::new).map_err(|err| err.to_string())
+            let input = from_args(args).map_err(bad_input)?;
+            f(input)
+                .map(Value::new)
+                .map_err(|err| err.to_string().into())
         };
         self.register(
             task,
             Kind::Call(Arc::new(FnCall(call))),
             signature::<I, O>(|o| o),
         )
+    }
+
+    /// Registers `task`, which fails with an error type of its own: an attempt of it catches the
+    /// error value, and the error's `Display` is its message.
+    pub fn raising<I, O, E>(
+        self,
+        task: &str,
+        f: impl Fn(I) -> Result<O, E> + Send + Sync + 'static,
+    ) -> Self
+    where
+        I: Data,
+        O: Data,
+        E: Data + Display,
+    {
+        let call = move |args: Args| {
+            let input = from_args(args).map_err(bad_input)?;
+            f(input)
+                .map(Value::new)
+                .map_err(|err| Failure::raised(err.to_string(), Value::new(err)))
+        };
+        let mut signature = signature::<I, O>(|o| o);
+        signature.error = Some(E::describe(&mut signature.defs));
+        self.register(task, Kind::Call(Arc::new(FnCall(call))), signature)
     }
 
     /// Registers an async task: `f` returns a future, which the worker awaits.
@@ -411,8 +488,11 @@ impl FnTasks {
         let call = FnAsync(move |args: Args| {
             let future = from_args::<I>(args).map(&f);
             async move {
-                let future = future.map_err(|err| format!("bad input: {err:#}"))?;
-                future.await.map(Value::new).map_err(|err| err.to_string())
+                let future = future.map_err(bad_input)?;
+                future
+                    .await
+                    .map(Value::new)
+                    .map_err(|err| err.to_string().into())
             }
         });
         let kind = Kind::Async(Async::new(Arc::new(call)));
@@ -550,19 +630,20 @@ fn signature<I: Data, O: Data>(output: impl FnOnce(Type) -> Type) -> Signature {
     let mut defs = Defs::new();
     let input = I::describe(&mut defs);
     let output = output(O::describe(&mut defs));
-    Signature {
-        input,
-        output,
-        defs,
-    }
+    Signature::new(vec![input], output, defs)
+}
+
+/// An input that does not fit: the call fails, as its task would.
+fn bad_input(err: anyhow::Error) -> Failure {
+    format!("bad input: {err:#}").into()
 }
 
 type Items = Box<dyn Iterator<Item = Result<Value, String>> + Send>;
 
 struct FnCall<F>(F);
 
-impl<F: Fn(Args) -> Result<Value, String> + Send + Sync> CallTask for FnCall<F> {
-    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
+impl<F: Fn(Args) -> Result<Value, Failure> + Send + Sync> CallTask for FnCall<F> {
+    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, Failure>> {
         Ok(with_key(key, || (self.0)(args)))
     }
 }
@@ -573,9 +654,9 @@ struct FnAsync<F>(F);
 impl<F, Fut> AsyncTask for FnAsync<F>
 where
     F: Fn(Args) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Value, String>> + Send,
+    Fut: Future<Output = Result<Value, Failure>> + Send,
 {
-    async fn call(&self, args: Args, _key: CallKey) -> anyhow::Result<Result<Value, String>> {
+    async fn call(&self, args: Args, _key: CallKey) -> anyhow::Result<Result<Value, Failure>> {
         Ok((self.0)(args).await)
     }
 }
@@ -626,7 +707,7 @@ where
                     keys.push(key);
                     items.push(item);
                 }
-                Err(err) => finished.push((id, Err(format!("bad input: {err:#}")))),
+                Err(err) => finished.push((id, Err(bad_input(err)))),
             }
         }
         if items.is_empty() {
@@ -635,8 +716,8 @@ where
         let outputs = match with_keys(keys, || (self.f)(items)) {
             Ok(outputs) => outputs,
             Err(err) => {
-                let message = err.to_string();
-                finished.extend(ids.into_iter().map(|id| (id, Err(message.clone()))));
+                let failure = Failure::from(err.to_string());
+                finished.extend(ids.into_iter().map(|id| (id, Err(failure.clone()))));
                 return Ok(finished);
             }
         };
@@ -646,11 +727,10 @@ where
             ids.len(),
             outputs.len()
         );
-        finished.extend(
-            ids.into_iter()
-                .zip(outputs)
-                .map(|(id, output)| (id, output.map(Value::new).map_err(|err| err.to_string()))),
-        );
+        finished.extend(ids.into_iter().zip(outputs).map(|(id, output)| {
+            let output = output.map(Value::new);
+            (id, output.map_err(|err| err.to_string().into()))
+        }));
         Ok(finished)
     }
 }
@@ -667,13 +747,13 @@ impl<C: Continuous> BatchSession for ContinuousSession<C> {
                     keys.push(key);
                     items.push((id, item));
                 }
-                Err(err) => finished.push((id, Err(format!("bad input: {err:#}")))),
+                Err(err) => finished.push((id, Err(bad_input(err)))),
             }
         }
         finished.extend(
             with_keys(keys, || self.0.step(items))
                 .into_iter()
-                .map(|(id, output)| (id, output.map(Value::new))),
+                .map(|(id, output)| (id, output.map(Value::new).map_err(Failure::from))),
         );
         Ok(finished)
     }
@@ -728,7 +808,7 @@ mod tests {
         assert!(tasks.task(&task("mul")).is_none());
         let sum = call("add", vec![Value::new(2), Value::new(3)]).unwrap();
         assert_eq!(sum.to::<i32>().unwrap(), 5);
-        assert_eq!(call("fail", vec![]).unwrap_err(), "no");
+        assert_eq!(call("fail", vec![]).unwrap_err().message, "no");
         assert!(call("add", vec![Value::new("x".to_string())]).is_err());
     }
 

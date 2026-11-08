@@ -1,4 +1,4 @@
-//! Runs tasks compiled as native shared libraries exporting the NAMU C ABI (version 6). Every
+//! Runs tasks compiled as native shared libraries exporting the NAMU C ABI (version 7). Every
 //! buffer the library hands over is owned by it and given back through `namu_task_free`.
 //!
 //! - A task exports `namu_task_call`, and runs exactly once per call.
@@ -6,17 +6,19 @@
 //! - A batch task exports `namu_batch_open`, `namu_batch_step` and `namu_batch_close`; a step's
 //!   items and results cross as one MessagePack document.
 //!
-//! Values cross as MessagePack; errors as text.
+//! Values cross as MessagePack. A call's or a batch item's failure crosses as MessagePack too,
+//! `[message, error]` (a [`Raised`]); a stream's or a session's errors as text.
 
 use std::ffi::c_void;
 use std::path::Path;
 use std::sync::Arc;
 
 use libloading::Library;
+use namu_core::raise::Raised;
 use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    Admitted, Args, BatchSession, BatchTask, CallKey, CallTask, Finished, StreamItem, StreamTask,
-    TaskStream,
+    Admitted, Args, BatchSession, BatchTask, CallKey, CallTask, Failure, Finished, StreamItem,
+    StreamTask, TaskStream,
 };
 use namu_proto::TASK_ABI_VERSION;
 use serde_bytes::ByteBuf;
@@ -85,6 +87,12 @@ fn take_error(free: FreeFn, ptr: *mut u8, len: usize) -> String {
     String::from_utf8_lossy(&take(free, ptr, len)).into_owned()
 }
 
+/// A call's failure the library handed over.
+fn take_failure(free: FreeFn, ptr: *mut u8, len: usize) -> anyhow::Result<Raised> {
+    let bytes = take(free, ptr, len);
+    rmp_serde::from_slice(&bytes).map_err(|err| anyhow::anyhow!("a task's failure: {err}"))
+}
+
 impl NativeTask {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let (lib, free) = load(path)?;
@@ -99,7 +107,7 @@ impl NativeTask {
 }
 
 impl CallTask for NativeTask {
-    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
+    fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, Failure>> {
         let input = encode_args(&args)?;
         let key = key.to_string();
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
@@ -116,7 +124,7 @@ impl CallTask for NativeTask {
         };
         Ok(super::output(match code {
             0 => Ok(take(self.free, out_ptr, out_len)),
-            _ => Err(take_error(self.free, out_ptr, out_len)),
+            _ => Err(take_failure(self.free, out_ptr, out_len)?),
         }))
     }
 }
@@ -268,7 +276,7 @@ impl BatchSession for NativeSession {
             anyhow::bail!("{}", take_error(self.task.free, out_ptr, out_len));
         }
         let output = take(self.task.free, out_ptr, out_len);
-        let finished: Vec<(u64, Result<ByteBuf, String>)> = rmp_serde::from_slice(&output)?;
+        let finished: Vec<(u64, Result<ByteBuf, Raised>)> = rmp_serde::from_slice(&output)?;
         Ok(finished
             .into_iter()
             .map(|(id, output)| (id, super::output(output.map(ByteBuf::into_vec))))

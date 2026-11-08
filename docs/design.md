@@ -100,9 +100,18 @@ scalars, written as `Display` writes them.
 ### 4.4 Errors
 
 A task call that fails ends its branch only; sibling branches continue. A workflow that wants to
-handle the failure attempts the call: `match attempt(task(x)) { Ok(v) => .., Err(e) => .. }`,
-where `e` is the task's error message. Retries, fallbacks and dead-letter handling are written in
-the DSL with it.
+handle the failure attempts the call: `match attempt(task(x)) { Ok(v) => .., Err(e) => .. }`.
+Retries, fallbacks and dead-letter handling are written in the DSL with it.
+
+A task fails with a message, or with a type of its own (`Result<T, FetchError>`): a value that
+crosses like any other, beside its message, and that an attempt of the call gets. Its `Err` arms
+can match on its variants (`Err(FetchError::RateLimited { retry_after }) => ..`), and `match`
+works on any enum a workflow has the same way: each arm is a split on a built-in that tells the
+variant, binding the variant's fields as field accesses, and rustc checks the arms against the
+enum, and that they cover it, in a match that never runs. A typed attempt catches only the task's
+own error: a failure with no error value (a trap, a panic, a Python process that dies, an input
+that does not fit) fails the branch, after its retries, as an unattempted failure does. The
+signature check reads the error type the workflow catches as the task's, by shape.
 
 In the IR an attempted call has an **error edge** (LLVM's `invoke`): on failure its outputs are
 not defined, the error is bound instead, and control goes to the handler. So an error is an
@@ -505,7 +514,7 @@ asynchronous; the receiver starts on the work immediately.
   at the fan-out, the item's index), so a fan-out done again after a crash (its scope not yet
   durable, so its scope and branch ids are minted anew) names its items' calls as before. Tasks
   read it in the guest
-  (`namu_guest::call_key()`, passed through the task ABI, version 6) or in process; a stream has
+  (`namu_guest::call_key()`, passed through the task ABI, version 7) or in process; a stream has
   its call's key, recorded with its source, for as long as it runs and whenever it is reopened;
   a batch step has the keys of its items (`call_keys()`).
 - **Long runs stay small.** With liveness-based placement (§6.2), dead nodes are freed, in the log
@@ -570,8 +579,9 @@ its **shape**:
 - **Rust tasks in process** (`FnTasks`): a task takes its input by type (the argument itself, a
   tuple for several, `()` for none) and its output is wrapped as a value. A task with several
   outputs returns a tuple, which splits into them.
-- **WASM and native tasks** (task ABI v6): the arguments cross as one MessagePack document (nil,
-  the argument, or an array), outputs as MessagePack, errors as text. The WIT types are
+- **WASM and native tasks** (task ABI v7): the arguments cross as one MessagePack document (nil,
+  the argument, or an array), outputs as MessagePack; a call's failure as its message and, if
+  the task fails with a type of its own, that value as MessagePack (a stream's errors are text). The WIT types are
   `list<u8>`; `namu-guest` does the encoding. Outputs stay encoded until a Rust task asks for a
   type.
 - **Wire and log**: mesh frames and log records are MessagePack. A node is encoded the first time
@@ -720,13 +730,13 @@ runs. Auth and multi-tenancy come later, but the API shapes should not preclude 
 | Values | ✅ The erased `Value` (§8): typed and shared in process, MessagePack at process boundaries; `Data` gives the engine a type's shape | An object store for large values |
 | Expressions | ✅ Built-ins: `+ - * / %`, unary `-`, comparisons, `&& || !` and compound assignment on `bool`, integers, floats and strings (`+` concatenates), typed by rustc and evaluated in the kernel; checked integer arithmetic; field access, indexing and tuples on MessagePack without decoding; `format!` over scalars (§4.3) | Formatting options; method calls (`len()`) |
 | Types | ✅ Every value in the IR has a type (`types`, by value id) and named types have their shapes (`defs`), from `Data` and `#[derive(Data)]` (§5), named as serde names them. Every call is checked against its task's signature when a workflow is published (and before an in-process run), by the shapes that cross: a task's own types derive `Describe` and `namu build` reads the signature from a native build; a Python task's is read from its annotations | Typed WIT task signatures; serde attributes beyond renames and skips (`flatten`, `tag`, field defaults) are left unchecked |
-| Errors in DSL | ✅ `match attempt(task(..)) { Ok(..) => .., Err(e) => .. }`: the call gets an error edge in the IR (§4.4); a failure nobody attempts drops the branch and is recorded in run failures | Typed errors: a task's own error type, not only its message |
+| Errors in DSL | ✅ `match attempt(task(..)) { Ok(..) => .., Err(e) => .. }`: the call gets an error edge in the IR (§4.4); a failure nobody attempts drops the branch and is recorded in run failures. A task fails with a message or a type of its own, which an attempt gets as a value and can match on by variant; `match` works on any enum (§4.4) | Typed errors from streams and continuous batches (their errors are messages); `match` on options, guards and nested patterns; retries that depend on the error |
 | Engine | ✅ One engine: workers, handoffs, scope owners, `Transport` trait. Every test runs on one worker, three in-process, and three over TCP | |
 | Distributed path | ✅ Peer-to-peer TCP mesh with a reliable session per pair of workers (sequence numbers, replay on reconnect); the orchestrator is peer 0 for run start and end only; a handoff carries the nodes the receiver needs (~50 µs locally) | Binary codec; QUIC (§10.2) |
 | Routing | ✅ To the least loaded worker that can take it, per task slot: each worker reports the branches it drives on the acknowledgements it sends, and a sender counts what it sent since. A worker that has not reported counts as idle; a branch waits for a server to join | Locality (holders of a context's nodes); packing batch items into one worker's batch; work stealing (§10.3) |
 | Streams | ✅ Fused with their fan-out, per-item credits at the source, resumable by position (§6.5). Guest streams yield no cursors yet; a resumed stream is reopened and skipped forward | Cursors from guest streams; windows for unbounded streams |
 | Batch | ✅ Sessions driven in steps: dynamic and continuous batching across branches and runs, `batch_size`, `max_wait`, `batch_slots` (§6.6) | Load-aware routing to fill one worker's batches first; several outputs per item |
-| Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v6, and exports the task's signature from a native build; `#[task]` declares signatures only; `FnTasks` for in-process Rust; the Python SDK | Typed WIT signatures with generated stubs |
+| Task boundary | ✅ `namu-guest` generates the WASM component (WIT) and native C ABI v7, and exports the task's signature from a native build; `#[task]` declares signatures only; `FnTasks` for in-process Rust; the Python SDK | Typed WIT signatures with generated stubs |
 | Runtimes | ✅ Per-task `wasm`, `native` or `python`, routed by runtime and platform. Python (`sdk/python`): single tasks, streams (with cursors), dynamic and continuous batches; calls in a pool of processes per task, called as an async task, and each stream or batch session in a process of its own, speaking MessagePack frames | A Python environment per task; containers, GPU |
 | Durability | ✅ Stable branch ids with owner-side dedup, upstream backup, write-behind log (Redis; in memory for `LocalCluster`), successors adopt dead workers' estates, checkpoint tasks, a call key per call for tasks with side effects (§7). The log holds a run's live frontier: a scope's ends, count and position go with it, ends before the point a scope is settled at go while it lasts (an unbounded stream's too), and nodes no live record reaches are swept whenever a run's nodes double (§7.5)  A report goes once the run's starter (the control plane) has stored it and its branch's end is logged in its scope, so the log holds the reports in flight, not a run's results | |
 | Fan-in termination | ✅ Counting at scope owners: every branch of a scope is created by its owner, so it knows the count; ended indices are a watermark plus the out-of-order window | |

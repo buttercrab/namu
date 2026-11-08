@@ -67,6 +67,9 @@ pub enum BuiltinOp {
     Tuple,
     /// `format!`: `pieces[0]`, then each input (a scalar) followed by the next piece.
     Format { pieces: Vec<String> },
+    /// Whether an enum is its variant `name` (as serde names it): a `bool`. What a variant holds
+    /// is its [`BuiltinOp::Field`] of the same name.
+    Variant { name: String },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -121,12 +124,16 @@ pub struct Call {
 }
 
 /// A call's error edge, as LLVM's `invoke` has one: if the task fails, its outputs are not
-/// defined; its error message is bound to `error`, and control goes to `next` instead of the
-/// call's own `next`.
+/// defined; its error is bound to `error`, and control goes to `next` instead of the call's own
+/// `next`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Catch {
     pub error: ValueId,
     pub next: OpId,
+    /// Whether it catches the task's own error value, of the type the task fails with, rather
+    /// than its message. A failure with no such value (a crash) then fails the branch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub typed: bool,
 }
 
 /// Fan-out: every element of the list `input` continues in its own child context, where it is

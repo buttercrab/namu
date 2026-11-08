@@ -1,14 +1,24 @@
-package namu:task@0.2.0;
+package namu:task@0.3.0;
 
-/// A NAMU task. Inputs and outputs are MessagePack documents: no arguments is nil, one argument
-/// is the value itself, and several arguments are an array. Errors are text. `key` names the
-/// call: the same each time the engine runs it again after a crash, so a task with side effects
-/// can make them once.
-world task {
-  export call: func(key: string, input: list<u8>) -> result<list<u8>, string>;
+interface types {
+  /// A task's own failure: its message, and, for a task that fails with a type of its own, that
+  /// error value as a MessagePack document, which an attempt of the call catches.
+  record failure {
+    message: string,
+    error: option<list<u8>>,
+  }
 }
 
-/// A stream task yields its outputs one at a time, as MessagePack documents.
+/// A NAMU task. Inputs and outputs are MessagePack documents: no arguments is nil, one argument
+/// is the value itself, and several arguments are an array. `key` names the call: the same each
+/// time the engine runs it again after a crash, so a task with side effects can make them once.
+world task {
+  use types.{failure};
+  export call: func(key: string, input: list<u8>) -> result<list<u8>, failure>;
+}
+
+/// A stream task yields its outputs one at a time, as MessagePack documents. Its errors are
+/// text: a failing item ends the stream.
 interface source {
   /// An open stream.
   resource items {
@@ -28,6 +38,8 @@ world stream-task {
 /// newly arrived items and gives back the ones it finished, in any order: all of them for dynamic
 /// batching, possibly fewer for continuous batching, where items stay across steps.
 interface batch {
+  use types.{failure};
+
   /// An item handed to a session: its id, its call's key (as `call` in the `task` world), and
   /// its input.
   record admitted {
@@ -36,10 +48,10 @@ interface batch {
     input: list<u8>,
   }
 
-  /// An item the session finished: its output, or its own error.
+  /// An item the session finished: its output, or its own failure.
   record finished {
     id: u64,
-    output: result<list<u8>, string>,
+    output: result<list<u8>, failure>,
   }
 
   resource session {

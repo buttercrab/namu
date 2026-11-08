@@ -1,4 +1,11 @@
 use namu_macros::{task, workflow};
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct less_than {}
+impl ::namu::__macro_exports::Raises for less_than {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn less_than<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     a: impl ::namu::__macro_exports::IntoArg<i32>,
@@ -9,6 +16,13 @@ fn less_than<G: 'static>(
         ::namu::__macro_exports::IntoArg::into_arg(b, __builder),
     ]);
     ::namu::__macro_exports::call(__builder, "less_than", __inputs)
+}
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct add {}
+impl ::namu::__macro_exports::Raises for add {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
 }
 fn add<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,

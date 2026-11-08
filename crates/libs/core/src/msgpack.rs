@@ -101,6 +101,16 @@ pub fn field(bytes: &[u8], name: &str) -> anyhow::Result<Option<Range<usize>>> {
     }
 }
 
+/// Which variant the enum in `bytes` is, as serde writes it: a unit variant as its name, any other
+/// as a map of its name to its contents.
+pub fn variant(bytes: &[u8]) -> anyhow::Result<&str> {
+    match head(bytes, 0)? {
+        (Head::Map(1), at) => key(bytes, at)?.context("an enum whose variant is not named"),
+        (Head::Bytes(_), _) => key(bytes, 0)?.context("an enum that is neither a name nor a map"),
+        _ => bail!("a variant of something that is not an enum"),
+    }
+}
+
 /// The string at `at`, if it is one.
 fn key(bytes: &[u8], at: usize) -> anyhow::Result<Option<&str>> {
     let marker = bytes[at];

@@ -68,7 +68,8 @@ artifact is refused.
 types. A Rust task says it itself: its types derive `namu_guest::Describe`, and `namu build`
 reads the signature from a build of the crate for the machine it runs on (for a WASM task, that
 is a second build). A Python task's is read from its annotations, by parsing the module without
-running it (see [Tasks](tasks.md#signatures)). It is not written by hand.
+running it (see [Tasks](tasks.md#signatures)). It is not written by hand. A task that fails with a
+type of its own records it as the signature's `error` (see [Tasks](tasks.md#errors)).
 
 When a workflow is published, every call in it is checked against the signature of the task
 version it pins, so a workflow that gives a task the wrong types is refused then, with where and
