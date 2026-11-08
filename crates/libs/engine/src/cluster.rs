@@ -25,7 +25,7 @@ use crate::log::{Durable, Log, Logged, MemoryLog, Record, RunEstate};
 use crate::message::{BranchId, Message, Report};
 use crate::routes::Routes;
 use crate::run::RunOutcome;
-use crate::tasks::{TaskRef, Tasks};
+use crate::tasks::{Kind, Task, TaskRef, Tasks};
 use crate::transport::{LocalTransport, MeshTls, TcpTransport, Transport};
 use crate::tree::Node;
 use crate::worker::Worker;
@@ -291,6 +291,7 @@ impl LocalCluster {
         self.tasks.lock().unwrap().extend(tasks);
         self.reroute()?;
         self.check(&workflow)?;
+        let workflow = self.share(&workflow)?;
 
         let live = self.live();
         let i = self.next_owner.fetch_add(1, Ordering::Relaxed);
@@ -338,6 +339,29 @@ impl LocalCluster {
             problems.into_iter().collect::<Vec<_>>().join("\n")
         );
         Ok(())
+    }
+
+    /// `workflow` with what every branch of a scope computes alike moved out of it (design
+    /// §6.1), as the orchestrator does for the runs of a published workflow. A task's calls are
+    /// shared only if every worker that serves it may share them.
+    fn share(&self, workflow: &Workflow) -> anyhow::Result<Workflow> {
+        let live = self.live();
+        namu_core::hoist::hoist(workflow, |id| {
+            let task = TaskRef {
+                id: id.to_string(),
+                version: String::new(),
+            };
+            let served: Vec<Task> = live
+                .iter()
+                .filter_map(|worker| worker.task(&task))
+                .collect();
+            namu_core::hoist::Task {
+                shareable: !served.is_empty() && served.iter().all(Task::shareable),
+                stream: served
+                    .iter()
+                    .any(|task| matches!(task.kind, Kind::Stream(_))),
+            }
+        })
     }
 
     fn start(&self, owner: WorkerId, run: RunId, started: Started) {

@@ -198,6 +198,13 @@ impl Task {
             retry: Retry::default(),
         }
     }
+
+    /// Whether one call of it can stand for every branch of a scope that makes it alike (design
+    /// §6.1): not one with side effects, each of whose calls counts, nor a stream, which feeds
+    /// its fan-out item by item.
+    pub fn shareable(&self) -> bool {
+        !self.checkpoint && !matches!(self.kind, Kind::Stream(_))
+    }
 }
 
 /// Errors, for every kind of task: `Ok(Err(message))` is the task's own failure, which fails its

@@ -25,7 +25,7 @@ use namu_engine::message::{BranchId, Delivery, Message, Report};
 use namu_engine::transport::{TcpTransport, Transport};
 use namu_proto::{
     MEMBERSHIP_TTL_MS, Member, Membership, Page, PageQuery, Published, RunCreateRequest, RunStatus,
-    RunStatusResponse, TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse,
+    RunStatusResponse, TaskKind, TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse,
     WorkflowUploadRequest,
 };
 use serde_json::Value as Json;
@@ -59,7 +59,9 @@ impl Mesh for TcpTransport {
 
 const LEASE: Duration = Duration::from_millis(MEMBERSHIP_TTL_MS);
 
-/// A published workflow version, as runs start it.
+/// A published workflow version, as runs start it: with what every branch of a scope computes
+/// alike moved out of the scope (design §6.1), decided by its tasks' manifests, which never
+/// change either.
 struct Version {
     workflow: Workflow,
     task_versions: BTreeMap<String, String>,
@@ -218,9 +220,23 @@ impl Control {
         let Some(upload) = self.store.workflow(id, version).await? else {
             return Ok(None);
         };
+        let workflow: Workflow = serde_json::from_value(upload.ir)
+            .with_context(|| format!("workflow {id}@{version} as stored"))?;
+        let mut tasks = HashMap::new();
+        for (task, task_version) in &upload.task_versions {
+            if let Some(manifest) = self.store.task(task, task_version).await? {
+                let known = namu_core::hoist::Task {
+                    shareable: manifest.shareable(),
+                    stream: manifest.task_kind == TaskKind::Stream,
+                };
+                tasks.insert(task.clone(), known);
+            }
+        }
         let parsed = Arc::new(Version {
-            workflow: serde_json::from_value(upload.ir)
-                .with_context(|| format!("workflow {id}@{version} as stored"))?,
+            workflow: namu_core::hoist::hoist(&workflow, |task| {
+                tasks.get(task).copied().unwrap_or_default()
+            })
+            .with_context(|| format!("workflow {id}@{version} as stored"))?,
             task_versions: upload.task_versions.into_iter().collect(),
         });
         self.versions.lock().unwrap().insert(key, parsed.clone());

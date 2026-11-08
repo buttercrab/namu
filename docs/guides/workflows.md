@@ -78,6 +78,10 @@ summarize(stats)                 // summarize(stats: Vec<Stats>): collect every 
 - A `Vec<T>` passed where a task takes `T` fans out. Everything after it runs once per item.
 - A per-item value passed where a task takes `Vec<T>` collects the surviving branches.
 - Values from before the fan-out (like `cfg`) are shared by every branch.
+- A call every branch makes from values from before the fan-out is made once, for all of them,
+  as if it had been written before it: `load_model(path)` after `analyze(docs, cfg)` loads the
+  model once. Not one only some branches make (behind an `if`), nor a checkpoint or stream
+  task's.
 - A failed branch is dropped from the collect, and the run ends `partial_failed`.
 
 To fold the items instead of collecting them all, call a reduce task with a first accumulator

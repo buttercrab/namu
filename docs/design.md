@@ -224,10 +224,22 @@ let r = g(m, bs);      // g(M, i32): fan-out -> computed per branch (3 times, in
 ```
 
 **Placement rule (level 2 dedup):** an op's result is attached to the context at the depth of its
-deepest input, never to the leaf that happens to request it. The first branch that needs a value
-triggers its computation. Sibling branches wait on the same pending value, so it is computed once
-for each distinct ancestor. This covers loop-invariant work inside a fan-out, such as loading a
-model or fetching a schema.
+deepest input, never to the leaf that happens to request it, so it is computed once for each
+distinct ancestor. This covers loop-invariant work inside a fan-out, such as loading a model or
+fetching a schema.
+
+It is decided before a run, not between siblings while it goes (`namu_core::hoist`). A call or
+built-in inside a fan-out whose inputs all come from outside it, and that every branch makes, is
+moved to just before the fan-out, as if it had been written there; scopes are left one at a time
+until nothing moves. The scope's context then holds the value, and every branch reads it through
+its parent, so the tree stays immutable and the engine needs nothing new. Being moved, it runs
+once even for a scope with no items, and if it fails, the branch that fans out fails. It stays in
+the branches when some branch may not make it (behind an `if`, or after a `return` that drops the
+item), when it catches its own failure (`attempt`), and when its task is a checkpoint, each of
+whose calls counts, or a stream, which would no longer feed its fan-out item by item. Tasks are
+otherwise functions of their inputs. The orchestrator moves what its tasks' manifests allow when a
+published version is first run (`LocalCluster` before every run), so every run of a version, and
+its recovery, sees the same operations.
 
 Only **fan-out** (lists and streams passed where an element is expected) creates sibling contexts. `if`/`else`,
 `match` and `while` are ordinary control flow inside a single context: they add new immutable
@@ -686,9 +698,7 @@ runs. Auth and multi-tenancy come later, but the API shapes should not preclude 
 4. Windowing semantics for unbounded streams.
 5. Type system: how Rust and Python type information is represented and checked in the IR.
 6. Upgrading a task or workflow version while a long run is in progress.
-7. Level-2 dedup at compile time: hoisting values that depend only on parent-scope inputs out of
-   a fan-out, instead of coordinating pending values between siblings at runtime (§6.1).
-8. Bounding the duplicate-detection state of unbounded scopes (ids seen by scope owners).
+7. Bounding the duplicate-detection state of unbounded scopes (ids seen by scope owners).
 
 ## 14. Gap vs. current implementation
 
@@ -700,7 +710,7 @@ runs. Auth and multi-tenancy come later, but the API shapes should not preclude 
 | Parallelism | ✅ Fan-out, and a straight run of calls in one branch as a dataflow DAG: a worker serving them all starts each call once the calls it reads from have finished, stores their outputs in order, and reports the first failure in order, as one call at a time would (`namu_core::parallel`) | Across literals and phis in a block; calls of a group served by different workers |
 | Value tree | ✅ Immutable nodes that own their parent: a context keeps its chain alive and nothing else, so a node is freed when its last child or context goes. A lookup walks up to 32 parents, then jumps in O(log depth): binary-lifting ancestors plus a persistent segment tree from value id to depth, built for a chain on its first deep lookup and kept. Workers index nodes weakly to serve fetches; a freed node asked for again is read from the log | |
 | Placement | ✅ A node attaches under the deepest node still holding a live value (liveness from the IR; a node's own values shadow older copies, which is what lets loops stay shallow). Chains stay as deep as the values in use | Several nodes per step, ordered longest-lived first |
-| Dedup | ✅ Constants are hoisted into the root context. Every other op runs per leaf | Results placed at the deepest input's depth; computed once per ancestor (§13 q7) |
+| Dedup | ✅ Constants are hoisted into the root context. A call or built-in every branch of a scope makes from values outside it is moved before the fan-out and made once, at the depth of its deepest input (§6.1) | Out of windows' scopes; work only some branches make, shared as the first one makes it |
 | Fan-out / fan-in | ✅ Type-driven via `IntoArg`, or explicit with `each`; collect ops found statically, so an empty or fully dropped scope collects `[]` (engine). Reduce: an ordered fold at the scope's owner as branches end, durable step by step. Window: every `n` items in branch order go on as a branch, over lists and unbounded streams (§4.5) | Windows by time; the log still keeps a reducing or windowed scope's items until it is over |
 | `return` in a branch | ✅ Ends the branch; before a collect it drops the item (filter) | |
 | Inputs | ✅ A workflow's parameters are its inputs: typed in the IR, bound by name when a run starts (a JSON object through `POST /runs` and `namu run --input`, Rust values in process), checked against their types first, and held in the root context (§4.1) | |

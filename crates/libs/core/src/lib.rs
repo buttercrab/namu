@@ -1,6 +1,7 @@
 //! The workflow IR shared by the compiler (macros, flow) and the engine.
 
 pub mod builtin;
+pub mod hoist;
 pub mod inputs;
 pub mod ir;
 pub mod json;

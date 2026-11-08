@@ -131,6 +131,15 @@ pub struct TaskManifest {
 }
 
 impl TaskManifest {
+    /// Whether one call of it can stand for every branch of a scope that makes it alike (design
+    /// §6.1): not one with side effects, each of whose calls counts, nor a stream, which feeds
+    /// its fan-out item by item.
+    pub fn shareable(&self) -> bool {
+        !self.checkpoint && self.task_kind != TaskKind::Stream
+    }
+}
+
+impl TaskManifest {
     /// Placement key: which workers can run this task. WASM runs anywhere; native artifacts only
     /// on their own platform.
     pub fn runtime_key(&self) -> String {

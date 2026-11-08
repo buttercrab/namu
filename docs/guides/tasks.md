@@ -239,6 +239,11 @@ engine) lists the keys of its items, in the order of the list a dynamic batch ta
 A task that must never run twice once it has returned is a checkpoint task instead (see
 `docs/design.md` §7.5); the key covers a crash during the call too.
 
+A task is otherwise a function of its inputs: a call that every branch of a fan-out makes with the
+same inputs is made once, for all of them (`docs/design.md` §6.1). A checkpoint task is called by
+every branch that calls it; a task whose result must differ from call to call takes something that
+does (the item, or its call key).
+
 ## Retries
 A task whose failures pass (a rate limit, a server restarting, a GPU out of memory once) gets a
 retry policy rather than a loop in every workflow: `"retries": 3` in its manifest (with

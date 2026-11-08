@@ -12,9 +12,49 @@ use anyhow::{bail, ensure};
 use crate::ir::{Next, Workflow};
 use crate::{OpId, ValueId};
 
-/// For every operation, the operation that collects the scope it opens. `None` for operations
-/// that do not fan out, and for fan-outs whose branches never reach a collect.
-pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
+/// The fan-out scopes of a workflow: where each opens and closes, and which are open at each
+/// operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scopes {
+    /// The stack of open scopes (the ops that opened them, innermost last) on entry to each op,
+    /// `None` for ops control never reaches.
+    pub entry: Vec<Option<Vec<OpId>>>,
+    /// The same, after each op's action: inside the scope a fan-out opens, outside the one a
+    /// collect closes.
+    pub after: Vec<Vec<OpId>>,
+    /// For every op that opens a scope, the op that closes it; see [`collect_ops`].
+    pub collect_of: Vec<Option<OpId>>,
+}
+
+impl Scopes {
+    /// The scopes each value is made in: an op's literals, phis and built-ins where it is
+    /// entered, its action's outputs after the action.
+    pub fn made_in<'s>(&'s self, workflow: &Workflow) -> HashMap<ValueId, &'s [OpId]> {
+        let mut made_in = HashMap::new();
+        for (op_id, op) in workflow.operations.iter().enumerate() {
+            let Some(entered) = &self.entry[op_id] else {
+                continue;
+            };
+            let entered_values = op
+                .literals
+                .iter()
+                .map(|literal| literal.output)
+                .chain(op.phis.iter().map(|phi| phi.output))
+                .chain(op.builtins.iter().map(|builtin| builtin.output));
+            for value in entered_values {
+                made_in.insert(value, &entered[..]);
+            }
+            for &value in op.action.iter().flat_map(|action| action.outputs()) {
+                made_in.insert(value, &self.after[op_id][..]);
+            }
+        }
+        made_in
+    }
+}
+
+/// Finds every op's scopes, and checks that they nest: each fan-out is closed by one collect, and
+/// an op is reached inside the same scopes from wherever it is reached.
+pub fn scopes(workflow: &Workflow) -> anyhow::Result<Scopes> {
     let ops = &workflow.operations;
     ensure!(
         !ops.is_empty(),
@@ -22,10 +62,7 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
         workflow.name
     );
 
-    // The stack of open scopes (fan-out ops, innermost last) on entry to each op.
     let mut entry: Vec<Option<Vec<OpId>>> = vec![None; ops.len()];
-    // The same, after each op's action: inside the scope a fan-out opens, outside the one a
-    // collect closes.
     let mut after: Vec<Vec<OpId>> = vec![Vec::new(); ops.len()];
     let mut collect_of = vec![None; ops.len()];
     entry[0] = Some(Vec::new());
@@ -69,43 +106,30 @@ pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
             }
         }
     }
-    check_reduces(workflow, &entry, &after, &collect_of)?;
-    Ok(collect_of)
+    let scopes = Scopes {
+        entry,
+        after,
+        collect_of,
+    };
+    check_reduces(workflow, &scopes)?;
+    Ok(scopes)
+}
+
+/// For every operation, the operation that collects the scope it opens. `None` for operations
+/// that do not fan out, and for fan-outs whose branches never reach a collect.
+pub fn collect_ops(workflow: &Workflow) -> anyhow::Result<Vec<Option<OpId>>> {
+    Ok(scopes(workflow)?.collect_of)
 }
 
 /// A reduce's first accumulator is read where its scope was opened, so it must be made outside
 /// that scope: before the fan-out, not per item.
-fn check_reduces(
-    workflow: &Workflow,
-    entry: &[Option<Vec<OpId>>],
-    after: &[Vec<OpId>],
-    collect_of: &[Option<OpId>],
-) -> anyhow::Result<()> {
-    let ops = &workflow.operations;
-    // The scopes each value is made in.
-    let mut made_in: HashMap<ValueId, &[OpId]> = HashMap::new();
-    for (op_id, op) in ops.iter().enumerate() {
-        let Some(entered) = &entry[op_id] else {
-            continue;
-        };
-        let entered_values = op
-            .literals
-            .iter()
-            .map(|literal| literal.output)
-            .chain(op.phis.iter().map(|phi| phi.output))
-            .chain(op.builtins.iter().map(|builtin| builtin.output));
-        for value in entered_values {
-            made_in.insert(value, entered);
-        }
-        for &value in op.action.iter().flat_map(|action| action.outputs()) {
-            made_in.insert(value, &after[op_id]);
-        }
-    }
-    for (op_id, op) in ops.iter().enumerate() {
+fn check_reduces(workflow: &Workflow, scopes: &Scopes) -> anyhow::Result<()> {
+    let made_in = scopes.made_in(workflow);
+    for (op_id, op) in workflow.operations.iter().enumerate() {
         let Some(reduce) = op.collect().and_then(|collect| collect.reduce.as_ref()) else {
             continue;
         };
-        let Some(fan_out) = collect_of.iter().position(|&of| of == Some(op_id)) else {
+        let Some(fan_out) = scopes.collect_of.iter().position(|&of| of == Some(op_id)) else {
             continue;
         };
         if made_in

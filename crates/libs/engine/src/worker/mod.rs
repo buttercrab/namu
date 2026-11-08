@@ -39,7 +39,7 @@ use crate::message::{Branch, BranchId, FetchRun, Message, Report, Resume};
 use crate::routes::{Load, Routes};
 use crate::run::{RunInfo, RunSpec, WorkerStats};
 use crate::scope::{Scope, Then};
-use crate::tasks::{TaskRef, Tasks};
+use crate::tasks::{Task, TaskRef, Tasks};
 use crate::telemetry;
 use crate::transport::Transport;
 use crate::tree::{Node, Nodes};
@@ -198,6 +198,11 @@ impl Worker {
 
     pub fn serves(&self, task: &TaskRef) -> bool {
         self.inner.tasks.task(task).is_some()
+    }
+
+    /// How this worker runs `task`, if it serves it.
+    pub fn task(&self, task: &TaskRef) -> Option<Task> {
+        self.inner.tasks.task(task)
     }
 
     /// What `task` takes and gives, if this worker knows.
