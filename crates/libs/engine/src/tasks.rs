@@ -14,11 +14,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use namu_core::OpId;
 use namu_core::raise::{Raise, Raised};
 use namu_core::signature::Signature;
 use namu_core::types::{Defs, Type};
 use namu_core::value::{Data, Value, from_args};
+use namu_core::{OpId, msgpack};
 use serde::{Deserialize, Serialize};
 
 /// A task call's arguments, in order.
@@ -142,10 +142,15 @@ pub struct Task {
 /// first after `backoff`, then twice as long each time (up to [`MAX_BACKOFF`]). For failures that
 /// pass (a server that says to wait, a model that runs out of memory once). Only the task's own
 /// failures are tried again; once they run out, the last fails the branch as usual.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+///
+/// A failure with only a message (a crash, or a task that fails with messages) is tried again. A
+/// task's own error value is its answer (`NotFound` does not pass), so it is tried again only if
+/// it is one of the variants in `on`, as serde names them (`RateLimited`, say).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Retry {
     pub attempts: u32,
     pub backoff: Duration,
+    pub on: Vec<String>,
 }
 
 /// The longest a retry waits.
@@ -154,7 +159,27 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(30);
 impl Retry {
     /// `attempts` more tries, the first after `backoff`.
     pub fn new(attempts: u32, backoff: Duration) -> Self {
-        Self { attempts, backoff }
+        Self {
+            attempts,
+            backoff,
+            on: Vec::new(),
+        }
+    }
+
+    /// The same, trying again the task's own errors of these variants too.
+    pub fn on(mut self, variants: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.on = variants.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Whether `failure` is one to try again: a message, or an error value of a variant in `on`.
+    pub fn retries(&self, failure: &Failure) -> bool {
+        let Some(error) = &failure.error else {
+            return true;
+        };
+        error.encode().is_ok_and(|bytes| {
+            msgpack::variant(&bytes).is_ok_and(|name| self.on.iter().any(|on| on == name))
+        })
     }
 
     /// How long to wait before try `n` again (`n` from 0), if there is one.

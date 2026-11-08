@@ -39,6 +39,34 @@ macro_rules! __expect_variant {
     };
 }
 
+/// Whether a `match`'s value is the variant written `$variant`, as `#[workflow]` tests it (a
+/// macro, so the workflow macro leaves what is inside as it is).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __is_variant {
+    ($builder:ident, $value:ident, $variant:literal) => {
+        $crate::__macro_exports::is_variant(&$builder, &$value, $variant)
+    };
+}
+
+/// Whether a `match`'s option is some, as `#[workflow]` tests it.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __is_some {
+    ($builder:ident, $value:ident) => {
+        $crate::__macro_exports::is_some(&$builder, &$value)
+    };
+}
+
+/// That some arm of a `match` matched, as `#[workflow]` checks it.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __expect_arm {
+    ($builder:ident, $matched:ident) => {
+        $crate::__macro_exports::expect_arm(&$builder, $matched)
+    };
+}
+
 /// What a `match`'s option holds, as `#[workflow]` binds it in a `Some(x)` arm (a macro, so the
 /// workflow macro leaves what is inside as it is).
 #[doc(hidden)]
@@ -68,8 +96,8 @@ pub mod __macro_exports {
     pub use namu_flow::{
         Builder, Graph, IntoArg, Node, NodeKind, Raises, TracedValue, arith, branch, call, call0,
         call1, call2, call3, call4, call5, call6, call7, call8, call9, catch, check_arms, compare,
-        expect_variant, field, format, format_arg, index, input, is_some, is_variant, jump,
-        literal, logic, negate, not, phi, plus, reduce, return_unit, return_value, tuple,
+        expect_arm, expect_variant, field, format, format_arg, index, input, is_some, is_variant,
+        jump, literal, logic, negate, not, phi, plus, reduce, return_unit, return_value, tuple,
         typed_like, unwrap_some, variant_part, window,
     };
 }

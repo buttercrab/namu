@@ -40,13 +40,14 @@ pub fn eval(op: &BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value> {
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(Value::encoded(msgpack::array(&parts)))
         }
-        BuiltinOp::Variant { name, required } => {
+        BuiltinOp::Variant { name } => {
             let [value] = encoded::<1>(inputs)?;
-            let variant = msgpack::variant(&value)?;
-            if *required && variant != name {
-                bail!("the variant `{variant}` matches no arm (the last is `{name}`)");
-            }
-            Ok(Value::new(variant == name))
+            Ok(Value::new(msgpack::variant(&value)? == name))
+        }
+        BuiltinOp::Expect { message } => {
+            let [holds] = read::<bool, 1>(ScalarOp::And, inputs)?;
+            anyhow::ensure!(holds, "{message}");
+            Ok(Value::new(true))
         }
         BuiltinOp::IsSome => {
             let [value] = encoded::<1>(inputs)?;
@@ -346,10 +347,7 @@ mod tests {
         }
         let encode = |fetched: &Fetched| Value::encoded(rmp_serde::to_vec_named(fetched).unwrap());
         let is = |value: &Value, name: &str| -> bool {
-            let op = BuiltinOp::Variant {
-                name: name.into(),
-                required: false,
-            };
+            let op = BuiltinOp::Variant { name: name.into() };
             eval(&op, std::slice::from_ref(value))
                 .unwrap()
                 .take()
@@ -370,17 +368,14 @@ mod tests {
             .take()
             .unwrap();
         assert_eq!(after, 3);
-        // The last arm's variant must be the value's.
-        let last = BuiltinOp::Variant {
-            name: "Gone".into(),
-            required: true,
+        // What no arm matches fails.
+        let expect = BuiltinOp::Expect {
+            message: "no arm".into(),
         };
-        let missed = eval(&last, &[limited]).unwrap_err().to_string();
-        assert_eq!(
-            missed,
-            "the variant `Limited` matches no arm (the last is `Gone`)"
-        );
-        assert!(eval(&last, &[gone]).is_ok());
+        let missed = eval(&expect, &[Value::new(false)]).unwrap_err().to_string();
+        assert_eq!(missed, "no arm");
+        assert!(eval(&expect, &[Value::new(true)]).is_ok());
+        assert!(is(&limited, "Limited") && !is(&gone, "Limited"));
     }
 
     #[test]

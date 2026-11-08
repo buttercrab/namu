@@ -347,7 +347,7 @@ async fn a_variant_no_arm_matches_fails_the_branch() {
         panic!("one failure: {:?}", outcome.failures)
     };
     assert!(
-        failure.contains("the variant `Huge` matches no arm"),
+        failure.contains("the value matches none of the `match`'s arms"),
         "{failure}"
     );
     // And one that is the last arm's variant takes it.
@@ -440,4 +440,166 @@ async fn a_batch_item_fails_with_its_own_error() {
     .await;
     // 1..=10 doubled, then -11 and -12.
     assert_eq!(results(&outcome), [json!(110 - 23)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_errors_of_the_variants_a_task_names_are_tried_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use namu_engine::tasks::Retry;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tries = |url: &'static str| {
+        let calls = calls.clone();
+        async move {
+            let counted = calls.clone();
+            calls.store(0, Ordering::SeqCst);
+            let tasks = tasks()
+                .raising("fetch", move |url: String| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    Err::<String, _>(match url.as_str() {
+                        "/busy" => FetchError::RateLimited {
+                            retry_after: 3,
+                            reason: "busy".into(),
+                        },
+                        _ => FetchError::NotFound,
+                    })
+                })
+                // Being rate limited passes; not being found does not. Variants as serde names
+                // them.
+                .retry(
+                    "fetch",
+                    Retry::new(3, Duration::from_millis(1)).on(["limited"]),
+                );
+            let workflow = handled().to_serializable("handled".into());
+            let outcome = run(workflow, json!({ "url": url }), tasks).await;
+            (results(&outcome), calls.load(Ordering::SeqCst))
+        }
+    };
+    assert_eq!(tries("/busy").await, (vec![json!("waited 3s: busy")], 4));
+    assert_eq!(tries("/gone").await, (vec![json!("missing")], 1));
+}
+
+#[workflow]
+fn guarded(n: i32) -> u64 {
+    match size(n) {
+        Size::Large(bytes) if bytes > 100 => 3,
+        Size::Large(bytes) => bytes,
+        Size::Small => 0,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_arm_may_have_a_guard() {
+    for (n, expected) in [(500, 3), (40, 40), (2, 0)] {
+        let outcome = run(
+            guarded().to_serializable("guarded".into()),
+            json!({ "n": n }),
+            tasks(),
+        )
+        .await;
+        assert_eq!(results(&outcome), [json!(expected)], "{n}");
+    }
+}
+
+#[workflow]
+fn either(url: String) -> String {
+    match attempt(fetch(url)) {
+        Ok(page) => page,
+        Err(FetchError::NotFound | FetchError::Moved(_)) => "gone",
+        Err(FetchError::RateLimited { reason, .. }) => reason,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_arm_may_be_alternatives() {
+    for (url, expected) in [("/x", "gone"), ("/old", "gone"), ("/busy", "busy")] {
+        let outcome = run(
+            either().to_serializable("either".into()),
+            json!({ "url": url }),
+            tasks(),
+        )
+        .await;
+        assert_eq!(results(&outcome), [json!(expected)], "{url}");
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, namu::Data)]
+pub enum Lookup {
+    Found(Size),
+    Missing { reason: Option<String> },
+}
+
+#[task]
+fn lookup(n: i32) -> Result<Lookup>;
+
+#[workflow]
+fn nested(n: i32) -> String {
+    match lookup(n) {
+        Lookup::Found(Size::Small) => "small",
+        Lookup::Found(Size::Large(_)) => "large",
+        Lookup::Missing { reason: Some(why) } => why,
+        Lookup::Missing { reason: None } => "no reason",
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn patterns_nest() {
+    let tasks = || {
+        tasks().with("lookup", |n: i32| {
+            Ok::<_, String>(match n {
+                1 => Lookup::Found(Size::Small),
+                2 => Lookup::Found(Size::Large(9)),
+                3 => Lookup::Missing {
+                    reason: Some("gone".into()),
+                },
+                _ => Lookup::Missing { reason: None },
+            })
+        })
+    };
+    for (n, expected) in [(1, "small"), (2, "large"), (3, "gone"), (4, "no reason")] {
+        let outcome = run(
+            nested().to_serializable("nested".into()),
+            json!({ "n": n }),
+            tasks(),
+        )
+        .await;
+        assert_eq!(results(&outcome), [json!(expected)], "{n}");
+    }
+}
+
+#[workflow]
+fn named(n: i32) -> String {
+    match n {
+        0 => "zero",
+        1 | 2 => "few",
+        _ => "many",
+    }
+}
+
+#[workflow]
+fn greeted(name: String) -> i32 {
+    match name {
+        "namu" => 1,
+        other => 2,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn literals_are_matched_on() {
+    for (n, expected) in [(0, "zero"), (2, "few"), (7, "many")] {
+        let outcome = run(
+            named().to_serializable("named".into()),
+            json!({ "n": n }),
+            tasks(),
+        )
+        .await;
+        assert_eq!(results(&outcome), [json!(expected)], "{n}");
+    }
+    for (name, expected) in [("namu", 1), ("tree", 2)] {
+        let workflow = greeted().to_serializable("greeted".into());
+        let outcome = run(workflow, json!({ "name": name }), tasks()).await;
+        assert_eq!(results(&outcome), [json!(expected)], "{name}");
+    }
 }

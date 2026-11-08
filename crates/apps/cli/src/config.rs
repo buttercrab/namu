@@ -42,6 +42,7 @@ pub struct TaskConfig {
     pub checkpoint: bool,
     pub retries: u32,
     pub retry_backoff_ms: Option<u64>,
+    pub retry_on: Vec<String>,
     pub window: Option<usize>,
     pub batch_size: Option<usize>,
     pub max_wait_ms: Option<u64>,
@@ -218,6 +219,16 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
             .unwrap_or(false);
         let retries = count::<u32>(entry, id, "retries")?.unwrap_or(0);
         let retry_backoff_ms = count(entry, id, "retry_backoff_ms")?;
+        let retry_on = entry
+            .get("retry_on")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let window = count(entry, id, "window")?;
         let batch_size = count(entry, id, "batch_size")?;
         let max_wait_ms = count(entry, id, "max_wait_ms")?;
@@ -255,6 +266,7 @@ fn parse_tasks(doc: &toml::Value, root: &Path) -> anyhow::Result<HashMap<String,
                 checkpoint,
                 retries,
                 retry_backoff_ms,
+                retry_on,
                 window,
                 batch_size,
                 max_wait_ms,

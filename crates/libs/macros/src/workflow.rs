@@ -616,16 +616,49 @@ impl WorkflowVisitor {
         let value = format_ident!("__match_{}", id);
         let mut scrutinee = (*match_expr.expr).clone();
         self.visit_expr_mut(&mut scrutinee);
+        // rustc checks the arms as written; a guard may not hold, so it covers nothing. A
+        // string literal (a workflow's strings are `String`s, which Rust does not match against
+        // one) is checked as `_` in an arm that covers nothing either.
         let checks = match_expr.arms.iter().map(|arm| {
-            let pat = &arm.pat;
-            quote! { #pat => {} }
+            let (pat, guarded) = match &arm.pat {
+                Pat::Guard(guarded) => ((*guarded.pat).clone(), true),
+                pat => (pat.clone(), false),
+            };
+            let mut strings = Strings(false);
+            let mut pat = pat;
+            strings.visit_pat_mut(&mut pat);
+            match guarded || strings.0 {
+                true => quote! { #pat if ::std::hint::black_box(false) => {} },
+                false => quote! { #pat => {} },
+            }
         });
-        let mut arms = ExprMatch {
-            attrs: vec![parse_quote!(#[__namu_arms])],
-            expr: parse_quote!(#value),
-            ..match_expr.clone()
+        // An arm of alternatives is an arm for each.
+        let arms: Vec<syn::Arm> = match_expr
+            .arms
+            .iter()
+            .flat_map(|arm| {
+                alternatives(&arm.pat)
+                    .into_iter()
+                    .map(|pat| syn::Arm { pat, ..arm.clone() })
+            })
+            .collect();
+        let lowered = if arms.iter().all(|arm| flat(&arm.pat)) {
+            let mut arms = ExprMatch {
+                attrs: vec![parse_quote!(#[__namu_arms])],
+                expr: parse_quote!(#value),
+                arms,
+                ..match_expr.clone()
+            };
+            self.handle_arms(&mut arms)
+        } else {
+            match self.handle_picked(id, &value, &arms) {
+                Ok(lowered) => lowered,
+                Err(err) => {
+                    self.error.get_or_insert(err);
+                    return Expr::Match(match_expr.clone());
+                }
+            }
         };
-        let lowered = self.handle_arms(&mut arms);
         // Where rustc says what the arms miss: at the `match`.
         let span = match_expr.match_token.span;
         let check = quote_spanned! {span=>
@@ -639,6 +672,57 @@ impl WorkflowVisitor {
             #check
             #lowered
         })
+    }
+
+    /// A `match` whose arms are not all flat (one with a guard, a literal or a nested pattern):
+    /// first which arm matches, tested arm by arm in order (the tests a pattern makes nest, and a
+    /// guard is one more), then that arm, with its bindings. Both are ordinary workflow code: a
+    /// variable that names the arm, `if`s, and the built-ins that take a value apart.
+    fn handle_picked(&mut self, id: usize, value: &Ident, arms: &[syn::Arm]) -> syn::Result<Expr> {
+        let builder = self.builder_ident.clone();
+        let arm = format_ident!("__arm_{}", id);
+        let mut tests = Vec::new();
+        let mut taken = Vec::new();
+        for (index, case) in arms.iter().enumerate() {
+            let index = syn::LitInt::new(&(index + 1).to_string(), proc_macro2::Span::call_site());
+            let (pat, guard) = match &case.pat {
+                Pat::Guard(guarded) => (&*guarded.pat, Some(&guarded.guard)),
+                pat => (pat, None),
+            };
+            let pick = quote! { #arm = #index; };
+            let pick = match guard {
+                Some(guard) => quote! { if #guard { #pick } },
+                None => pick,
+            };
+            let mut patterns = Patterns {
+                builder: &builder,
+                next: 0,
+                id,
+            };
+            // The guard reads the bindings; without one, the tests need none.
+            let test = patterns.lower(pat, value, pick, true, guard.is_some())?;
+            tests.push(quote! { if #arm == 0 { #test } });
+            let body = &case.body;
+            let bound = patterns.lower(pat, value, quote! { #body }, false, true)?;
+            taken.push((index, bound));
+        }
+        let (last_index, last) = taken.pop().expect("an arm");
+        // What no arm matched, a value a task written elsewhere gave, fails the branch.
+        let mut dispatch = quote! {{
+            let __matched = #arm == #last_index;
+            ::namu::__expect_arm!(#builder, __matched);
+            #last
+        }};
+        for (index, bound) in taken.into_iter().rev() {
+            dispatch = quote! { if #arm == #index { #bound } else #dispatch };
+        }
+        let mut lowered: Expr = parse_quote!({
+            let mut #arm = 0;
+            #(#tests)*
+            #dispatch
+        });
+        self.visit_expr_mut(&mut lowered);
+        Ok(lowered)
     }
 
     /// The arms of an enum `match`, on the value `match_expr.expr` names: the first arm's split,
@@ -1136,6 +1220,267 @@ fn result_arm(pat: &Pat) -> Option<(&'static str, &Pat)> {
         1 => Some((variant, &pat.elems[0])),
         _ => None,
     }
+}
+
+/// Whether an arm lowers as one split of a chain: no guard, and a pattern that binds its fields to
+/// names, if it has any.
+fn flat(pat: &Pat) -> bool {
+    !matches!(pat, Pat::Guard(_))
+        && (catch_all(pat).is_some() || option_arm(pat).is_some() || variant_arm(pat).is_ok())
+}
+
+/// The patterns `pat` is one of: an or-pattern's, inside fields too, each with its guard.
+fn alternatives(pat: &Pat) -> Vec<Pat> {
+    match pat {
+        Pat::Or(or) => or.cases.iter().flat_map(alternatives).collect(),
+        Pat::Paren(paren) => alternatives(&paren.pat),
+        Pat::Guard(guarded) => alternatives(&guarded.pat)
+            .into_iter()
+            .map(|pat| {
+                Pat::Guard(syn::PatGuard {
+                    pat: Box::new(pat),
+                    ..guarded.clone()
+                })
+            })
+            .collect(),
+        Pat::TupleStruct(tuple) => {
+            let elems = tuple.elems.iter().map(alternatives).collect::<Vec<_>>();
+            product(&elems)
+                .into_iter()
+                .map(|elems| {
+                    Pat::TupleStruct(syn::PatTupleStruct {
+                        elems: elems.into_iter().collect(),
+                        ..tuple.clone()
+                    })
+                })
+                .collect()
+        }
+        Pat::Struct(fields) => {
+            let each = fields
+                .fields
+                .iter()
+                .map(|field| alternatives(&field.pat))
+                .collect::<Vec<_>>();
+            product(&each)
+                .into_iter()
+                .map(|pats| {
+                    let mut fields = fields.clone();
+                    for (field, pat) in fields.fields.iter_mut().zip(pats) {
+                        *field.pat = pat;
+                    }
+                    Pat::Struct(fields)
+                })
+                .collect()
+        }
+        pat => vec![pat.clone()],
+    }
+}
+
+/// Every way to pick one of each.
+fn product(each: &[Vec<Pat>]) -> Vec<Vec<Pat>> {
+    each.iter().fold(vec![Vec::new()], |picked, choices| {
+        picked
+            .iter()
+            .flat_map(|so_far| {
+                choices.iter().map(move |choice| {
+                    let mut next = so_far.clone();
+                    next.push(choice.clone());
+                    next
+                })
+            })
+            .collect()
+    })
+}
+
+/// The workflow code a pattern lowers to.
+struct Patterns<'a> {
+    builder: &'a Ident,
+    /// For names of the parts taken out.
+    next: usize,
+    id: usize,
+}
+
+impl Patterns<'_> {
+    /// Code that runs `inner` where `value` is matched by `pat`: if `test`, inside the tests it
+    /// makes (an `if` each, nesting as the pattern does); if `bind`, with its names bound.
+    fn lower(
+        &mut self,
+        pat: &Pat,
+        value: &Ident,
+        inner: proc_macro2::TokenStream,
+        test: bool,
+        bind: bool,
+    ) -> syn::Result<proc_macro2::TokenStream> {
+        let builder = self.builder;
+        let tested = |condition: proc_macro2::TokenStream, inner: proc_macro2::TokenStream| {
+            if test {
+                quote! { if #condition { #inner } }
+            } else {
+                inner
+            }
+        };
+        Ok(match pat {
+            Pat::Wild(_) => inner,
+            Pat::Paren(paren) => self.lower(&paren.pat, value, inner, test, bind)?,
+            Pat::Lit(lit) => tested(quote! { #value == #lit }, inner),
+            _ if matches!(option_arm(pat), Some(OptionArm::None)) => {
+                tested(quote! { !::namu::__is_some!(#builder, #value) }, inner)
+            }
+            Pat::Ident(PatIdent {
+                ident,
+                subpat: None,
+                by_ref: None,
+                ..
+            }) if !ident.to_string().starts_with(char::is_uppercase) => match bind {
+                // A guard's binding may be what only the guard reads.
+                true => quote! {{
+                    #[allow(unused_variables)]
+                    let #ident = #value;
+                    #inner
+                }},
+                false => inner,
+            },
+            Pat::Ident(PatIdent {
+                ident,
+                subpat: None,
+                ..
+            }) => {
+                let name = ident.to_string();
+                tested(
+                    quote! { ::namu::__is_variant!(#builder, #value, #name) },
+                    inner,
+                )
+            }
+            Pat::Path(path) => {
+                let name = last_name(&path.path);
+                tested(
+                    quote! { ::namu::__is_variant!(#builder, #value, #name) },
+                    inner,
+                )
+            }
+            Pat::TupleStruct(tuple) if tuple.path.is_ident("Some") && tuple.elems.len() == 1 => {
+                let held = self.fresh();
+                let inner = self.lower(&tuple.elems[0], &held, inner, test, bind)?;
+                let body = quote! {
+                    let #held = ::namu::__unwrap_some!(#builder, #value);
+                    #inner
+                };
+                tested(quote! { ::namu::__is_some!(#builder, #value) }, body)
+            }
+            Pat::TupleStruct(tuple) => {
+                let path = &tuple.path;
+                let name = last_name(path);
+                let elems: Vec<&Pat> = tuple.elems.iter().collect();
+                let rest = elems.iter().position(|pat| matches!(pat, Pat::Rest(_)));
+                if rest.is_some_and(|at| at + 1 != elems.len()) {
+                    return Err(syn::Error::new_spanned(
+                        pat,
+                        "`..` goes last in a variant's fields",
+                    ));
+                }
+                let fields = &elems[..rest.unwrap_or(elems.len())];
+                let parts = fields.iter().enumerate().map(|(index, field)| {
+                    let blanks = (0..fields.len()).map(|at| match at == index {
+                        true => quote!(__part),
+                        false => quote!(_),
+                    });
+                    (index.to_string(), *field, quote! { #path(#(#blanks,)* ..) })
+                });
+                let body = self.parts(value, &name, parts.collect(), inner, test, bind)?;
+                tested(
+                    quote! { ::namu::__is_variant!(#builder, #value, #name) },
+                    body,
+                )
+            }
+            Pat::Struct(fields) => {
+                let path = &fields.path;
+                let name = last_name(path);
+                let mut parts = Vec::new();
+                for field in &fields.fields {
+                    let syn::Member::Named(member) = &field.member else {
+                        return Err(syn::Error::new_spanned(field, "a variant's fields by name"));
+                    };
+                    let part = quote! { #path { #member: __part, .. } };
+                    parts.push((member.to_string(), &*field.pat, part));
+                }
+                let body = self.parts(value, &name, parts, inner, test, bind)?;
+                tested(
+                    quote! { ::namu::__is_variant!(#builder, #value, #name) },
+                    body,
+                )
+            }
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    pat,
+                    "an arm of a workflow's `match` is a variant, an option, a literal, `_`, or a \
+                     name, with patterns of these inside",
+                ));
+            }
+        })
+    }
+
+    /// The fields of `value`'s variant `variant`, each taken out and matched by its pattern, around
+    /// `inner`. A field that is not looked at is not taken out.
+    fn parts(
+        &mut self,
+        value: &Ident,
+        variant: &str,
+        parts: Vec<(String, &Pat, proc_macro2::TokenStream)>,
+        mut inner: proc_macro2::TokenStream,
+        test: bool,
+        bind: bool,
+    ) -> syn::Result<proc_macro2::TokenStream> {
+        let builder = self.builder;
+        for (field, pat, part) in parts.into_iter().rev() {
+            let looked_at = match pat {
+                Pat::Wild(_) => false,
+                pat => bind || catch_all(pat).is_none(),
+            };
+            if !looked_at {
+                continue;
+            }
+            let held = self.fresh();
+            let matched = self.lower(pat, &held, inner, test, bind)?;
+            inner = quote! {
+                #[allow(unreachable_patterns)]
+                let #held = ::namu::__variant_part!(
+                    #builder,
+                    #value,
+                    #variant,
+                    #field,
+                    |__value| match __value { #part => __part, _ => unreachable!() }
+                );
+                #matched
+            };
+        }
+        Ok(inner)
+    }
+
+    fn fresh(&mut self) -> Ident {
+        self.next += 1;
+        format_ident!("__part_{}_{}", self.id, self.next)
+    }
+}
+
+/// Replaces the string literals in a pattern with `_`, and says whether there were any.
+struct Strings(bool);
+
+impl VisitMut for Strings {
+    fn visit_pat_mut(&mut self, pat: &mut Pat) {
+        if let Pat::Lit(lit) = pat
+            && matches!(lit.lit, syn::Lit::Str(_))
+        {
+            *pat = parse_quote!(_);
+            self.0 = true;
+            return;
+        }
+        visit_mut::visit_pat_mut(self, pat);
+    }
+}
+
+/// The name of the variant a path names: its last segment.
+fn last_name(path: &syn::Path) -> String {
+    path.segments.last().expect("a path").ident.to_string()
 }
 
 /// An arm of a `match` on an option: `Some(x)` (or `Some(_)`) or `None`.

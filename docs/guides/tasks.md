@@ -279,6 +279,11 @@ retry policy rather than a loop in every workflow: `"retries": 3` in its manifes
 `namu_task_retries_total`. A workflow that must decide what a failure means still matches on
 `attempt(..)`, which sees the last try's error.
 
+A failure with only a message (a crash, or a task that fails with messages) is tried again. A
+task's own error value is its answer, and is not: `NotFound` will not pass. The variants that do
+pass are named, as serde names them: `"retry_on": ["rate_limited"]` in the manifest, or
+`Retry::new(3, backoff).on(["rate_limited"])`.
+
 ## Task kinds
 - `single`: one input, one output
 - `batch`: written for a list of inputs, called per item; a session on each worker takes items

@@ -484,7 +484,7 @@ impl Inner {
             };
             telemetry::task_called(task_ref, outcome, started.elapsed());
             match (&output, task.retry.wait(tries)) {
-                (Ok(Err(failure)), Some(wait)) => {
+                (Ok(Err(failure)), Some(wait)) if task.retry.retries(failure) => {
                     tracing::debug!(task = task_ref.id, %key, tries, ?wait, "trying again: {failure}");
                     telemetry::task_retried(task_ref);
                     tokio::time::sleep(wait).await;
