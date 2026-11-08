@@ -22,18 +22,27 @@ use crate::ir::{Action, Builtin, Call, Next, Operation, Workflow};
 use crate::scopes::{self, Scopes};
 use crate::{OpId, ValueId};
 
-/// `workflow` with what its scopes' branches compute alike moved out of them; `shareable` says
-/// which tasks' calls may be made once for all branches.
-pub fn hoist(workflow: &Workflow, shareable: impl Fn(&str) -> bool) -> anyhow::Result<Workflow> {
+/// What the pass knows of a task; a task it is not told of is neither.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Task {
+    /// Whether one call of it may stand for every branch of a scope that makes it alike.
+    pub shareable: bool,
+    /// Whether it is a stream, which feeds the fan-out right after it item by item.
+    pub stream: bool,
+}
+
+/// `workflow` with what its scopes' branches compute alike moved out of them, by what `task`
+/// says of each task.
+pub fn hoist(workflow: &Workflow, task: impl Fn(&str) -> Task) -> anyhow::Result<Workflow> {
     let mut workflow = workflow.clone();
     loop {
         let scopes = scopes::scopes(&workflow)?;
         let found = (0..workflow.operations.len())
-            .find_map(|fan_out| Shared::find(&workflow, &scopes, fan_out, &shareable));
+            .find_map(|fan_out| Shared::find(&workflow, &scopes, fan_out, &task));
         let Some(shared) = found else {
             return Ok(workflow);
         };
-        workflow = shared.apply(workflow);
+        workflow = shared.apply(workflow, &task);
         debug_assert!(scopes::scopes(&workflow).is_ok());
     }
 }
@@ -56,7 +65,7 @@ impl Shared {
         workflow: &Workflow,
         scopes: &Scopes,
         fan_out: OpId,
-        shareable: &impl Fn(&str) -> bool,
+        task: &impl Fn(&str) -> Task,
     ) -> Option<Self> {
         let ops = &workflow.operations;
         ops[fan_out].fan_out()?;
@@ -84,7 +93,7 @@ impl Shared {
                 let candidates = builtins
                     .map(|(i, builtin)| (Unit::Builtin(op_id, i), &builtin.inputs[..], true))
                     .chain(op.call().map(|call| {
-                        let movable = call.catch.is_none() && shareable(&call.task_id);
+                        let movable = call.catch.is_none() && task(&call.task_id).shareable;
                         (Unit::Call(op_id), &call.inputs[..], movable)
                     }));
                 for (unit, inputs, movable) in candidates {
@@ -102,13 +111,16 @@ impl Shared {
         (!units.is_empty()).then_some(Self { fan_out, units })
     }
 
-    /// Moves the units to just before the fan-out (before the stream call that feeds it, if it
-    /// is fused with one): after the entered part of that op, before its action.
-    fn apply(self, mut workflow: Workflow) -> Workflow {
+    /// Moves the units to just before the fan-out, after the entered part of that op and before
+    /// its action: before the stream that feeds it if it is fused with one, which must stay next
+    /// to it, and after any other call that makes its list, whose failure must come first.
+    fn apply(self, mut workflow: Workflow, task: &impl Fn(&str) -> Task) -> Workflow {
         let fused = scopes::fused_fan_outs(&workflow);
-        let at = (0..fused.len())
-            .find(|&op| fused[op] == Some(self.fan_out))
-            .unwrap_or(self.fan_out);
+        let streams = |op: &OpId| {
+            let call = workflow.operations[*op].call();
+            fused[*op] == Some(self.fan_out) && call.is_some_and(|call| task(&call.task_id).stream)
+        };
+        let at = (0..fused.len()).find(streams).unwrap_or(self.fan_out);
         let ops = &mut workflow.operations;
 
         // Take the units out, in their order.

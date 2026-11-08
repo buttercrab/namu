@@ -168,3 +168,18 @@ async fn a_shared_call_is_made_even_for_no_items() {
     assert_eq!(result, json!(0));
     assert_eq!((calls.of("load"), calls.of("classify")), (1, 0));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_call_is_not_made_if_the_list_cannot_be() {
+    // Moved after the call that makes the list, not before it: that fails first.
+    let calls = Calls::default();
+    let tasks = tasks(&calls).with("items", |_: i32| Err::<Vec<i32>, _>("no items"));
+    let tasks: Arc<dyn Tasks> = Arc::new(tasks);
+    let inputs = Inputs::from_json(json!({ "n": 4 }).as_object().unwrap().clone());
+    let outcome = LocalCluster::uniform(3, tasks)
+        .run_with(shared().to_serializable("shared".into()), inputs)
+        .await
+        .unwrap();
+    assert!(outcome.results.is_empty());
+    assert_eq!(calls.of("load"), 0);
+}

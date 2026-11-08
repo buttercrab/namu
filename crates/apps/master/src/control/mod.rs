@@ -9,7 +9,7 @@
 //!   is dead: the lowest live worker succeeds it, taking over what it held from the log, and the
 //!   runs it owned before they reached the log are started again on the successor.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,7 @@ use namu_engine::message::{BranchId, Delivery, Message, Report};
 use namu_engine::transport::{TcpTransport, Transport};
 use namu_proto::{
     MEMBERSHIP_TTL_MS, Member, Membership, Page, PageQuery, Published, RunCreateRequest, RunStatus,
-    RunStatusResponse, TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse,
+    RunStatusResponse, TaskKind, TaskManifest, WorkerRegisterRequest, WorkerRegisterResponse,
     WorkflowUploadRequest,
 };
 use serde_json::Value as Json;
@@ -222,16 +222,21 @@ impl Control {
         };
         let workflow: Workflow = serde_json::from_value(upload.ir)
             .with_context(|| format!("workflow {id}@{version} as stored"))?;
-        let mut shareable = HashSet::new();
+        let mut tasks = HashMap::new();
         for (task, task_version) in &upload.task_versions {
-            let manifest = self.store.task(task, task_version).await?;
-            if manifest.is_some_and(|manifest| manifest.shareable()) {
-                shareable.insert(task.clone());
+            if let Some(manifest) = self.store.task(task, task_version).await? {
+                let known = namu_core::hoist::Task {
+                    shareable: manifest.shareable(),
+                    stream: manifest.task_kind == TaskKind::Stream,
+                };
+                tasks.insert(task.clone(), known);
             }
         }
         let parsed = Arc::new(Version {
-            workflow: namu_core::hoist::hoist(&workflow, |task| shareable.contains(task))
-                .with_context(|| format!("workflow {id}@{version} as stored"))?,
+            workflow: namu_core::hoist::hoist(&workflow, |task| {
+                tasks.get(task).copied().unwrap_or_default()
+            })
+            .with_context(|| format!("workflow {id}@{version} as stored"))?,
             task_versions: upload.task_versions.into_iter().collect(),
         });
         self.versions.lock().unwrap().insert(key, parsed.clone());

@@ -25,7 +25,7 @@ use crate::log::{Durable, Log, Logged, MemoryLog, Record, RunEstate};
 use crate::message::{BranchId, Message, Report};
 use crate::routes::Routes;
 use crate::run::RunOutcome;
-use crate::tasks::{TaskRef, Tasks};
+use crate::tasks::{Kind, Task, TaskRef, Tasks};
 use crate::transport::{LocalTransport, MeshTls, TcpTransport, Transport};
 use crate::tree::Node;
 use crate::worker::Worker;
@@ -351,11 +351,16 @@ impl LocalCluster {
                 id: id.to_string(),
                 version: String::new(),
             };
-            let mut served = live
+            let served: Vec<Task> = live
                 .iter()
                 .filter_map(|worker| worker.task(&task))
-                .peekable();
-            served.peek().is_some() && served.all(|task| task.shareable())
+                .collect();
+            namu_core::hoist::Task {
+                shareable: !served.is_empty() && served.iter().all(Task::shareable),
+                stream: served
+                    .iter()
+                    .any(|task| matches!(task.kind, Kind::Stream(_))),
+            }
         })
     }
 
