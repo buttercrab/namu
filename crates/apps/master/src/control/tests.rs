@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use namu::prelude::*;
+use namu_core::ir::Operation;
 use namu_core::signature::Signature;
 use namu_core::types::{Defs, Type};
 use namu_core::value::Value;
@@ -31,6 +32,25 @@ fn double(x: i32) -> Result<i32>;
 #[workflow]
 fn doubled(n: i32) -> i32 {
     double(n)
+}
+
+#[task]
+fn items(n: i32) -> Result<Vec<i32>>;
+
+#[task]
+fn load(n: i32) -> Result<i32>;
+
+#[task]
+fn add(a: i32, b: i32) -> Result<i32>;
+
+#[task]
+fn sum(xs: Vec<i32>) -> Result<i32>;
+
+#[workflow]
+fn labelled(n: i32) -> i32 {
+    let item = each(items(n));
+    let model = load(n); // every branch alike
+    sum(add(model, item))
 }
 
 /// Remembers the messages sent, by worker.
@@ -205,6 +225,61 @@ async fn a_workflow_is_checked_against_its_tasks_signatures() {
         .await
         .unwrap();
     assert_eq!(unchecked.unchecked, ["double"]);
+}
+
+#[tokio::test]
+async fn runs_make_once_what_every_branch_makes_alike() {
+    let plane = plane();
+    let code = b"\0asm";
+    for task in ["items", "add", "sum"] {
+        let manifest = manifest(task, "1", code);
+        plane
+            .control
+            .publish_task(package(&manifest, code))
+            .await
+            .unwrap();
+    }
+    // `load` twice: as a plain task, and as one with side effects.
+    let mut effects = manifest("load", "effects", code);
+    effects.checkpoint = true;
+    for load in [manifest("load", "pure", code), effects] {
+        plane
+            .control
+            .publish_task(package(&load, code))
+            .await
+            .unwrap();
+    }
+    let ir = serde_json::to_value(labelled().to_serializable("labelled".into())).unwrap();
+    // Where `load` is called, and where the items fan out, in the workflow runs start.
+    let order = async |load: &str| {
+        let task_versions = [("items", "1"), ("add", "1"), ("sum", "1"), ("load", load)];
+        let upload = WorkflowUploadRequest {
+            id: "labelled".into(),
+            version: load.into(),
+            ir: ir.clone(),
+            task_versions: task_versions
+                .into_iter()
+                .map(|(task, version)| (task.to_string(), version.to_string()))
+                .collect(),
+        };
+        plane.control.publish_workflow(upload).await.unwrap();
+        let version = plane
+            .control
+            .version("labelled", load)
+            .await
+            .unwrap()
+            .unwrap();
+        let ops = &version.workflow.operations;
+        let at = |found: fn(&Operation) -> bool| ops.iter().position(found).unwrap();
+        (
+            at(|op| op.task_id() == Some("load")),
+            at(|op| op.fan_out().is_some()),
+        )
+    };
+    let (load, fan_out) = order("pure").await;
+    assert!(load < fan_out, "made once, before the fan-out");
+    let (load, fan_out) = order("effects").await;
+    assert!(load > fan_out, "made by every branch");
 }
 
 #[tokio::test]

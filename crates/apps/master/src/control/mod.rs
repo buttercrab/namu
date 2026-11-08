@@ -9,7 +9,7 @@
 //!   is dead: the lowest live worker succeeds it, taking over what it held from the log, and the
 //!   runs it owned before they reached the log are started again on the successor.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -59,7 +59,9 @@ impl Mesh for TcpTransport {
 
 const LEASE: Duration = Duration::from_millis(MEMBERSHIP_TTL_MS);
 
-/// A published workflow version, as runs start it.
+/// A published workflow version, as runs start it: with what every branch of a scope computes
+/// alike moved out of the scope (design §6.1), decided by its tasks' manifests, which never
+/// change either.
 struct Version {
     workflow: Workflow,
     task_versions: BTreeMap<String, String>,
@@ -218,8 +220,17 @@ impl Control {
         let Some(upload) = self.store.workflow(id, version).await? else {
             return Ok(None);
         };
+        let workflow: Workflow = serde_json::from_value(upload.ir)
+            .with_context(|| format!("workflow {id}@{version} as stored"))?;
+        let mut shareable = HashSet::new();
+        for (task, task_version) in &upload.task_versions {
+            let manifest = self.store.task(task, task_version).await?;
+            if manifest.is_some_and(|manifest| manifest.shareable()) {
+                shareable.insert(task.clone());
+            }
+        }
         let parsed = Arc::new(Version {
-            workflow: serde_json::from_value(upload.ir)
+            workflow: namu_core::hoist::hoist(&workflow, |task| shareable.contains(task))
                 .with_context(|| format!("workflow {id}@{version} as stored"))?,
             task_versions: upload.task_versions.into_iter().collect(),
         });

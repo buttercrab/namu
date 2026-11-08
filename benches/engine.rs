@@ -3,6 +3,8 @@
 //! - `loop`: a 5,000-iteration loop in one process; the cost of a step through the kernel, the
 //!   value tree and an in-process task.
 //! - `fan_out`: 10,000 items fanned out, each doubled, and collected.
+//! - `shared`: 2,000 items, each classified with a model that takes a while to load: loaded once,
+//!   by the scope (design §6.1), and, in `shared/per_item`, by every branch, as it reads the item.
 //! - `value`: cloning, encoding and decoding a value.
 //! - `find`: a lookup at the root of a 2,000-node chain, by jumping (binary lifting) and by walking
 //!   parent by parent.
@@ -30,6 +32,24 @@ fn double(x: i32) -> Result<i32>;
 
 #[task]
 fn sum(xs: Vec<i32>) -> Result<i32>;
+
+/// A model, which takes a while to load.
+#[task]
+fn load(seed: i32) -> Result<i32>;
+
+#[workflow]
+fn classifying() -> i32 {
+    let x = each(range(2000));
+    let model = load(7); // every branch alike: loaded once
+    sum(add(model, x))
+}
+
+#[workflow]
+fn classifying_per_item() -> i32 {
+    let x = each(range(2000));
+    let model = load(x - x + 7); // reads the item: loaded by every branch
+    sum(add(model, x))
+}
 
 #[workflow]
 fn counting() -> i32 {
@@ -71,6 +91,10 @@ fn tasks() -> FnTasks {
             Ok::<_, String>((0..n).collect::<Vec<_>>())
         })
         .with("double", |x: i32| Ok::<_, String>(x * 2))
+        .with("load", |seed: i32| {
+            let model = (0..20_000).fold(seed, |acc, i| std::hint::black_box(acc ^ i));
+            Ok::<_, String>(model)
+        })
         .with("sum", |xs: Vec<i32>| {
             Ok::<_, String>(xs.iter().sum::<i32>())
         })
@@ -97,6 +121,20 @@ fn engine(c: &mut Criterion) {
     c.bench_function("fan_out", |b| {
         b.iter(|| runtime.block_on(cluster.run(doubling.clone())).unwrap())
     });
+    for (name, workflow) in [
+        (
+            "shared",
+            classifying().to_serializable("classifying".into()),
+        ),
+        (
+            "shared/per_item",
+            classifying_per_item().to_serializable("classifying_per_item".into()),
+        ),
+    ] {
+        c.bench_function(name, |b| {
+            b.iter(|| runtime.block_on(cluster.run(workflow.clone())).unwrap())
+        });
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, namu::Data)]
