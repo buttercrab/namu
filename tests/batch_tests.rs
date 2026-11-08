@@ -56,8 +56,9 @@ struct Decoder {
 impl Continuous for Decoder {
     type In = i32;
     type Out = i32;
+    type Error = String;
 
-    fn step(&mut self, admit: Vec<(u64, i32)>) -> Vec<(u64, Result<i32, String>)> {
+    fn step(&mut self, admit: Vec<(u64, i32)>) -> Vec<(u64, Result<i32, Self::Error>)> {
         self.log
             .steps
             .lock()

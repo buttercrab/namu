@@ -144,7 +144,8 @@ impl Inner {
         let mut stream = self
             .open(run, feeding, position)
             .await
-            .map_err(|err| format!("{}: {err:#}", task.id))??;
+            .map_err(|err| format!("{}: {err:#}", task.id))?
+            .map_err(|failure| format!("{}: {failure}", task.id))?;
         let mut draining = self.draining.subscribe();
         loop {
             let credit = tokio::select! {
@@ -163,7 +164,7 @@ impl Inner {
             let item = match item {
                 Ok(Some(Ok(item))) => item,
                 Ok(None) => return Ok(Fed::Ended),
-                Ok(Some(Err(message))) => return Err(format!("{}: {message}", task.id)),
+                Ok(Some(Err(failure))) => return Err(format!("{}: {failure}", task.id)),
                 Err(err) => return Err(format!("{}: {err:#}", task.id)),
             };
             let index = position.yielded;
@@ -182,7 +183,7 @@ impl Inner {
         run: &Arc<Run>,
         feeding: &Feeding<'_>,
         position: &Position,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, Failure>> {
         let call = kernel::operation(run.spec.workflow(), feeding.source.call)?
             .call()
             .context("not a call")?;
@@ -278,13 +279,13 @@ impl Inner {
         run_task(|| {
             let mut stream = match task.open(args, None, key)? {
                 Ok(stream) => stream,
-                Err(message) => return Ok(Err(message.into())),
+                Err(failure) => return Ok(Err(failure)),
             };
             let mut items = Vec::new();
             while let Some(item) = stream.next()? {
                 match item {
                     Ok(item) => items.push(item.value),
-                    Err(message) => return Ok(Err(message.into())),
+                    Err(failure) => return Ok(Err(failure)),
                 }
             }
             Ok(Ok(Value::list(items)))

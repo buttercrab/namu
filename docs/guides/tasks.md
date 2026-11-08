@@ -69,10 +69,12 @@ namu_guest::task! {
 
 The workflow declares it the same way (`#[task] fn fetch(url: String) -> Result<Page, FetchError>;`)
 and can match on its variants; `namu build` records the error type in the signature, and a
-workflow that catches another is refused. A dynamic batch task's items fail the same way
-(`Vec<Result<T, E>>`); a stream's and a continuous batch's errors are messages. A typed attempt
-catches only the error value: a trap or a panic fails the branch. In process,
-`FnTasks::raising("fetch", f)` registers a task whose `f` fails with a type of its own.
+workflow that catches another is refused. A batch task's items fail the same way: a dynamic
+one's (`Vec<Result<T, E>>`), and a continuous one's, whose `Continuous::Error` says what they fail
+with (`anyhow::Error` for messages). So does a stream, opening or at an item, which ends it
+(`Result<impl Iterator<Item = Result<T, E>>, E>`, one `E` for both). A typed attempt catches only
+the error value: a trap or a panic fails the branch. In process, `FnTasks::raising("fetch", f)`
+and `FnTasks::raising_stream` register tasks that fail with a type of their own.
 
 A Python task declares it in its decorator, `@namu.task(error=FetchError)`, and raises
 `namu.Failed(error)`; anything else it raises is a message. An `enum.Enum` crosses as its members'

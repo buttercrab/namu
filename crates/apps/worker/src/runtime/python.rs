@@ -112,12 +112,12 @@ impl PythonTask {
     }
 
     /// A process of its own, opened with `request` (to serve a stream or a batch session).
-    fn dedicated(&self, request: &impl Serialize) -> anyhow::Result<Result<Process, String>> {
+    fn dedicated(&self, request: &impl Serialize) -> anyhow::Result<Result<Process, Failure>> {
         let mut process = self.start()?;
         Ok(match process.ask::<()>(request) {
             Ok(Ok(())) => Ok(process),
-            Ok(Err(raised)) => Err(raised.message),
-            Err(err) => Err(died(err)),
+            Ok(Err(raised)) => Err(raised.into()),
+            Err(err) => Err(died(err).into()),
         })
     }
 }
@@ -230,7 +230,7 @@ impl StreamTask for PythonTask {
         args: Args,
         cursor: Option<String>,
         key: CallKey,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, Failure>> {
         let request = (
             "open",
             &self.task_id,
@@ -248,17 +248,17 @@ impl StreamTask for PythonTask {
 struct PythonItems(Process);
 
 impl TaskStream for PythonItems {
-    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, Failure>>> {
         let item = match self.0.ask::<Option<(ByteBuf, Option<String>)>>(&("next",)) {
             Ok(item) => item,
-            Err(err) => return Ok(Some(Err(died(err)))),
+            Err(err) => return Ok(Some(Err(died(err).into()))),
         };
         Ok(item.transpose().map(|item| {
             item.map(|(value, cursor)| StreamItem {
                 value: Value::encoded(value.into_vec()),
                 cursor,
             })
-            .map_err(|raised| raised.message)
+            .map_err(Failure::from)
         }))
     }
 }
@@ -267,7 +267,8 @@ impl BatchTask for PythonTask {
     fn open(self: Arc<Self>) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
         Ok(self
             .dedicated(&("session", &self.task_id))?
-            .map(|process| Box::new(PythonSession(process)) as Box<dyn BatchSession>))
+            .map(|process| Box::new(PythonSession(process)) as Box<dyn BatchSession>)
+            .map_err(|failure| failure.message))
     }
 }
 
@@ -432,7 +433,7 @@ class Countdown:
             7
         );
         let err = stream.next().unwrap().unwrap().err().unwrap();
-        assert_eq!(err, "RuntimeError: the source went away");
+        assert_eq!(err.message, "RuntimeError: the source went away");
 
         // Not a stream task: it does not open.
         let merge = load(&dir, "merge");
@@ -440,7 +441,10 @@ class Countdown:
             .unwrap()
             .err()
             .unwrap();
-        assert_eq!(err, "TypeError: merge is a single task, not a stream one");
+        assert_eq!(
+            err.message,
+            "TypeError: merge is a single task, not a stream one"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

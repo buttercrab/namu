@@ -39,6 +39,16 @@ macro_rules! __expect_variant {
     };
 }
 
+/// What a `match`'s option holds, as `#[workflow]` binds it in a `Some(x)` arm (a macro, so the
+/// workflow macro leaves what is inside as it is).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __unwrap_some {
+    ($builder:ident, $value:ident) => {
+        $crate::__macro_exports::unwrap_some(&$builder, &$value)
+    };
+}
+
 /// A field of a `match` arm's variant, as `#[workflow]` binds it (a macro, so the workflow macro
 /// leaves what is inside as it is).
 #[doc(hidden)]
@@ -58,9 +68,9 @@ pub mod __macro_exports {
     pub use namu_flow::{
         Builder, Graph, IntoArg, Node, NodeKind, Raises, TracedValue, arith, branch, call, call0,
         call1, call2, call3, call4, call5, call6, call7, call8, call9, catch, check_arms, compare,
-        expect_variant, field, format, format_arg, index, input, is_variant, jump, literal, logic,
-        negate, not, phi, plus, reduce, return_unit, return_value, tuple, typed_like, variant_part,
-        window,
+        expect_variant, field, format, format_arg, index, input, is_some, is_variant, jump,
+        literal, logic, negate, not, phi, plus, reduce, return_unit, return_value, tuple,
+        typed_like, unwrap_some, variant_part, window,
     };
 }
 

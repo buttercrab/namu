@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use namu_core::OpId;
-use namu_core::raise::Raised;
+use namu_core::raise::{Raise, Raised};
 use namu_core::signature::Signature;
 use namu_core::types::{Defs, Type};
 use namu_core::value::{Data, Value, from_args};
@@ -308,7 +308,7 @@ pub trait StreamTask: Send + Sync {
         args: Args,
         cursor: Option<String>,
         key: CallKey,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>>;
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, Failure>>;
 }
 
 pub trait BatchTask: Send + Sync {
@@ -321,9 +321,9 @@ pub const DEFAULT_WINDOW: usize = 1024;
 
 /// An open stream task.
 pub trait TaskStream: Send {
-    /// The next item, `None` once the stream is over. `Ok(Err(message))` is the task's own
+    /// The next item, `None` once the stream is over. `Ok(Err(failure))` is the task's own
     /// failure, which ends the stream; `Err` is a failure of the machinery around it.
-    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>>;
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, Failure>>>;
 }
 
 pub struct StreamItem {
@@ -377,10 +377,19 @@ impl Default for BatchPolicy {
 pub trait Continuous: Send + 'static {
     type In: Data;
     type Out: Data;
+    /// What an item fails with: a message (`anyhow::Error`), or a type of its own, which an
+    /// attempt of the call catches.
+    type Error: Raise;
 
     /// Takes in `admit` and returns what finished in this step.
-    fn step(&mut self, admit: Vec<(u64, Self::In)>) -> Vec<(u64, Result<Self::Out, String>)>;
+    fn step(&mut self, admit: Vec<(u64, Self::In)>) -> Stepped<Self>;
 }
+
+/// What a continuous batch's step finished: each item's id, and its output or its error.
+pub type Stepped<C> = Vec<(
+    u64,
+    Result<<C as Continuous>::Out, <C as Continuous>::Error>,
+)>;
 
 /// Unpacks a task's output into its `arity` outputs: a task with several returns a tuple.
 pub fn unpack_output(output: Value, arity: usize) -> anyhow::Result<Vec<Value>> {
@@ -521,11 +530,11 @@ impl FnTasks {
         E: Display,
         S: Iterator<Item = Result<O, E>> + Send + 'static,
     {
-        let open = move |args: Args| -> Result<Items, String> {
-            let input = from_args(args).map_err(|err| format!("bad input: {err:#}"))?;
-            let items = f(input).map_err(|err| err.to_string())?;
+        let open = move |args: Args| -> Result<Items, Failure> {
+            let input = from_args(args).map_err(bad_input)?;
+            let items = f(input).map_err(|err| Failure::from(err.to_string()))?;
             Ok(Box::new(items.map(|item| {
-                item.map(Value::new).map_err(|err| err.to_string())
+                item.map(Value::new).map_err(|err| err.to_string().into())
             })))
         };
         let kind = Kind::Stream(Stream {
@@ -535,6 +544,38 @@ impl FnTasks {
         // A workflow sees a stream's items as a list.
         let items = signature::<I, O>(|item| Type::List(Box::new(item)));
         self.register(task, kind, items)
+    }
+
+    /// Registers a stream task, which fails (opening, or at an item, which ends it) with an error
+    /// type of its own: an attempt of a call of it catches the error value.
+    pub fn raising_stream<I, O, E, S>(
+        self,
+        task: &str,
+        f: impl Fn(I) -> Result<S, E> + Send + Sync + 'static,
+    ) -> Self
+    where
+        I: Data,
+        O: Data,
+        E: Data + Display,
+        S: Iterator<Item = Result<O, E>> + Send + 'static,
+    {
+        fn raised<E: Data + Display>(err: E) -> Failure {
+            Failure::raised(err.to_string(), Value::new(err))
+        }
+        let open = move |args: Args| -> Result<Items, Failure> {
+            let input = from_args(args).map_err(bad_input)?;
+            let items = f(input).map_err(raised)?;
+            Ok(Box::new(
+                items.map(|item| item.map(Value::new).map_err(raised)),
+            ))
+        };
+        let kind = Kind::Stream(Stream {
+            task: Arc::new(FnStreamTask(open)),
+            window: DEFAULT_WINDOW,
+        });
+        let mut signature = signature::<I, O>(|item| Type::List(Box::new(item)));
+        signature.error = Some(E::describe(&mut signature.defs));
+        self.register(task, kind, signature)
     }
 
     /// Registers a batch task run by dynamic batching: each step calls `f` on the items given.
@@ -566,7 +607,9 @@ impl FnTasks {
         make: impl Fn() -> C + Send + Sync + 'static,
     ) -> Self {
         let open = move || -> Box<dyn BatchSession> { Box::new(ContinuousSession(make())) };
-        self.with_sessions(task, open, signature::<C::In, C::Out>(|o| o))
+        let mut signature = signature::<C::In, C::Out>(|o| o);
+        signature.error = C::Error::error_type(&mut signature.defs);
+        self.with_sessions(task, open, signature)
     }
 
     fn with_sessions(
@@ -638,7 +681,7 @@ fn bad_input(err: anyhow::Error) -> Failure {
     format!("bad input: {err:#}").into()
 }
 
-type Items = Box<dyn Iterator<Item = Result<Value, String>> + Send>;
+type Items = Box<dyn Iterator<Item = Result<Value, Failure>> + Send>;
 
 struct FnCall<F>(F);
 
@@ -663,13 +706,13 @@ where
 
 struct FnStreamTask<F>(F);
 
-impl<F: Fn(Args) -> Result<Items, String> + Send + Sync> StreamTask for FnStreamTask<F> {
+impl<F: Fn(Args) -> Result<Items, Failure> + Send + Sync> StreamTask for FnStreamTask<F> {
     fn open(
         self: Arc<Self>,
         args: Args,
         _cursor: Option<String>,
         key: CallKey,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, Failure>> {
         let items = with_key(key, || (self.0)(args));
         Ok(items.map(|items| Box::new(FnStream { items, key }) as Box<dyn TaskStream>))
     }
@@ -753,7 +796,10 @@ impl<C: Continuous> BatchSession for ContinuousSession<C> {
         finished.extend(
             with_keys(keys, || self.0.step(items))
                 .into_iter()
-                .map(|(id, output)| (id, output.map(Value::new).map_err(Failure::from))),
+                .map(|(id, output)| {
+                    let output = output.map(Value::new);
+                    (id, output.map_err(|err| Failure::from(err.raise())))
+                }),
         );
         Ok(finished)
     }
@@ -766,7 +812,7 @@ struct FnStream {
 }
 
 impl TaskStream for FnStream {
-    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, Failure>>> {
         let item = with_key(self.key, || self.items.next());
         Ok(item.map(|item| {
             item.map(|value| StreamItem {

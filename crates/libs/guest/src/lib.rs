@@ -115,10 +115,19 @@ pub fn call_keys() -> Vec<String> {
 pub trait Continuous: Default + 'static {
     type In: serde::de::DeserializeOwned;
     type Out: serde::Serialize;
+    /// What an item fails with: a message (`anyhow::Error`), or a type of its own, which an
+    /// attempt of the call catches.
+    type Error: namu_core::raise::Raise;
 
     /// Takes in `admit` and returns what finished in this step, each with its own result.
-    fn step(&mut self, admit: Vec<(u64, Self::In)>) -> Vec<(u64, Result<Self::Out, String>)>;
+    fn step(&mut self, admit: Vec<(u64, Self::In)>) -> Stepped<Self>;
 }
+
+/// What a continuous batch's step finished: each item's id, and its output or its error.
+pub type Stepped<C> = Vec<(
+    u64,
+    Result<<C as Continuous>::Out, <C as Continuous>::Error>,
+)>;
 
 #[doc(hidden)]
 pub mod __private {
@@ -156,8 +165,8 @@ pub mod __private {
     pub fn open_keyed(
         key: String,
         input: &[u8],
-        open: fn(&[u8]) -> Result<Items, String>,
-    ) -> Result<Items, String> {
+        open: fn(&[u8]) -> Result<Items, Raised>,
+    ) -> Result<Items, Raised> {
         let mut key = Some(key);
         let mut items = lend_key(&mut key, || open(input))?;
         Ok(Box::new(std::iter::from_fn(move || {
@@ -168,8 +177,8 @@ pub mod __private {
     /// A value as it crosses the task boundary: MessagePack.
     pub type Bytes = Vec<u8>;
 
-    /// A stream's items, each encoded or the task's error.
-    pub type Items = Box<dyn Iterator<Item = Result<Bytes, String>>>;
+    /// A stream's items, each encoded or the task's failure.
+    pub type Items = Box<dyn Iterator<Item = Result<Bytes, Raised>>>;
 
     /// What a batch step finished: each item's id, and its output or its own failure.
     pub type Finished = Vec<(u64, Result<Bytes, Raised>)>;
@@ -253,19 +262,10 @@ pub mod __private {
                 .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
             let done = done
                 .into_iter()
-                .map(|(id, output)| (id, encode(output).map_err(Raised::from)));
+                .map(|(id, output)| (id, encode_raised(output)));
             finished.extend(done);
             Ok(finished)
         })
-    }
-
-    /// An output, encoded, or its error's message: for what fails with messages (a stream).
-    fn encode<R: serde::Serialize, E: std::fmt::Display>(
-        output: Result<R, E>,
-    ) -> Result<Bytes, String> {
-        output
-            .map_err(|err| err.to_string())
-            .and_then(|output| rmp_serde::to_vec_named(&output).map_err(|err| err.to_string()))
     }
 
     /// An output, encoded, or its failure, with its own error value if it has one.
@@ -294,10 +294,10 @@ pub mod __private {
     }
 
     /// Opens a stream task against its encoded input; its items are encoded as they are pulled.
-    pub fn open<T, E, I, F>(input: &[u8], body: F) -> Result<Items, String>
+    pub fn open<T, E, I, F>(input: &[u8], body: F) -> Result<Items, Raised>
     where
         T: serde::Serialize,
-        E: std::fmt::Display,
+        E: Raise,
         I: Iterator<Item = Result<T, E>> + 'static,
         F: FnOnce(Bytes) -> Result<Result<I, E>, rmp_serde::decode::Error>,
     {
@@ -305,15 +305,15 @@ pub mod __private {
             .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
         let mut items = match items {
             Ok(Ok(items)) => items,
-            Ok(Err(err)) => return Err(err.to_string()),
-            Err(err) => return Err(format!("invalid task input: {err}")),
+            Ok(Err(err)) => return Err(err.raise()),
+            Err(err) => return Err(invalid_input(err)),
         };
         Ok(Box::new(std::iter::from_fn(move || {
             let item = catch_unwind(AssertUnwindSafe(|| items.next()));
             Some(match item {
                 Ok(None) => return None,
-                Ok(Some(output)) => encode(output),
-                Err(panic) => Err(format!("task panicked: {}", panic_message(&panic))),
+                Ok(Some(output)) => encode_raised(output),
+                Err(panic) => Err(format!("task panicked: {}", panic_message(&panic)).into()),
             })
         })))
     }
@@ -347,9 +347,15 @@ pub mod __private {
         Type::List(Box::new(T::describe(defs)))
     }
 
-    /// What a stream fails with: messages, its items ending it as they fail.
-    pub fn stream_error<F>(_decode: F, _defs: &mut Defs) -> Option<Type> {
-        None
+    /// What a stream fails with, opening or at an item (which ends it): the `E` of its
+    /// `Result<impl Iterator<Item = Result<T, E>>, E>`, if it is a type of its own.
+    pub fn stream_error<F, I, T, E>(_decode: F, defs: &mut Defs) -> Option<Type>
+    where
+        F: FnOnce(Bytes) -> Result<Result<I, E>, rmp_serde::decode::Error>,
+        I: Iterator<Item = Result<T, E>>,
+        E: Raise,
+    {
+        E::error_type(defs)
     }
 
     /// A dynamic batch task's signature, per item, as a workflow calls it.
@@ -373,7 +379,8 @@ pub mod __private {
         let mut defs = Defs::new();
         let input = C::In::describe(&mut defs);
         let output = C::Out::describe(&mut defs);
-        Signature::new(vec![input], output, defs)
+        let error = C::Error::error_type(&mut defs);
+        Signature::new(vec![input], output, defs).failing_with(error)
     }
 
     /// Hands the task's signature, as MessagePack, to `namu build`.
@@ -448,7 +455,7 @@ pub mod __private {
     }
 
     /// Native ABI entry point that opens a stream. On success `handle` is set; on failure the
-    /// error is handed over in `out_ptr`/`out_len`.
+    /// failure is handed over in `out_ptr`/`out_len`, as MessagePack `[message, error]`.
     ///
     /// # Safety
     /// `in_ptr` must point to `in_len` readable bytes; the out-pointers must be writable.
@@ -461,7 +468,7 @@ pub mod __private {
         handle: *mut *mut std::ffi::c_void,
         out_ptr: *mut *mut u8,
         out_len: *mut usize,
-        open: fn(&[u8]) -> Result<Items, String>,
+        open: fn(&[u8]) -> Result<Items, Raised>,
     ) -> i32 {
         let key = String::from_utf8_lossy(unsafe { input(key_ptr, key_len) }).into_owned();
         match open_keyed(key, unsafe { input(in_ptr, in_len) }, open) {
@@ -469,15 +476,15 @@ pub mod __private {
                 unsafe { *handle = Box::into_raw(Box::new(items)).cast() };
                 0
             }
-            Err(err) => {
-                unsafe { hand_over(err.into_bytes(), out_ptr, out_len) };
+            Err(raised) => {
+                unsafe { hand_over(encode_failure(&raised), out_ptr, out_len) };
                 1
             }
         }
     }
 
     /// Native ABI entry point for a stream's next item: 0 and the item, 1 at the end, or 2 and
-    /// the task's error.
+    /// the task's failure, as MessagePack `[message, error]`.
     ///
     /// # Safety
     /// `handle` must come from [`native_open`] and not be closed; the out-pointers must be
@@ -491,7 +498,7 @@ pub mod __private {
         let (code, payload) = match items.next() {
             None => return 1,
             Some(Ok(item)) => (0, item),
-            Some(Err(err)) => (2, err.into_bytes()),
+            Some(Err(raised)) => (2, encode_failure(&raised)),
         };
         unsafe { hand_over(payload, out_ptr, out_len) };
         code
@@ -758,13 +765,24 @@ macro_rules! __export_task {
 #[macro_export]
 macro_rules! __export_stream {
     () => {
-        fn __namu_open(input: &[u8]) -> ::std::result::Result<$crate::__private::Items, String> {
+        fn __namu_open(
+            input: &[u8],
+        ) -> ::std::result::Result<$crate::__private::Items, $crate::__private::Raised> {
             $crate::__private::open(input, __namu_decode)
         }
 
         #[cfg(target_family = "wasm")]
         const _: () = {
-            use $crate::stream_bindings::exports::namu::task::source::{Guest, GuestItems, Items};
+            use $crate::stream_bindings::exports::namu::task::source::{
+                Failure, Guest, GuestItems, Items,
+            };
+
+            fn failure(raised: $crate::__private::Raised) -> Failure {
+                Failure {
+                    message: raised.message,
+                    error: raised.error,
+                }
+            }
 
             struct NamuStream;
             struct NamuItems(::std::cell::RefCell<$crate::__private::Items>);
@@ -772,15 +790,16 @@ macro_rules! __export_stream {
             impl Guest for NamuStream {
                 type Items = NamuItems;
 
-                fn open(key: String, input: Vec<u8>) -> ::std::result::Result<Items, String> {
-                    let items = $crate::__private::open_keyed(key, &input, __namu_open)?;
+                fn open(key: String, input: Vec<u8>) -> ::std::result::Result<Items, Failure> {
+                    let items =
+                        $crate::__private::open_keyed(key, &input, __namu_open).map_err(failure)?;
                     Ok(Items::new(NamuItems(::std::cell::RefCell::new(items))))
                 }
             }
 
             impl GuestItems for NamuItems {
-                fn next(&self) -> Option<::std::result::Result<Vec<u8>, String>> {
-                    self.0.borrow_mut().next()
+                fn next(&self) -> Option<::std::result::Result<Vec<u8>, Failure>> {
+                    self.0.borrow_mut().next().map(|item| item.map_err(failure))
                 }
             }
 
@@ -1013,7 +1032,7 @@ mod tests {
         assert_eq!(call_key(), None);
     }
 
-    fn keys(_input: &[u8]) -> Result<Items, String> {
+    fn keys(_input: &[u8]) -> Result<Items, Raised> {
         let opened = call_key();
         Ok(Box::new([opened, None].into_iter().map(|key| {
             Ok(key.or_else(call_key).unwrap_or_default().into_bytes())

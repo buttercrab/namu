@@ -639,6 +639,22 @@ pub fn variant_part<G, E: Data, T: Data>(
     shape(builder, op, vec![held])
 }
 
+/// `match` on an option: whether `value` is some.
+pub fn is_some<G, T: Data>(
+    builder: &Builder<G>,
+    value: &TracedValue<Option<T>>,
+) -> TracedValue<bool> {
+    shape(builder, BuiltinOp::IsSome, vec![value.id])
+}
+
+/// `match` on an option: what `value` holds, where it is some.
+pub fn unwrap_some<G, T: Data>(
+    builder: &Builder<G>,
+    value: &TracedValue<Option<T>>,
+) -> TracedValue<T> {
+    shape(builder, BuiltinOp::Unwrap, vec![value.id])
+}
+
 /// `match`: what rustc checks of the arms, in a match that never runs: that their patterns are
 /// `E`'s, and cover it.
 pub fn check_arms<E>(_value: &TracedValue<E>, _arms: impl FnOnce(E)) {}

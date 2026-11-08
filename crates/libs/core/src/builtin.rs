@@ -7,6 +7,7 @@
 //! - Field access, indexing and tuples take values apart and put them together as MessagePack, as
 //!   they cross every boundary: a field is a slice of its struct's bytes, not decoded.
 //! - `format!` writes scalars as Rust's `Display` does.
+//! - An option is none if it is nil, and a some is what it holds: serde writes `Some(x)` as `x`.
 //! - An enum's variant is read from its MessagePack too: serde writes a unit variant as its name,
 //!   and any other as a map of its name to what it holds.
 
@@ -46,6 +47,15 @@ pub fn eval(op: &BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value> {
                 bail!("the variant `{variant}` matches no arm (the last is `{name}`)");
             }
             Ok(Value::new(variant == name))
+        }
+        BuiltinOp::IsSome => {
+            let [value] = encoded::<1>(inputs)?;
+            Ok(Value::new(!msgpack::is_nil(&value)))
+        }
+        BuiltinOp::Unwrap => {
+            let [value] = encoded::<1>(inputs)?;
+            anyhow::ensure!(!msgpack::is_nil(&value), "a none has no value");
+            Ok(Value::encoded(value))
         }
         BuiltinOp::Format { pieces } => {
             anyhow::ensure!(
@@ -371,5 +381,22 @@ mod tests {
             "the variant `Limited` matches no arm (the last is `Gone`)"
         );
         assert!(eval(&last, &[gone]).is_ok());
+    }
+
+    #[test]
+    fn an_option_is_some_or_none_and_a_some_is_what_it_holds() {
+        let encode = |option: Option<&str>| Value::encoded(rmp_serde::to_vec(&option).unwrap());
+        let some = encode(Some("page"));
+        let none = encode(None);
+        let is_some = |value: &Value| -> bool {
+            eval(&BuiltinOp::IsSome, std::slice::from_ref(value))
+                .unwrap()
+                .take()
+                .unwrap()
+        };
+        assert!(is_some(&some) && !is_some(&none));
+        let page: String = eval(&BuiltinOp::Unwrap, &[some]).unwrap().take().unwrap();
+        assert_eq!(page, "page");
+        assert!(eval(&BuiltinOp::Unwrap, &[none]).is_err());
     }
 }

@@ -653,6 +653,9 @@ impl WorkflowVisitor {
             return Expr::Match(match_expr.clone());
         };
         let body = &arm.body;
+        if let Some(option) = option_arm(&arm.pat) {
+            return self.handle_option_arm(match_expr, &value, option);
+        }
         if let Some(binding) = catch_all(&arm.pat) {
             if let Some(next) = rest.first() {
                 self.fail(&next.pat, "arms after one that matches anything never run");
@@ -703,6 +706,46 @@ impl WorkflowVisitor {
         let evaluate = quote! {
             let __if_condition = ::namu::__macro_exports::is_variant(&#builder, &#value, #name);
         };
+        let seal = quote! {
+            ::namu::__macro_exports::branch(&#builder, __if_condition, #then_block, #else_block);
+        };
+        let mut others = Expr::Match(ExprMatch {
+            arms: rest.to_vec(),
+            ..match_expr.clone()
+        });
+        self.two_way(id, [evaluate, seal], &mut then, Some(&mut others))
+    }
+
+    /// The first arm of a `match` on an option, `Some(x)` or `None`: a split on whether the option
+    /// is some. The last arm needs none: an option is one or the other.
+    fn handle_option_arm(&mut self, match_expr: &ExprMatch, value: &Ident, arm: OptionArm) -> Expr {
+        let builder = self.builder_ident.clone();
+        let (first, rest) = match_expr.arms.split_first().expect("an arm");
+        let body = &first.body;
+        let mut then: Block = match &arm {
+            OptionArm::Some(Some(name)) => parse_quote!({
+                let #name = ::namu::__unwrap_some!(#builder, #value);
+                #body
+            }),
+            OptionArm::Some(None) | OptionArm::None => parse_quote!({ #body }),
+        };
+        if rest.is_empty() {
+            let mut block = Expr::Block(syn::ExprBlock {
+                attrs: Vec::new(),
+                label: None,
+                block: then,
+            });
+            self.visit_expr_mut(&mut block);
+            return block;
+        }
+        let id = self.new_control_flow_id();
+        let (then_block, else_block, _) = two_way_blocks(id);
+        let is_some = quote! { ::namu::__macro_exports::is_some(&#builder, &#value) };
+        let condition = match arm {
+            OptionArm::Some(_) => is_some,
+            OptionArm::None => quote! { ::namu::__macro_exports::not(&#builder, #is_some) },
+        };
+        let evaluate = quote! { let __if_condition = #condition; };
         let seal = quote! {
             ::namu::__macro_exports::branch(&#builder, __if_condition, #then_block, #else_block);
         };
@@ -1091,6 +1134,36 @@ fn result_arm(pat: &Pat) -> Option<(&'static str, &Pat)> {
         .find(|variant| pat.path.is_ident(variant))?;
     match pat.elems.len() {
         1 => Some((variant, &pat.elems[0])),
+        _ => None,
+    }
+}
+
+/// An arm of a `match` on an option: `Some(x)` (or `Some(_)`) or `None`.
+enum OptionArm {
+    Some(Option<Ident>),
+    None,
+}
+
+fn option_arm(pat: &Pat) -> Option<OptionArm> {
+    match pat {
+        Pat::Ident(PatIdent {
+            ident,
+            subpat: None,
+            ..
+        }) if ident == "None" => Some(OptionArm::None),
+        Pat::Path(path) if path.path.is_ident("None") => Some(OptionArm::None),
+        Pat::TupleStruct(tuple) if tuple.path.is_ident("Some") && tuple.elems.len() == 1 => {
+            match &tuple.elems[0] {
+                Pat::Wild(_) => Some(OptionArm::Some(None)),
+                Pat::Ident(PatIdent {
+                    ident,
+                    subpat: None,
+                    by_ref: None,
+                    ..
+                }) => Some(OptionArm::Some(Some(ident.clone()))),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

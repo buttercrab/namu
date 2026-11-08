@@ -6,8 +6,8 @@
 //! - A batch task exports `namu_batch_open`, `namu_batch_step` and `namu_batch_close`; a step's
 //!   items and results cross as one MessagePack document.
 //!
-//! Values cross as MessagePack. A call's or a batch item's failure crosses as MessagePack too,
-//! `[message, error]` (a [`Raised`]); a stream's or a session's errors as text.
+//! Values cross as MessagePack. A call's, a stream's or a batch item's failure crosses as
+//! MessagePack too, `[message, error]` (a [`Raised`]); a batch session's errors as text.
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -151,7 +151,7 @@ impl StreamTask for NativeStreamTask {
         args: Args,
         _cursor: Option<String>,
         key: CallKey,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, Failure>> {
         let input = encode_args(&args)?;
         let key = key.to_string();
         let mut handle = std::ptr::null_mut();
@@ -169,7 +169,7 @@ impl StreamTask for NativeStreamTask {
             )
         };
         if code != 0 {
-            return Ok(Err(take_error(self.free, out_ptr, out_len)));
+            return Ok(Err(take_failure(self.free, out_ptr, out_len)?.into()));
         }
         Ok(Ok(Box::new(NativeItems { task: self, handle })))
     }
@@ -184,7 +184,7 @@ struct NativeItems {
 unsafe impl Send for NativeItems {}
 
 impl TaskStream for NativeItems {
-    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, Failure>>> {
         let (mut out_ptr, mut out_len) = (std::ptr::null_mut(), 0);
         // SAFETY: the handle is open; the library writes an owned buffer unless the stream ended.
         let code = unsafe { (self.task.next)(self.handle, &mut out_ptr, &mut out_len) };
@@ -194,7 +194,7 @@ impl TaskStream for NativeItems {
                 value: Value::encoded(take(self.task.free, out_ptr, out_len)),
                 cursor: None,
             })),
-            _ => Some(Err(take_error(self.task.free, out_ptr, out_len))),
+            _ => Some(Err(take_failure(self.task.free, out_ptr, out_len)?.into())),
         })
     }
 }

@@ -51,6 +51,68 @@ fn describe(error: FetchError) -> Result<String>;
 #[task]
 fn size(n: i32) -> Result<Size>;
 
+#[task]
+fn items(n: i32) -> Result<Vec<i32>>;
+
+#[task]
+fn sum(xs: Vec<i32>) -> Result<i32>;
+
+#[task]
+fn find(n: i32) -> Result<Option<String>>;
+
+#[derive(Clone, Debug, Serialize, Deserialize, namu::Data)]
+pub enum CrawlError {
+    Blocked,
+    BrokenAt(i32),
+}
+
+impl fmt::Display for CrawlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+#[task(stream)]
+fn crawl(n: i32) -> Result<impl Iterator<Item = Result<i32, CrawlError>>, CrawlError>;
+
+#[task]
+fn count(pages: Vec<i32>) -> Result<i32>;
+
+#[derive(Clone, Debug, Serialize, Deserialize, namu::Data)]
+pub enum Verdict {
+    TooLong(i32),
+}
+
+impl fmt::Display for Verdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+/// Doubles each item a step at a time, alongside the rest of its batch; an item over 10 fails.
+#[task(batch)]
+fn judge(items: Vec<i32>) -> Vec<Result<i32, Verdict>>;
+
+#[derive(Default)]
+struct Judge;
+
+impl namu_engine::tasks::Continuous for Judge {
+    type In = i32;
+    type Out = i32;
+    type Error = Verdict;
+
+    fn step(&mut self, admit: Vec<(u64, i32)>) -> Vec<(u64, Result<i32, Verdict>)> {
+        let judged = |n: i32| {
+            if n > 10 {
+                Err(Verdict::TooLong(n))
+            } else {
+                Ok(n * 2)
+            }
+        };
+        admit.into_iter().map(|(id, n)| (id, judged(n))).collect()
+    }
+}
+
 fn tasks() -> FnTasks {
     FnTasks::new()
         .raising("fetch", |url: String| match url.as_str() {
@@ -72,6 +134,29 @@ fn tasks() -> FnTasks {
         })
         .with("describe", |error: FetchError| {
             Ok::<_, String>(format!("failed: {error}"))
+        })
+        // `n` pages, unless `n` is negative (it will not open) or above 5 (page 5 is broken).
+        .raising_stream("crawl", |n: i32| {
+            if n < 0 {
+                return Err(CrawlError::Blocked);
+            }
+            Ok((1..=n).map(|page| match page {
+                5 => Err(CrawlError::BrokenAt(5)),
+                page => Ok(page),
+            }))
+        })
+        .with_continuous("judge", Judge::default)
+        .with("items", |n: i32| {
+            Ok::<_, String>((1..=n).collect::<Vec<_>>())
+        })
+        .with("sum", |xs: Vec<i32>| {
+            Ok::<_, String>(xs.iter().sum::<i32>())
+        })
+        .with("count", |pages: Vec<i32>| {
+            Ok::<_, String>(pages.len() as i32)
+        })
+        .with("find", |n: i32| {
+            Ok::<_, String>((n > 0).then(|| format!("page {n}")))
         })
         .with("size", |n: i32| {
             Ok::<_, String>(if n < 10 {
@@ -273,4 +358,86 @@ async fn a_variant_no_arm_matches_fails_the_branch() {
     )
     .await;
     assert_eq!(results(&outcome), [json!(0)]);
+}
+
+#[workflow]
+fn found(n: i32) -> String {
+    match find(n) {
+        Some(page) => page,
+        None => "nothing",
+    }
+}
+
+#[workflow]
+fn found_none_first(n: i32) -> String {
+    match find(n) {
+        None => "nothing",
+        Some(page) => page,
+    }
+}
+
+#[workflow]
+fn found_or_not(n: i32) -> String {
+    match find(n) {
+        Some(_) => "something",
+        _ => "nothing",
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_option_is_matched_on() {
+    for (n, expected) in [(2, "page 2"), (0, "nothing")] {
+        for workflow in [found(), found_none_first()] {
+            let workflow = workflow.to_serializable("found".into());
+            let outcome = run(workflow, json!({ "n": n }), tasks()).await;
+            assert_eq!(results(&outcome), [json!(expected)], "{n}");
+        }
+    }
+    let outcome = run(
+        found_or_not().to_serializable("found".into()),
+        json!({ "n": 2 }),
+        tasks(),
+    )
+    .await;
+    assert_eq!(results(&outcome), [json!("something")]);
+}
+
+#[workflow]
+fn crawled(n: i32) -> i32 {
+    match attempt(crawl(n)) {
+        Ok(pages) => count(pages),
+        Err(CrawlError::Blocked) => -1,
+        Err(CrawlError::BrokenAt(page)) => page * 100,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_fails_with_its_own_error_opening_or_at_an_item() {
+    for (n, expected) in [(3, 3), (-1, -1), (9, 500)] {
+        let workflow = crawled().to_serializable("crawled".into());
+        let outcome = run(workflow, json!({ "n": n }), tasks()).await;
+        assert_eq!(results(&outcome), [json!(expected)], "{n}");
+    }
+}
+
+#[workflow]
+fn judged() -> i32 {
+    let n = each(items(12));
+    let verdict = match attempt(judge(n)) {
+        Ok(doubled) => doubled,
+        Err(Verdict::TooLong(n)) => 0 - n,
+    };
+    sum(verdict)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_item_fails_with_its_own_error() {
+    let outcome = run(
+        judged().to_serializable("judged".into()),
+        json!({}),
+        tasks(),
+    )
+    .await;
+    // 1..=10 doubled, then -11 and -12.
+    assert_eq!(results(&outcome), [json!(110 - 23)]);
 }

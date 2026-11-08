@@ -137,7 +137,7 @@ impl StreamTask for WasmStreamTask {
         args: Args,
         _cursor: Option<String>,
         key: CallKey,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, Failure>> {
         let input = encode_args(&args)?;
         let host = Host {
             wasi: WasiCtx::builder().inherit_stderr().build(),
@@ -151,7 +151,7 @@ impl StreamTask for WasmStreamTask {
             .call_open(&mut store, &key, &input)?
         {
             Ok(items) => items,
-            Err(message) => return Ok(Err(message)),
+            Err(failure) => return Ok(Err(stream_failure(failure))),
         };
         Ok(Ok(Box::new(WasmItems {
             store,
@@ -169,7 +169,7 @@ struct WasmItems {
 }
 
 impl TaskStream for WasmItems {
-    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, Failure>>> {
         let items = self.items.expect("the stream is open");
         let item = self
             .instance
@@ -177,12 +177,22 @@ impl TaskStream for WasmItems {
             .items()
             .call_next(&mut self.store, items)?;
         Ok(item.map(|item| {
+            let value = item.map_err(stream_failure)?;
             Ok(StreamItem {
-                value: Value::encoded(item?),
+                value: Value::encoded(value),
                 cursor: None,
             })
         }))
     }
+}
+
+/// A stream's failure, as the `source` interface gives it.
+fn stream_failure(failure: source::namu::task::types::Failure) -> Failure {
+    let raised = Raised {
+        message: failure.message,
+        error: failure.error,
+    };
+    raised.into()
 }
 
 impl Drop for WasmItems {

@@ -76,6 +76,10 @@ pub enum BuiltinOp {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         required: bool,
     },
+    /// Whether an option is some: a `bool`.
+    IsSome,
+    /// What a some holds (the same bytes: serde writes `Some(x)` as `x`); a none fails the branch.
+    Unwrap,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

@@ -101,6 +101,11 @@ pub fn field(bytes: &[u8], name: &str) -> anyhow::Result<Option<Range<usize>>> {
     }
 }
 
+/// Whether `bytes` is nil: a none.
+pub fn is_nil(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&0xc0)
+}
+
 /// Which variant the enum in `bytes` is, as serde writes it: a unit variant as its name, any other
 /// as a map of its name to its contents.
 pub fn variant(bytes: &[u8]) -> anyhow::Result<&str> {

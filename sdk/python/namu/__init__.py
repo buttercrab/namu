@@ -89,9 +89,10 @@ def task(function: T | None = None, *, error: Any = None) -> T:
     return _registering("single", function, error)
 
 
-def stream(generator: T) -> T:
-    """Registers a generator function as the stream task of its name."""
-    return _register("stream", generator)
+def stream(generator: T | None = None, *, error: Any = None) -> T:
+    """Registers a generator function as the stream task of its name; `error` is the type it
+    fails with (opening, or at an item, which ends it), if it is one of its own."""
+    return _registering("stream", generator, error)
 
 
 def batch(function: T | None = None, *, error: Any = None) -> T:
@@ -100,9 +101,10 @@ def batch(function: T | None = None, *, error: Any = None) -> T:
     return _registering("batch", function, error)
 
 
-def continuous(cls: T) -> T:
-    """Registers a class with a `step` method as a continuous batch task."""
-    return _register("continuous", cls)
+def continuous(cls: T | None = None, *, error: Any = None) -> T:
+    """Registers a class with a `step` method as a continuous batch task; `error` is the type an
+    item fails with, if it is one of its own."""
+    return _registering("continuous", cls, error)
 
 
 class Failed(Exception):

@@ -162,7 +162,7 @@ sum(y)                          // collects the rest
 - `match attempt(task(..))`: errors as values (below), and `match` on an enum's variants
 
 Not yet supported:
-- `match` on anything but an attempt or an enum (an `Option`, a number)
+- `match` on anything but an attempt, an enum or an option (a number, a string)
 - labeled `break` / `continue`, and `break` with a value
 
 ## Errors as values
@@ -224,9 +224,9 @@ match classify(doc) {
 An arm is a variant, with its fields bound to names or left out (`_`, `..`), `_`, or a name for
 the value; rustc checks that the arms are the enum's and cover it. A value of a variant the
 workflow's enum does not have (from a task written elsewhere) matches no arm, and fails the
-branch. Variants are written with their
-path (`Kind::Spam`), or by a name that starts with a capital. Guards, `|` and patterns inside
-fields are not supported.
+branch. Variants are written with their path (`Kind::Spam`), or by a name that starts with a
+capital. An option is matched on the same way, `Some(x)` and `None`. Guards, `|` and patterns
+inside fields are not supported.
 
 ## Outputs
 Each `return` reached adds to the run's results. The run is `succeeded`, or `partial_failed` if any

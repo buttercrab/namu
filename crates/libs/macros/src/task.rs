@@ -124,12 +124,16 @@ fn constructor(
     if let TaskKind::Reduce = kind {
         return reducer(vis, sig, &params, result_inner(ret)?);
     }
-    // What an attempt of a call catches: the error type of what one call gives, if it has one.
-    // A stream's items end it when they fail, so its errors are messages.
+    // What an attempt of a call catches: the error type of what one call gives, if it has one: a
+    // stream's items' (which end it as they fail, as its opening may).
     let error = match kind {
         TaskKind::Single => result_error(ret),
         TaskKind::Batch => generic_arg(ret, "Vec", "").ok().and_then(result_error),
-        TaskKind::Stream | TaskKind::Reduce => None,
+        TaskKind::Stream => result_inner(ret)
+            .and_then(iterator_item)
+            .ok()
+            .and_then(result_error),
+        TaskKind::Reduce => None,
     };
     let raises = raises(vis, name, error);
 

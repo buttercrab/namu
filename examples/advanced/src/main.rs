@@ -56,8 +56,9 @@ struct Model {
 impl Continuous for Model {
     type In = String;
     type Out = Label;
+    type Error = String;
 
-    fn step(&mut self, admit: Vec<(u64, String)>) -> Vec<(u64, Result<Label, String>)> {
+    fn step(&mut self, admit: Vec<(u64, String)>) -> Vec<(u64, Result<Label, Self::Error>)> {
         for (id, text) in admit {
             let words = text.split_whitespace().count();
             self.active.insert(id, (text, words));

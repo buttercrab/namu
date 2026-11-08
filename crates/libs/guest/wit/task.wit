@@ -17,17 +17,18 @@ world task {
   export call: func(key: string, input: list<u8>) -> result<list<u8>, failure>;
 }
 
-/// A stream task yields its outputs one at a time, as MessagePack documents. Its errors are
-/// text: a failing item ends the stream.
+/// A stream task yields its outputs one at a time, as MessagePack documents.
 interface source {
+  use types.{failure};
+
   /// An open stream.
   resource items {
-    /// The next item; `none` once the stream is over. An error ends the stream.
-    next: func() -> option<result<list<u8>, string>>;
+    /// The next item; `none` once the stream is over. A failure ends the stream.
+    next: func() -> option<result<list<u8>, failure>>;
   }
 
   /// Opens the stream over its input, for the call named `key` (as `call` in the `task` world).
-  open: func(key: string, input: list<u8>) -> result<items, string>;
+  open: func(key: string, input: list<u8>) -> result<items, failure>;
 }
 
 world stream-task {
