@@ -174,7 +174,8 @@ class Signatures(unittest.TestCase):
 
             class Fetch(enum.Enum):
                 not_found = "not found"
-                limited = "limited"
+                limited: str = "limited"
+                retries: int  # an annotation alone is no member
 
             @namu.task(error=Fetch)
             def fetch(url: str) -> str:

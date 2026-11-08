@@ -139,13 +139,7 @@ class Module:
         record = any(name_of(d.func if isinstance(d, ast.Call) else d) == "dataclass" for d in cls.decorator_list)
         typed_dict = any(name_of(base) == "TypedDict" for base in cls.bases)
         if any(name_of(base) in ENUMS for base in cls.bases):
-            members = [
-                target.id
-                for stmt in cls.body
-                if isinstance(stmt, ast.Assign)
-                for target in stmt.targets
-                if isinstance(target, ast.Name) and not target.id.startswith("_")
-            ]
+            members = [name for stmt in cls.body for name in enum_members(stmt)]
             self.defs[name] = {"enum": [[member, []] for member in members]}
             return {"named": name}
         if not (record or typed_dict):
@@ -238,6 +232,18 @@ class Module:
                 item = item.slice
             return {"list": self.type(item)}
         return unknown("")
+
+
+def enum_members(stmt: ast.stmt) -> list[str]:
+    """The members an enum's body statement defines: names given a value (`A = 1`, or annotated,
+    `A: int = 1`), but not private ones (`_ignore_`). An annotation alone defines none."""
+    if isinstance(stmt, ast.Assign):
+        targets = stmt.targets
+    elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        targets = [stmt.target]
+    else:
+        return []
+    return [t.id for t in targets if isinstance(t, ast.Name) and not t.id.startswith("_")]
 
 
 def item_of(ty: Type | None, at: int | None = None) -> Type:

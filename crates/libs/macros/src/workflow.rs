@@ -686,17 +686,18 @@ impl WorkflowVisitor {
                 );
             }
         });
-        let mut then: Block = parse_quote!({ #(#bind)* #body });
-        // The last arm is what remains: rustc has checked that the arms cover the enum.
+        // The last arm is what remains, as rustc has checked: the arms cover the enum. A value a
+        // task written elsewhere gives may still be another variant, which fails the branch.
         if rest.is_empty() {
-            let mut block = Expr::Block(syn::ExprBlock {
-                attrs: Vec::new(),
-                label: None,
-                block: then,
+            let mut block: Expr = parse_quote!({
+                ::namu::__expect_variant!(#builder, #value, #name);
+                #(#bind)*
+                #body
             });
             self.visit_expr_mut(&mut block);
             return block;
         }
+        let mut then: Block = parse_quote!({ #(#bind)* #body });
         let id = self.new_control_flow_id();
         let (then_block, else_block, _) = two_way_blocks(id);
         let evaluate = quote! {

@@ -580,7 +580,23 @@ pub fn is_variant<G, E: Data>(
     variant: &str,
 ) -> TracedValue<bool> {
     let name = variant_name::<E>(variant);
-    shape(builder, BuiltinOp::Variant { name }, vec![value.id])
+    let op = BuiltinOp::Variant {
+        name,
+        required: false,
+    };
+    shape(builder, op, vec![value.id])
+}
+
+/// `match`: that `value` is its enum's variant written `variant` in Rust, the last arm's, or the
+/// branch fails. rustc has checked that the arms cover the enum as the workflow has it; a value a
+/// task written elsewhere gives may still be another variant.
+pub fn expect_variant<G, E: Data>(builder: &Builder<G>, value: &TracedValue<E>, variant: &str) {
+    let name = variant_name::<E>(variant);
+    let op = BuiltinOp::Variant {
+        name,
+        required: true,
+    };
+    let _: TracedValue<bool> = shape(builder, op, vec![value.id]);
 }
 
 /// `match`: the field `field` of `value`'s variant `variant` (both as written in Rust; a tuple

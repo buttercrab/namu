@@ -68,8 +68,14 @@ pub enum BuiltinOp {
     /// `format!`: `pieces[0]`, then each input (a scalar) followed by the next piece.
     Format { pieces: Vec<String> },
     /// Whether an enum is its variant `name` (as serde names it): a `bool`. What a variant holds
-    /// is its [`BuiltinOp::Field`] of the same name.
-    Variant { name: String },
+    /// is its [`BuiltinOp::Field`] of the same name. If `required`, an enum that is another
+    /// variant fails the branch instead: the last arm of a `match`, which a value written
+    /// elsewhere may not fit.
+    Variant {
+        name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        required: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

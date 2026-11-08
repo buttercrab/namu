@@ -222,7 +222,9 @@ match classify(doc) {
 ```
 
 An arm is a variant, with its fields bound to names or left out (`_`, `..`), `_`, or a name for
-the value; rustc checks that the arms are the enum's and cover it. Variants are written with their
+the value; rustc checks that the arms are the enum's and cover it. A value of a variant the
+workflow's enum does not have (from a task written elsewhere) matches no arm, and fails the
+branch. Variants are written with their
 path (`Kind::Spam`), or by a name that starts with a capital. Guards, `|` and patterns inside
 fields are not supported.
 

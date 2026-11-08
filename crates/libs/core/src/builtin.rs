@@ -39,9 +39,13 @@ pub fn eval(op: &BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value> {
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(Value::encoded(msgpack::array(&parts)))
         }
-        BuiltinOp::Variant { name } => {
+        BuiltinOp::Variant { name, required } => {
             let [value] = encoded::<1>(inputs)?;
-            Ok(Value::new(msgpack::variant(&value)? == name))
+            let variant = msgpack::variant(&value)?;
+            if *required && variant != name {
+                bail!("the variant `{variant}` matches no arm (the last is `{name}`)");
+            }
+            Ok(Value::new(variant == name))
         }
         BuiltinOp::Format { pieces } => {
             anyhow::ensure!(
@@ -332,7 +336,10 @@ mod tests {
         }
         let encode = |fetched: &Fetched| Value::encoded(rmp_serde::to_vec_named(fetched).unwrap());
         let is = |value: &Value, name: &str| -> bool {
-            let op = BuiltinOp::Variant { name: name.into() };
+            let op = BuiltinOp::Variant {
+                name: name.into(),
+                required: false,
+            };
             eval(&op, std::slice::from_ref(value))
                 .unwrap()
                 .take()
@@ -349,9 +356,20 @@ mod tests {
         assert_eq!(to, "/new");
         let limited = encode(&Fetched::Limited { retry_after: 3 });
         assert!(is(&limited, "Limited"));
-        let after: u64 = field(field(limited, "Limited"), "retry_after")
+        let after: u64 = field(field(limited.clone(), "Limited"), "retry_after")
             .take()
             .unwrap();
         assert_eq!(after, 3);
+        // The last arm's variant must be the value's.
+        let last = BuiltinOp::Variant {
+            name: "Gone".into(),
+            required: true,
+        };
+        let missed = eval(&last, &[limited]).unwrap_err().to_string();
+        assert_eq!(
+            missed,
+            "the variant `Limited` matches no arm (the last is `Gone`)"
+        );
+        assert!(eval(&last, &[gone]).is_ok());
     }
 }

@@ -229,3 +229,48 @@ async fn an_arm_may_match_anything_left() {
     .await;
     assert_eq!(results(&outcome), [json!(1)]);
 }
+
+/// A size as a task written elsewhere gives it: by name, with nothing said of its shape, so the
+/// signature check cannot tell it from a `Size`.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Tag(String);
+
+impl namu::Describe for Tag {}
+impl namu::Data for Tag {}
+
+#[workflow]
+fn small_last(n: i32) -> u64 {
+    match size(n) {
+        Size::Large(bytes) => bytes,
+        Size::Small => 0,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_variant_no_arm_matches_fails_the_branch() {
+    let sizes =
+        |tag: &'static str| tasks().with("size", move |_: i32| Ok::<_, String>(Tag(tag.into())));
+    let outcome = run(
+        small_last().to_serializable("small_last".into()),
+        json!({ "n": 3 }),
+        sizes("Huge"),
+    )
+    .await;
+    assert!(outcome.results.is_empty());
+    let [failure] = &outcome.failures[..] else {
+        panic!("one failure: {:?}", outcome.failures)
+    };
+    assert!(
+        failure.contains("the variant `Huge` matches no arm"),
+        "{failure}"
+    );
+    // And one that is the last arm's variant takes it.
+    let outcome = run(
+        small_last().to_serializable("small_last".into()),
+        json!({ "n": 3 }),
+        sizes("Small"),
+    )
+    .await;
+    assert_eq!(results(&outcome), [json!(0)]);
+}
