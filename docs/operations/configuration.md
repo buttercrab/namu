@@ -15,6 +15,19 @@ hash tags, `{namu}` for the orchestrator's state and `{namu:log}` for the worker
 set shares a slot and its multi-key commands work; a MemoryDB cluster with one shard (and
 replicas for failover) fits.
 
+Earlier builds named the keys without hash tags (`namu:…`, `namu:log:…`), and these do not read
+them. To keep what a single Redis holds from an earlier build, stop the orchestrator and every worker, rename
+the keys, and start the new version:
+
+```bash
+redis-cli -u "$REDIS_URL" --scan --pattern 'namu:*' | while read -r key; do
+  case $key in
+    namu:log:*) redis-cli -u "$REDIS_URL" rename "$key" "{namu:log}:${key#namu:log:}" ;;
+    *) redis-cli -u "$REDIS_URL" rename "$key" "{namu}:${key#namu:}" ;;
+  esac
+done
+```
+
 The orchestrator keeps no state of its own: restarted, it takes up from Redis, gives every member
 a new lease, and sends each unfinished run its `Start` again (a worker asks the log whether the run
 began, and starts it only if it did not). Runs go on while it is down, peer to peer; their results wait on the workers until it is
