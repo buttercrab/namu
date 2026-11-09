@@ -16,7 +16,7 @@ variable "vpc_cidr" {
 
 variable "kubernetes_version" {
   type    = string
-  default = "1.33"
+  default = "1.35"
 }
 
 variable "orchestrator_instance_types" {
@@ -52,6 +52,12 @@ variable "namespace" {
   description = "The Kubernetes namespace NAMU is installed in (for the orchestrator's IAM role)."
   type        = string
   default     = "namu"
+}
+
+variable "force_destroy" {
+  description = "Let `terraform destroy` take everything: the bucket with its task packages in it, and the Redis URL's secret at once, rather than after its 30-day recovery window (so the name is free again). For clusters made to be thrown away, such as a test's."
+  type        = bool
+  default     = false
 }
 
 variable "service_account" {

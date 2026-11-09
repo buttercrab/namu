@@ -3,8 +3,12 @@
 //!
 //! Appends go through one writer task, so they are applied in order, a batch at a time in one
 //! transaction; an append is durable once its batch has been applied. Per run, the log is a
-//! handful of keys under `namu:log:{run}:`; a set of live runs lets a successor find a dead
+//! handful of keys under `{namu:log}:{run}:`; a set of live runs lets a successor find a dead
 //! worker's estate.
+//!
+//! Every key has the hash tag `{namu:log}`: a batch's transaction spans runs, so on Redis in
+//! cluster mode (MemoryDB always is) the log must be one slot, and so one shard's. It grows with
+//! its shard, not across shards.
 //!
 //! The log holds a run's live frontier, not its history (design §7.5). A scope's ends, count and
 //! position go with the scope, and nodes nothing live reaches are swept: after a batch that removed
@@ -31,10 +35,10 @@ use redis::aio::ConnectionManager;
 use tokio::sync::{mpsc, oneshot};
 
 /// Runs whose log is live.
-const RUNS: &str = "namu:log:runs";
+const RUNS: &str = "{namu:log}:runs";
 
 fn key(run: RunId, part: &str) -> String {
-    format!("namu:log:{run}:{part}")
+    format!("{{namu:log}}:{run}:{part}")
 }
 
 /// The ends of one scope.

@@ -69,6 +69,18 @@ pub fn describe() {
         "namu_releases_pending",
         "Log records waiting for acknowledgements to go"
     );
+    describe_gauge!(
+        "namu_messages_waiting_for_runs",
+        "Messages for runs not known here yet, waiting for their description"
+    );
+    describe_gauge!(
+        "namu_messages_waiting_for_takeover",
+        "Messages for a dead worker's work, waiting for this worker to take it over"
+    );
+    describe_gauge!(
+        "namu_node_fetches_waiting",
+        "Value-tree nodes asked of other workers and not yet received"
+    );
 }
 
 /// A task call: one span, and its outcome and duration in metrics.
@@ -143,6 +155,9 @@ pub(crate) struct Sample {
     pub task_slots_busy: usize,
     pub unacknowledged: usize,
     pub releases_pending: usize,
+    pub waiting_for_runs: usize,
+    pub waiting_for_takeover: usize,
+    pub node_fetches_waiting: usize,
 }
 
 pub(crate) fn sampled(sample: Sample) {
@@ -152,6 +167,9 @@ pub(crate) fn sampled(sample: Sample) {
     metrics::gauge!("namu_task_slots_busy").set(sample.task_slots_busy as f64);
     metrics::gauge!("namu_unacknowledged_messages").set(sample.unacknowledged as f64);
     metrics::gauge!("namu_releases_pending").set(sample.releases_pending as f64);
+    metrics::gauge!("namu_messages_waiting_for_runs").set(sample.waiting_for_runs as f64);
+    metrics::gauge!("namu_messages_waiting_for_takeover").set(sample.waiting_for_takeover as f64);
+    metrics::gauge!("namu_node_fetches_waiting").set(sample.node_fetches_waiting as f64);
 }
 
 /// How often a worker samples its state.

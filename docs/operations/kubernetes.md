@@ -3,7 +3,9 @@
 One orchestrator and any number of workers, from a Helm chart (`deploy/helm/namu`), on a cluster
 the Terraform in `deploy/terraform/aws` makes: EKS with on-demand nodes for the orchestrator and
 spot nodes for workers, MemoryDB for Redis, and an S3 bucket for task packages.
-`scripts/kind.sh` checks it all on a local kind cluster, secured, with a worker drained mid-run.
+`scripts/kind.sh` checks it all on a local kind cluster, secured, with a worker drained mid-run;
+`scripts/eks.sh` does the same on AWS, from `terraform apply` to `terraform destroy`, and deletes
+the orchestrator's pod mid-run besides.
 
 ## 1. AWS: the cluster and what it needs
 
@@ -25,7 +27,8 @@ It makes:
 | IAM | a role the orchestrator's service account assumes (IRSA): read and write the bucket, nothing else |
 
 Keep Terraform's state in a remote backend (S3 with locking) for anything shared; the state holds
-the MemoryDB password.
+the MemoryDB password. `-var force_destroy=true` lets `terraform destroy` take the bucket with its
+packages and the Redis URL's secret at once: for clusters made to be thrown away.
 
 ## 2. Images
 
@@ -117,7 +120,5 @@ certificate (`tls.certManager.extraDnsNames`).
 
 ## Not covered yet
 
-- Applying the Terraform and installing on EKS has not been done from this repository: the chart
-  is checked on kind (`scripts/kind.sh`), the Terraform with `terraform validate`.
 - No KEDA scaler on NAMU's own metrics ships with the chart.
 - A worker's token is an environment variable: rotating it needs a rollout of the workers.

@@ -42,6 +42,9 @@ Metrics carry no run ids (a series per run would never stop growing); a task's i
 | `namu_task_slots_busy` | gauge | Task slots in use, of `NAMU_TASK_SLOTS` |
 | `namu_unacknowledged_messages` | gauge | Messages kept until acknowledged: grows when a peer or the orchestrator is slow or away |
 | `namu_releases_pending` | gauge | Log records waiting on acknowledgements: what a drain waits for |
+| `namu_messages_waiting_for_runs` | gauge | Messages for runs not known here yet, waiting for the run's description |
+| `namu_messages_waiting_for_takeover` | gauge | Messages for a dead worker's work, waiting for this worker to take it over |
+| `namu_node_fetches_waiting` | gauge | Value-tree nodes asked of other workers and not yet received |
 | `namu_log_write_seconds` | histogram | How long a log batch took to be durable in Redis |
 | `namu_log_records_total`, `namu_log_write_failures_total` | counter | Log records written; failed writes (retried) |
 | `namu_heartbeat_failures_total` | counter | Heartbeats that did not reach the orchestrator |
@@ -62,6 +65,9 @@ Gauges are sampled every second.
 
 - `namu_unacknowledged_messages` rising on every worker at once: the orchestrator is down or slow;
   runs go on, results wait.
+- `namu_messages_waiting_for_runs`, `namu_messages_waiting_for_takeover` or
+  `namu_node_fetches_waiting` above zero for more than a few seconds: a worker waits on something
+  that does not come (usually the log, unreadable); a run that does not end shows where.
 - `namu_log_write_seconds` rising: Redis is the bottleneck; every handoff's release waits on it.
 - `namu_task_slots_busy` at `NAMU_TASK_SLOTS` everywhere with `namu_branches_driving` growing: add
   workers (they join a running run).

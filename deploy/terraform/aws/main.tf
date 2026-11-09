@@ -106,7 +106,7 @@ resource "aws_security_group" "redis" {
   name   = "${var.name}-redis"
   vpc_id = module.vpc.vpc_id
   ingress {
-    description     = "Redis from the cluster's nodes"
+    description     = "Redis from the cluster nodes"
     from_port       = 6379
     to_port         = 6379
     protocol        = "tcp"
@@ -128,7 +128,8 @@ resource "aws_memorydb_cluster" "namu" {
 
 # The URL NAMU reaches it by, password included: put it in the `namu-redis` Secret.
 resource "aws_secretsmanager_secret" "redis_url" {
-  name = "${var.name}/redis-url"
+  name                    = "${var.name}/redis-url"
+  recovery_window_in_days = var.force_destroy ? 0 : 30
 }
 
 resource "aws_secretsmanager_secret_version" "redis_url" {
@@ -146,6 +147,7 @@ resource "aws_secretsmanager_secret_version" "redis_url" {
 
 resource "aws_s3_bucket" "artifacts" {
   bucket_prefix = "${var.name}-artifacts-"
+  force_destroy = var.force_destroy
 }
 
 resource "aws_s3_bucket_public_access_block" "artifacts" {

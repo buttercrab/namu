@@ -38,7 +38,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "namu.image" -}}
-{{- printf "%s:%s" .image.repository (default .chart.AppVersion .image.tag) -}}
+{{- printf "%s:%s" .image.repository (toString (default .chart.AppVersion .image.tag)) -}}
 {{- end -}}
 
 {{/* What every NAMU process is given: Redis, TLS, telemetry. */}}

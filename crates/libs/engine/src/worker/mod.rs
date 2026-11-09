@@ -305,17 +305,25 @@ impl Inner {
         task_versions: BTreeMap<String, String>,
         reply_to: WorkerId,
     ) {
-        if self.run_state(id).is_some() {
-            return tracing::info!(%id, "run already started here");
-        }
-        match self.log.run(id).await {
-            Ok(Logged::Unknown) => {}
-            Ok(Logged::Running(_)) => {
-                return tracing::info!(%id, "run already started; its owner's successor carries it on");
+        // A `Start` comes again when the control plane restarts, so only the log can say whether
+        // this one is new: until it can, the run is not started, or it would be started twice.
+        loop {
+            if self.run_state(id).is_some() {
+                return tracing::info!(%id, "run already started here");
             }
-            Ok(Logged::Ended) => return tracing::info!(%id, "run already ended; not started again"),
-            // Starting needs the log too: if it cannot be written, the run is not started.
-            Err(err) => tracing::warn!(%id, "the log cannot say whether the run started: {err:#}"),
+            match self.log.run(id).await {
+                Ok(Logged::Unknown) => break,
+                Ok(Logged::Running(_)) => {
+                    return tracing::info!(%id, "run already started; its owner's successor carries it on");
+                }
+                Ok(Logged::Ended) => {
+                    return tracing::info!(%id, "run already ended; not started again");
+                }
+                Err(err) => {
+                    tracing::warn!(%id, "the log cannot say whether the run started, asking again: {err:#}");
+                    tokio::time::sleep(recovery::RETRY).await;
+                }
+            }
         }
         let info = Arc::new(RunInfo {
             id,
@@ -339,10 +347,11 @@ impl Inner {
                 return self.deliver(reply_to, Message::Finished { run: id, workers });
             }
         };
+        // Known here before anything is awaited, so a `Start` that comes again finds it.
+        let run = self.install_spec(spec.clone());
         if let Err(err) = self.tasks.prepare(&spec).await {
             tracing::error!(%id, "preparing tasks failed: {err:#}");
         }
-        let run = self.install_spec(spec);
 
         // The root context holds the run's inputs, so every branch sees them.
         let root = run.nodes.hold(Arc::new(Node::root(info.root, inputs)));
@@ -428,6 +437,7 @@ impl Inner {
                     })
                 })
                 .clone();
+            tracing::debug!(%id, "run known here");
             let waiting = pending.remove(&id).map(|p| p.messages).unwrap_or_default();
             (run, waiting)
         };
@@ -510,6 +520,15 @@ async fn sample(worker: std::sync::Weak<Inner>) {
                 .saturating_sub(worker.task_slots.available_permits()),
             unacknowledged: worker.outbox.lock().unwrap().len(),
             releases_pending: worker.releasing.load(Ordering::Relaxed),
+            waiting_for_runs: worker
+                .pending
+                .lock()
+                .unwrap()
+                .values()
+                .map(|pending| pending.messages.len())
+                .sum(),
+            waiting_for_takeover: worker.adoption.lock().unwrap().waiting.len(),
+            node_fetches_waiting: worker.fetches.lock().unwrap().len(),
         });
     }
 }

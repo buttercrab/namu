@@ -10,12 +10,14 @@ Redis must keep what it is told: run it with persistence (`appendonly yes`, `app
 everysec` or `always`). On AWS, use **Amazon MemoryDB**, whose writes are durable across a
 multi-AZ transaction log, rather than ElastiCache, which can lose recent writes on failover; a
 lost log record is a branch lost. Use TLS and an ACL user: `REDIS_URL=rediss://user:password@host:6379/`.
-NAMU uses one Redis database and does not need cluster mode; a MemoryDB cluster with one shard
-(and replicas for failover) fits.
+NAMU works on a single Redis or one in cluster mode, as MemoryDB always is. Its keys carry two
+hash tags, `{namu}` for the orchestrator's state and `{namu:log}` for the workers' log, so each
+set shares a slot and its multi-key commands work; a MemoryDB cluster with one shard (and
+replicas for failover) fits.
 
 The orchestrator keeps no state of its own: restarted, it takes up from Redis, gives every member
-a new lease, and sends each unfinished run its `Start` again (an owner that has the run ignores
-it). Runs go on while it is down, peer to peer; their results wait on the workers until it is
+a new lease, and sends each unfinished run its `Start` again (a worker asks the log whether the run
+began, and starts it only if it did not). Runs go on while it is down, peer to peer; their results wait on the workers until it is
 back. Run one orchestrator under a supervisor that restarts it (an ECS service, a Kubernetes
 Deployment).
 

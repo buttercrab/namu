@@ -27,7 +27,7 @@ use crate::scope::{Continuation, Fold, Scope, Then};
 use crate::tree::Node;
 
 /// How long to wait before trying a failed log read again.
-const RETRY: Duration = Duration::from_millis(500);
+pub(super) const RETRY: Duration = Duration::from_millis(500);
 
 /// Dead workers this worker has taken over, and the messages waiting for a takeover or a
 /// membership change. One lock covers both, so a message cannot start waiting just after what it
@@ -35,7 +35,7 @@ const RETRY: Duration = Duration::from_millis(500);
 #[derive(Default)]
 pub(super) struct Adoption {
     adopted: HashSet<WorkerId>,
-    waiting: Vec<Message>,
+    pub(super) waiting: Vec<Message>,
 }
 
 impl Inner {

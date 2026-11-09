@@ -141,12 +141,21 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    async fn members(&self) -> anyhow::Result<Vec<Member>> {
+    async fn leased(&self) -> anyhow::Result<Vec<Member>> {
         let state = self.state();
         Ok(state
             .alive
             .iter()
             .filter(|&&id| state.leased(id))
+            .filter_map(|id| state.records.get(id).cloned())
+            .collect())
+    }
+
+    async fn members(&self) -> anyhow::Result<Vec<Member>> {
+        let state = self.state();
+        Ok(state
+            .alive
+            .iter()
             .filter_map(|id| state.records.get(id).cloned())
             .collect())
     }
