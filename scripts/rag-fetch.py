@@ -11,6 +11,7 @@ fetched one by one, politely; a corpus already fetched with the same arguments i
 """
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -24,9 +25,9 @@ AGENT = "namu-rag-example/0.1 (https://github.com/buttercrab/namu)"
 
 
 def get(params, tries=8):
-    """One API call. Rate limits and server errors are waited out, as long as Wikipedia asks
-    (`Retry-After`) or, if it does not say, twice as long each time, up to a minute; other client
-    errors are not retried."""
+    """One API call. Rate limits, server errors and broken connections are waited out, as long as
+    Wikipedia asks (`Retry-After`) or, if it does not say, twice as long each time, up to a
+    minute; other client errors are not retried."""
     url = API + "?" + urllib.parse.urlencode({**params, "format": "json", "formatversion": 2})
     for attempt in range(tries):
         try:
@@ -34,14 +35,16 @@ def get(params, tries=8):
             with urllib.request.urlopen(request, timeout=30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as err:
-            if (err.code != 429 and err.code < 500) or attempt == tries - 1:
+            if err.code != 429 and err.code < 500:
                 raise
-            wait = retry_after(err) or min(2**attempt, 60)
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
-            if attempt == tries - 1:
-                raise
-            wait = min(2**attempt, 60)
-        print(f"  retrying in {wait}s after {err}", file=sys.stderr)
+            error, wait = err, retry_after(err)
+        # Refused or dropped connections, timeouts, and bodies cut short (or not JSON for it).
+        except (OSError, http.client.HTTPException, ValueError) as err:
+            error, wait = err, None
+        if attempt == tries - 1:
+            raise error
+        wait = min(2**attempt, 60) if wait is None else wait
+        print(f"  retrying in {wait}s after {error}", file=sys.stderr)
         time.sleep(wait)
 
 
