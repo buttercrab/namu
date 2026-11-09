@@ -212,7 +212,11 @@ mod tests {
         // `match attempt(t(a)) { Ok(v) => v, Err(e) => u(a, e) }`, with `a` = 0.
         let mut attempted = call("t", vec![0], 1);
         if let Some(Action::Call(call)) = &mut attempted {
-            call.catch = Some(Catch { error: 2, next: 2 });
+            call.catch = Some(Catch {
+                error: 2,
+                next: 2,
+                typed: false,
+            });
         }
         let workflow = Workflow::new(
             "attempt".into(),

@@ -9,15 +9,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use namu_core::raise::Raised;
 use namu_core::value::Value;
-use namu_engine::tasks::{Batch, BatchPolicy, DEFAULT_WINDOW, Kind, Stream};
+use namu_engine::tasks::{Batch, BatchPolicy, DEFAULT_WINDOW, Failure, Kind, Stream};
 use namu_proto::{TaskKind, TaskManifest, TaskRuntime};
 use sha2::Digest;
 
-/// An output as the runtimes give it, MessagePack or the task's own error. The bytes stay as
+/// An output as the runtimes give it, MessagePack, or the task's own failure. The bytes stay as
 /// they are until something asks for a type.
-fn output(output: Result<Vec<u8>, String>) -> Result<Value, String> {
-    output.map(Value::encoded)
+fn output(output: Result<Vec<u8>, Raised>) -> Result<Value, Failure> {
+    output.map(Value::encoded).map_err(Failure::from)
 }
 
 /// Downloads, verifies and loads task artifacts. Artifacts are cached on disk, so a task version

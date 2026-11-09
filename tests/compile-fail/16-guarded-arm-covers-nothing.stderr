@@ -1,0 +1,20 @@
+error[E0004]: non-exhaustive patterns: `Size::Large(_)` not covered
+  --> tests/compile-fail/16-guarded-arm-covers-nothing.rs:16:5
+   |
+16 |     match size(n) {
+   |     ^^^^^ pattern `Size::Large(_)` not covered
+   |
+note: `Size` defined here
+  --> tests/compile-fail/16-guarded-arm-covers-nothing.rs:5:10
+   |
+ 5 | pub enum Size {
+   |          ^^^^
+ 6 |     Small,
+ 7 |     Large(u64),
+   |     ----- not covered
+   = note: the matched value is of type `Size`
+   = note: match arms with guards don't count towards exhaustivity
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+   |
+14 | #[workflow], Size::Large(_) => todo!()
+   |            +++++++++++++++++++++++++++

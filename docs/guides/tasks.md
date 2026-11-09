@@ -53,6 +53,33 @@ other, and a float reads an integer: a value that does not fit fails its call. F
 names are serde's (`rename`, `rename_all`); a type whose shape serde changes in a way not modelled
 (`flatten`, `tag`, `untagged`, `default` on a field that is not an `Option`, ...) is not checked.
 
+## Errors
+A task that fails with `anyhow::Error` (`anyhow::Result<T>`) fails with a message. One that fails
+with a type of its own, which serializes, derives `Describe` and implements `Display`, gives that
+value to a workflow that attempts the call, beside its message (its `Display`):
+
+```rust
+#[derive(Serialize, Deserialize, namu_guest::Describe)]
+pub enum FetchError { NotFound, Moved(String), RateLimited { retry_after: u64 } }
+
+namu_guest::task! {
+    fn fetch(url: String) -> Result<Page, FetchError> { .. }
+}
+```
+
+The workflow declares it the same way (`#[task] fn fetch(url: String) -> Result<Page, FetchError>;`)
+and can match on its variants; `namu build` records the error type in the signature, and a
+workflow that catches another is refused. A batch task's items fail the same way: a dynamic
+one's (`Vec<Result<T, E>>`), and a continuous one's, whose `Continuous::Error` says what they fail
+with (`anyhow::Error` for messages). So does a stream, opening or at an item, which ends it
+(`Result<impl Iterator<Item = Result<T, E>>, E>`, one `E` for both). A typed attempt catches only
+the error value: a trap or a panic fails the branch. In process, `FnTasks::raising("fetch", f)`
+and `FnTasks::raising_stream` register tasks that fail with a type of their own.
+
+A Python task declares it in its decorator, `@namu.task(error=FetchError)`, and raises
+`namu.Failed(error)`; anything else it raises is a message. An `enum.Enum` crosses as its members'
+names, so it reads as an enum of unit variants on the Rust side.
+
 ## Stream tasks
 A stream task yields its outputs one at a time, like a crawler or a reader over a large file:
 
@@ -251,6 +278,11 @@ retry policy rather than a loop in every workflow: `"retries": 3` in its manifes
 `FnTasks`. The engine tries the call again under the same key, backing off, and counts each in
 `namu_task_retries_total`. A workflow that must decide what a failure means still matches on
 `attempt(..)`, which sees the last try's error.
+
+A failure with only a message (a crash, or a task that fails with messages) is tried again. A
+task's own error value is its answer, and is not: `NotFound` will not pass. The variants that do
+pass are named, as serde names them: `"retry_on": ["rate_limited"]` in the manifest, or
+`Retry::new(3, backoff).on(["rate_limited"])`.
 
 ## Task kinds
 - `single`: one input, one output

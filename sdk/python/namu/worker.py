@@ -4,7 +4,8 @@
 
 It reads requests from stdin and writes answers to stdout, each a MessagePack document after its
 length (4 bytes, big-endian). A request is an array, its verb first; an answer is `[true, value]`,
-or `[false, error]` for the task's own failure. Inputs and outputs are MessagePack themselves, as
+or `[false, message]` for the task's own failure, `[false, message, error]` if it raised
+`namu.Failed(error)`, the error being MessagePack. Inputs and outputs are MessagePack themselves, as
 the task ABI packs them (an input is nil for no arguments, the argument for one, an array for
 several), carried as binary.
 
@@ -12,7 +13,7 @@ several), carried as binary.
     ["open", task, key, input, cursor]  -> nil        a process serves one stream from then on
     ["next"]                         -> nil at the end, or [output, cursor]
     ["session", task]                -> nil        a process serves one batch session from then on
-    ["step", [[id, key, input], ...]]   -> [[id, [true, output] or [false, error]], ...]
+    ["step", [[id, key, input], ...]]   -> [[id, [true, output] or [false, message, error]], ...]
 
 What a task prints goes to stderr, out of the protocol's way.
 """
@@ -23,6 +24,7 @@ import collections.abc
 import contextlib
 import contextvars
 import dataclasses
+import enum
 import importlib.util
 import inspect
 import struct
@@ -31,7 +33,7 @@ import types
 import typing
 from typing import Any, Callable, Iterator
 
-from . import _CALL_KEY, _CALL_KEYS, TASKS, Item, Task
+from . import _CALL_KEY, _CALL_KEYS, TASKS, Failed, Item, Task
 from ._msgpack import dumps, loads
 
 
@@ -53,8 +55,8 @@ def main() -> None:
             if verb not in Process.VERBS:
                 raise LookupError(f"no request {verb!r}")
             answer = [True, getattr(process, verb)(*arguments)]
-        except Exception as error:  # The task's own failure: its message goes back.
-            answer = [False, failure(error)]
+        except Exception as error:  # The task's own failure goes back.
+            answer = rejected(error)
         payload = dumps(answer)
         protocol_out.write(struct.pack(">I", len(payload)) + payload)
         protocol_out.flush()
@@ -133,7 +135,7 @@ def dynamic(function: Callable[[list], list]) -> Callable[[list], list]:
             with keyed(_CALL_KEYS, keys):
                 outputs = list(function(inputs))
         except Exception as error:  # Raised, it fails every item; the session stays.
-            return finished + [[id, [False, failure(error)]] for id in ids]
+            return finished + [[id, rejected(error)] for id in ids]
         if len(outputs) != len(ids):
             raise ValueError(f"a batch of {len(ids)} gave {len(outputs)} results")
         return finished + [[id, outcome(output)] for id, output in zip(ids, outputs)]
@@ -197,8 +199,16 @@ def keyed(variable: contextvars.ContextVar, value: Any) -> Iterator[None]:
 def outcome(output: Any) -> list:
     """An item's output as a step answers it: an exception in its place fails the item alone."""
     if isinstance(output, BaseException):
-        return [False, failure(output)]
+        return rejected(output)
     return [True, dumps(to_value(output))]
+
+
+def rejected(error: BaseException) -> list:
+    """A failure as an answer gives it: its message, and the task's own error value if it raised
+    `Failed`."""
+    if isinstance(error, Failed):
+        return [False, str(error), dumps(to_value(error.error))]
+    return [False, failure(error)]
 
 
 def failure(error: BaseException) -> str:
@@ -223,6 +233,8 @@ def from_value(hint: Any, value: Any) -> Any:
     here as it describes it."""
     if hint is None or value is None:
         return value
+    if isinstance(hint, type) and issubclass(hint, enum.Enum) and isinstance(value, str):
+        return hint[value]
     if dataclasses.is_dataclass(hint) and isinstance(value, dict):
         hints = typing.get_type_hints(hint)
         fields = {f.name: from_value(hints.get(f.name), value.get(f.name)) for f in dataclasses.fields(hint)}
@@ -251,7 +263,10 @@ def from_value(hint: Any, value: Any) -> Any:
 
 
 def to_value(output: Any) -> Any:
-    """`output` as MessagePack takes it: dataclasses as maps of their fields, sets as lists."""
+    """`output` as MessagePack takes it: dataclasses as maps of their fields, sets as lists, an
+    enum's member as its name (a unit variant, as serde writes one)."""
+    if isinstance(output, enum.Enum):
+        return output.name
     if dataclasses.is_dataclass(output) and not isinstance(output, type):
         return {f.name: to_value(getattr(output, f.name)) for f in dataclasses.fields(output)}
     if isinstance(output, (list, tuple, set, frozenset)):

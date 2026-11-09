@@ -174,3 +174,54 @@ fn what_is_unknown_is_not_checked() {
     assert_eq!(plain(&named("Opaque"), &I64), Ok(()));
     assert_eq!(plain(&list(I64), &named("Opaque")), Ok(()));
 }
+
+#[test]
+fn a_typed_catch_reads_the_task_s_error_and_any_other_its_message() {
+    use crate::ir::{Call as IrCall, Catch, Next, Operation};
+    // `fetch(url)`, attempted: value 0 is the url, 1 the page, 2 the error.
+    let workflow = |error: Type, typed: bool| {
+        let call = IrCall {
+            task_id: "fetch".into(),
+            inputs: vec![0],
+            outputs: vec![1],
+            catch: Some(Catch {
+                error: 2,
+                next: 1,
+                typed,
+            }),
+        };
+        let mut workflow = Workflow::new(
+            "wf".into(),
+            vec![
+                Operation::new(
+                    Vec::new(),
+                    Vec::new(),
+                    Some(Action::Call(call)),
+                    Next::jump(1),
+                ),
+                Operation::new(Vec::new(), Vec::new(), None, Next::return_unit()),
+            ],
+        );
+        workflow.types = vec![Type::String, Type::String, error];
+        workflow.defs = [(
+            "Gone".to_string(),
+            Def::Enum(vec![("gone".into(), Vec::new())]),
+        )]
+        .into();
+        workflow
+    };
+    let fetch = |error: Option<Type>| {
+        Signature::new(vec![Type::String], Type::String, Defs::new()).failing_with(error)
+    };
+    let problems = |workflow: Workflow, task: Signature| check(&workflow, |_| Some(&task)).problems;
+
+    // A typed catch reads the task's own error type, by shape.
+    assert!(problems(workflow(named("Gone"), true), fetch(Some(Type::String))).len() == 1);
+    assert_eq!(
+        problems(workflow(Type::Unit, true), fetch(None)),
+        ["call to `fetch` (op 0): error: `String` is read as `()`"]
+    );
+    assert!(problems(workflow(Type::String, true), fetch(None)).is_empty());
+    // A catch of messages reads a message, whatever the task's error type.
+    assert!(problems(workflow(Type::String, false), fetch(Some(named("Gone")))).is_empty());
+}

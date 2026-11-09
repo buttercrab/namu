@@ -124,6 +124,18 @@ fn constructor(
     if let TaskKind::Reduce = kind {
         return reducer(vis, sig, &params, result_inner(ret)?);
     }
+    // What an attempt of a call catches: the error type of what one call gives, if it has one: a
+    // stream's items' (which end it as they fail, as its opening may).
+    let error = match kind {
+        TaskKind::Single => result_error(ret),
+        TaskKind::Batch => generic_arg(ret, "Vec", "").ok().and_then(result_error),
+        TaskKind::Stream => result_inner(ret)
+            .and_then(iterator_item)
+            .ok()
+            .and_then(result_error),
+        TaskKind::Reduce => None,
+    };
+    let raises = raises(vis, name, error);
 
     // What one call yields: per item for batch tasks, the whole list for stream tasks.
     let output: Type = match kind {
@@ -171,6 +183,8 @@ fn constructor(
     };
 
     Ok(quote! {
+        #raises
+
         #vis fn #name<G: 'static>(
             __builder: &::namu::__macro_exports::Builder<G>,
             #( #arg_decls ),*
@@ -214,6 +228,42 @@ fn reducer(
             ::namu::__macro_exports::reduce(__builder, stringify!(#name), init, item)
         }
     })
+}
+
+/// What the task `name` fails with, for an attempt of it: a type of the task's name (in the type
+/// namespace, beside the constructor in the value namespace) that says so.
+fn raises(vis: &syn::Visibility, name: &Ident, error: Option<&Type>) -> TokenStream2 {
+    let (error, typed) = match error {
+        Some(error) => (quote!(#error), true),
+        None => (quote!(::std::string::String), false),
+    };
+    quote! {
+        #[doc(hidden)]
+        #[allow(non_camel_case_types)]
+        #vis struct #name {}
+
+        impl ::namu::__macro_exports::Raises for #name {
+            type Error = #error;
+            const TYPED: bool = #typed;
+        }
+    }
+}
+
+/// `E` from `Result<T, E>`, unless it is `anyhow::Error`: a message, as with `Result<T>`.
+fn result_error(ty: &Type) -> Option<&Type> {
+    let Type::Path(TypePath { path, .. }) = ty else {
+        return None;
+    };
+    let PathArguments::AngleBracketed(args) = &path.segments.last()?.arguments else {
+        return None;
+    };
+    let Some(GenericArgument::Type(error)) = args.args.iter().nth(1) else {
+        return None;
+    };
+    let anyhow = parse_quote!(anyhow::Error);
+    let is_anyhow =
+        matches!(error, Type::Path(TypePath { path, qself: None, .. }) if *path == anyhow);
+    (!is_anyhow).then_some(error)
 }
 
 /// `T` from `Result<T>` or `Result<T, E>`.

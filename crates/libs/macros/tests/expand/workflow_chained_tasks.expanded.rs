@@ -1,4 +1,11 @@
 use namu_macros::{task, workflow};
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct add_one {}
+impl ::namu::__macro_exports::Raises for add_one {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn add_one<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     a: impl ::namu::__macro_exports::IntoArg<i32>,
@@ -7,6 +14,13 @@ fn add_one<G: 'static>(
         ::namu::__macro_exports::IntoArg::into_arg(a, __builder),
     ]);
     ::namu::__macro_exports::call(__builder, "add_one", __inputs)
+}
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct multiply_by_two {}
+impl ::namu::__macro_exports::Raises for multiply_by_two {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
 }
 fn multiply_by_two<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,

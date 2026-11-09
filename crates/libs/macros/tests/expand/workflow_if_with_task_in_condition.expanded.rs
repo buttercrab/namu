@@ -1,4 +1,11 @@
 use namu_macros::{task, workflow};
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct is_positive {}
+impl ::namu::__macro_exports::Raises for is_positive {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn is_positive<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     a: impl ::namu::__macro_exports::IntoArg<i32>,
@@ -7,6 +14,13 @@ fn is_positive<G: 'static>(
         ::namu::__macro_exports::IntoArg::into_arg(a, __builder),
     ]);
     ::namu::__macro_exports::call(__builder, "is_positive", __inputs)
+}
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct action_if_true {}
+impl ::namu::__macro_exports::Raises for action_if_true {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
 }
 fn action_if_true<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,

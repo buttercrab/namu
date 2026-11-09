@@ -1,4 +1,11 @@
 use namu_macros::{task, workflow};
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct double {}
+impl ::namu::__macro_exports::Raises for double {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn double<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     a: impl ::namu::__macro_exports::IntoArg<i32>,
@@ -7,6 +14,13 @@ fn double<G: 'static>(
         ::namu::__macro_exports::IntoArg::into_arg(a, __builder),
     ]);
     ::namu::__macro_exports::call(__builder, "double", __inputs)
+}
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct identity {}
+impl ::namu::__macro_exports::Raises for identity {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
 }
 fn identity<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,

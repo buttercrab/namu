@@ -25,19 +25,30 @@ pub struct Signature {
     pub input: Type,
     /// What a call gives: a stream's is the list of its items, a batch task's one item's.
     pub output: Type,
-    /// The shapes of the named types in `input` and `output`.
+    /// What it fails with, if it says: its own error type, which an attempt of it catches. A
+    /// task that does not say fails with a message, a `String`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Type>,
+    /// The shapes of the named types in `input`, `output` and `error`.
     #[serde(default, skip_serializing_if = "Defs::is_empty")]
     pub defs: Defs,
 }
 
 impl Signature {
-    /// A task taking `params` and giving `output`.
+    /// A task taking `params` and giving `output`, failing with a message.
     pub fn new(params: Vec<Type>, output: Type, defs: Defs) -> Self {
         Self {
             input: pack(params),
             output,
+            error: None,
             defs,
         }
+    }
+
+    /// The same task, failing with `error` instead (if it is not `None`).
+    pub fn failing_with(mut self, error: Option<Type>) -> Self {
+        self.error = error;
+        self
     }
 }
 
@@ -101,22 +112,28 @@ pub fn check<'a>(workflow: &Workflow, signature: impl Fn(&str) -> Option<&'a Sig
     let typed = !workflow.types.is_empty();
     let ty = |id: usize| workflow.types.get(id).unwrap_or(&UNKNOWN);
     for (op, operation) in workflow.operations.iter().enumerate() {
-        let (task, args, results): (&str, Vec<&Type>, Vec<&Type>) = match &operation.action {
-            Some(Action::Call(call)) => (
-                &call.task_id,
-                call.inputs.iter().map(|&id| ty(id)).collect(),
-                call.outputs.iter().map(|&id| ty(id)).collect(),
-            ),
-            Some(Action::Collect(collect)) => match &collect.reduce {
-                Some(reduce) => (
-                    &reduce.task_id,
-                    vec![ty(reduce.init), ty(collect.input)],
-                    vec![ty(collect.output)],
+        let (task, args, results, caught): (&str, Vec<&Type>, Vec<&Type>, _) =
+            match &operation.action {
+                Some(Action::Call(call)) => (
+                    &call.task_id,
+                    call.inputs.iter().map(|&id| ty(id)).collect(),
+                    call.outputs.iter().map(|&id| ty(id)).collect(),
+                    // Only a typed catch reads the task's error; any other reads its message.
+                    call.catch
+                        .filter(|catch| catch.typed)
+                        .map(|catch| ty(catch.error)),
                 ),
-                None => continue,
-            },
-            _ => continue,
-        };
+                Some(Action::Collect(collect)) => match &collect.reduce {
+                    Some(reduce) => (
+                        &reduce.task_id,
+                        vec![ty(reduce.init), ty(collect.input)],
+                        vec![ty(collect.output)],
+                        None,
+                    ),
+                    None => continue,
+                },
+                _ => continue,
+            };
         let Some(signature) = signature(task).filter(|_| typed) else {
             report.unchecked.insert(task.to_string());
             continue;
@@ -129,7 +146,8 @@ pub fn check<'a>(workflow: &Workflow, signature: impl Fn(&str) -> Option<&'a Sig
             .arguments(&args)
             .err()
             .into_iter()
-            .chain(call.results(&results).err());
+            .chain(call.results(&results).err())
+            .chain(caught.and_then(|error| call.error(error).err()));
         for mismatch in problems {
             report
                 .problems
@@ -174,6 +192,13 @@ impl Call<'_> {
                 fits(input, given(&packed)).map_err(|err| err.at("arguments"))
             }
         }
+    }
+
+    /// What the task fails with, read as the error the workflow catches.
+    fn error(&self, caught: &Type) -> Result<(), Mismatch> {
+        let error = self.task.error.as_ref().unwrap_or(&Type::String);
+        let error = Typed::new(error, &self.task.defs);
+        fits(Typed::new(caught, self.workflow), error).map_err(|err| err.at("error"))
     }
 
     /// What the task gives, read as the results the workflow takes: none, one, or a tuple split

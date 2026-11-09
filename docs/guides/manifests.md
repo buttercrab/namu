@@ -55,7 +55,9 @@ their branch is logged past them before it continues, so crash recovery never ru
 `"retries": N` tries a call that fails again, up to N more times, under the same call key:
 first after `"retry_backoff_ms"` (default 100), then twice as long each time, up to 30 s. Only
 the task's own failures are retried (an error it returns, a trap, a Python process that dies);
-once they run out, the last one fails the branch.
+once they run out, the last one fails the branch. A task that fails with a type of its own is
+retried only for the variants `"retry_on"` names (as serde names them, `["rate_limited"]`); any
+other error value is its answer.
 For a stream task, `"window"` limits how many of its items are in flight at once (default 1024).
 For a batch task, `"batch_size"` is how many items a session holds at once (default 32),
 `"max_wait_ms"` makes an idle session wait for a full batch (unset: it steps at once), and
@@ -68,7 +70,8 @@ artifact is refused.
 types. A Rust task says it itself: its types derive `namu_guest::Describe`, and `namu build`
 reads the signature from a build of the crate for the machine it runs on (for a WASM task, that
 is a second build). A Python task's is read from its annotations, by parsing the module without
-running it (see [Tasks](tasks.md#signatures)). It is not written by hand.
+running it (see [Tasks](tasks.md#signatures)). It is not written by hand. A task that fails with a
+type of its own records it as the signature's `error` (see [Tasks](tasks.md#errors)).
 
 When a workflow is published, every call in it is checked against the signature of the task
 version it pins, so a workflow that gives a task the wrong types is refused then, with where and

@@ -27,7 +27,7 @@ pub enum TaskTrust {
 
 /// The task ABI artifacts are built for: the native C ABI's version, and the `namu:task` WIT
 /// world's (major) version. It must match `namu_guest::NATIVE_ABI_VERSION`.
-pub const TASK_ABI_VERSION: u32 = 6;
+pub const TASK_ABI_VERSION: u32 = 7;
 
 /// How a task's artifact is executed. Each task picks its own runtime; workers advertise which
 /// runtimes they support and only receive work they can run.
@@ -96,6 +96,10 @@ pub struct TaskManifest {
     /// unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_backoff_ms: Option<u64>,
+    /// The variants of the task's own error type that are tried again, as serde names them. A
+    /// failure with only a message always is; any other error value is the task's answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retry_on: Vec<String>,
     /// For a stream task: how many of its items may be in flight at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<usize>,

@@ -21,10 +21,11 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use namu_core::raise::Raised;
 use namu_core::value::{Value, encode_args};
 use namu_engine::tasks::{
-    Admitted, Args, Async, AsyncTask, BatchSession, BatchTask, CallKey, Finished, StreamItem,
-    StreamTask, TaskStream,
+    Admitted, Args, Async, AsyncTask, BatchSession, BatchTask, CallKey, Failure, Finished,
+    StreamItem, StreamTask, TaskStream,
 };
 use serde::de::{self, DeserializeOwned, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -111,12 +112,12 @@ impl PythonTask {
     }
 
     /// A process of its own, opened with `request` (to serve a stream or a batch session).
-    fn dedicated(&self, request: &impl Serialize) -> anyhow::Result<Result<Process, String>> {
+    fn dedicated(&self, request: &impl Serialize) -> anyhow::Result<Result<Process, Failure>> {
         let mut process = self.start()?;
         Ok(match process.ask::<()>(request) {
             Ok(Ok(())) => Ok(process),
-            Ok(Err(message)) => Err(message),
-            Err(err) => Err(died(err)),
+            Ok(Err(raised)) => Err(raised.into()),
+            Err(err) => Err(died(err).into()),
         })
     }
 }
@@ -133,7 +134,7 @@ impl Process {
     fn ask<T: DeserializeOwned>(
         &mut self,
         request: &impl Serialize,
-    ) -> anyhow::Result<Result<T, String>> {
+    ) -> anyhow::Result<Result<T, Raised>> {
         let request = rmp_serde::to_vec(request)?;
         self.stdin
             .write_all(&u32::try_from(request.len())?.to_be_bytes())?;
@@ -159,8 +160,9 @@ fn died(err: anyhow::Error) -> String {
     format!("the Python process died: {err:#}")
 }
 
-/// An answer: `[true, value]`, or `[false, error]` for the task's own failure.
-struct Reply<T>(Result<T, String>);
+/// An answer: `[true, value]`, or `[false, message]` or `[false, message, error]` for the task's
+/// own failure, `error` being its own error value, MessagePack, if it raised one.
+struct Reply<T>(Result<T, Raised>);
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Reply<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -170,7 +172,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Reply<T> {
             type Value = Reply<T>;
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("[true, value] or [false, error]")
+                f.write_str("[true, value] or [false, message, error]")
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Reply<T>, A::Error> {
@@ -178,7 +180,13 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Reply<T> {
                 let ok: bool = seq.next_element()?.ok_or_else(missing)?;
                 Ok(Reply(match ok {
                     true => Ok(seq.next_element()?.ok_or_else(missing)?),
-                    false => Err(seq.next_element()?.ok_or_else(missing)?),
+                    false => Err(Raised {
+                        message: seq.next_element()?.ok_or_else(missing)?,
+                        error: seq
+                            .next_element::<Option<ByteBuf>>()?
+                            .flatten()
+                            .map(ByteBuf::into_vec),
+                    }),
                 }))
             }
         }
@@ -194,7 +202,7 @@ fn input(args: &Args) -> anyhow::Result<ByteBuf> {
 
 #[async_trait]
 impl AsyncTask for PythonTask {
-    async fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, String>> {
+    async fn call(&self, args: Args, key: CallKey) -> anyhow::Result<Result<Value, Failure>> {
         let request = ("call", self.task_id.clone(), key.to_string(), input(&args)?);
         let pooled = self.idle.lock().unwrap().pop();
         let mut process = match pooled {
@@ -209,7 +217,7 @@ impl AsyncTask for PythonTask {
         let answer = match answer {
             Ok(answer) => answer,
             // The call fails, as a task that traps does; a new process takes this one's place.
-            Err(err) => return Ok(Err(died(err))),
+            Err(err) => return Ok(Err(died(err).into())),
         };
         self.idle.lock().unwrap().push(process);
         Ok(super::output(answer.map(ByteBuf::into_vec)))
@@ -222,7 +230,7 @@ impl StreamTask for PythonTask {
         args: Args,
         cursor: Option<String>,
         key: CallKey,
-    ) -> anyhow::Result<Result<Box<dyn TaskStream>, String>> {
+    ) -> anyhow::Result<Result<Box<dyn TaskStream>, Failure>> {
         let request = (
             "open",
             &self.task_id,
@@ -240,16 +248,17 @@ impl StreamTask for PythonTask {
 struct PythonItems(Process);
 
 impl TaskStream for PythonItems {
-    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, String>>> {
+    fn next(&mut self) -> anyhow::Result<Option<Result<StreamItem, Failure>>> {
         let item = match self.0.ask::<Option<(ByteBuf, Option<String>)>>(&("next",)) {
             Ok(item) => item,
-            Err(err) => return Ok(Some(Err(died(err)))),
+            Err(err) => return Ok(Some(Err(died(err).into()))),
         };
         Ok(item.transpose().map(|item| {
             item.map(|(value, cursor)| StreamItem {
                 value: Value::encoded(value.into_vec()),
                 cursor,
             })
+            .map_err(Failure::from)
         }))
     }
 }
@@ -258,7 +267,8 @@ impl BatchTask for PythonTask {
     fn open(self: Arc<Self>) -> anyhow::Result<Result<Box<dyn BatchSession>, String>> {
         Ok(self
             .dedicated(&("session", &self.task_id))?
-            .map(|process| Box::new(PythonSession(process)) as Box<dyn BatchSession>))
+            .map(|process| Box::new(PythonSession(process)) as Box<dyn BatchSession>)
+            .map_err(|failure| failure.message))
     }
 }
 
@@ -275,7 +285,7 @@ impl BatchSession for PythonSession {
         let finished = self
             .0
             .ask::<Vec<(u64, Reply<ByteBuf>)>>(&("step", admit))?
-            .map_err(anyhow::Error::msg)?;
+            .map_err(|raised| anyhow::Error::msg(raised.message))?;
         Ok(finished
             .into_iter()
             .map(|(id, Reply(output))| (id, super::output(output.map(ByteBuf::into_vec))))
@@ -423,7 +433,7 @@ class Countdown:
             7
         );
         let err = stream.next().unwrap().unwrap().err().unwrap();
-        assert_eq!(err, "RuntimeError: the source went away");
+        assert_eq!(err.message, "RuntimeError: the source went away");
 
         // Not a stream task: it does not open.
         let merge = load(&dir, "merge");
@@ -431,7 +441,10 @@ class Countdown:
             .unwrap()
             .err()
             .unwrap();
-        assert_eq!(err, "TypeError: merge is a single task, not a stream one");
+        assert_eq!(
+            err.message,
+            "TypeError: merge is a single task, not a stream one"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -449,7 +462,10 @@ class Countdown:
     fn outputs<T: namu_core::value::Data>(finished: Finished) -> Vec<(u64, Result<T, String>)> {
         let mut outputs: Vec<_> = finished
             .into_iter()
-            .map(|(id, output)| (id, output.map(|value| value.take::<T>().unwrap())))
+            .map(|(id, output)| {
+                let output = output.map(|value| value.take::<T>().unwrap());
+                (id, output.map_err(|failure| failure.message))
+            })
             .collect();
         outputs.sort_by_key(|(id, _)| *id);
         outputs
@@ -544,14 +560,24 @@ class Countdown:
 
         let fails = task(&dir, "fails");
         let failed = fails.call(vec![Value::new(4)], key(0)).await.unwrap();
-        assert_eq!(failed.unwrap_err(), "ValueError: no 4");
+        assert_eq!(failed.unwrap_err().message, "ValueError: no 4");
 
         // A process that dies fails its call; the next call gets a new one.
         let crashes = task(&dir, "crashes");
         let crashed = crashes.call(vec![], key(0)).await.unwrap();
-        assert!(crashed.unwrap_err().contains("the Python process died"));
+        assert!(
+            crashed
+                .unwrap_err()
+                .message
+                .contains("the Python process died")
+        );
         let crashed = crashes.call(vec![], key(0)).await.unwrap();
-        assert!(crashed.unwrap_err().contains("the Python process died"));
+        assert!(
+            crashed
+                .unwrap_err()
+                .message
+                .contains("the Python process died")
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
