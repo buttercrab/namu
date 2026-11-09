@@ -16,6 +16,7 @@ DOCS=${DOCS:-400}
 DELAY_MS=${DELAY_MS:-40}
 DIR="$ROOT_DIR/data/chaos"
 rm -rf "$DIR"
+mkdir -p "$(dirname "$DIR")"
 
 echo "== an undisturbed run, then chaos, on 4 workers"
 KEEP=1 POC_DIR="$DIR" REDIS_PERSIST=1 WORKFLOW=doc_ids_streamed \

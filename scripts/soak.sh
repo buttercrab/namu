@@ -16,6 +16,7 @@ DIR="$ROOT_DIR/data/soak"
 REDIS_PORT=${REDIS_PORT:-6390}
 ORCH_PORT=${ORCH_PORT:-8090}
 rm -rf "$DIR"
+mkdir -p "$(dirname "$DIR")"
 
 echo "== a stream with no end in sight, on 3 workers, for ${DURATION}s"
 # The first run is short; the soak is the next one, started below.
