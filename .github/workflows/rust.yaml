@@ -91,7 +91,9 @@ jobs:
             data/rag/corpus-*
             data/rag/model
             data/rag/bin
-          key: rag-${{ hashFiles('scripts/rag.sh', 'scripts/rag-fetch.py', 'examples/rag/model/src/lib.rs') }}
+          # Keyed by corpus size: the job that saves a key first decides what it holds.
+          key: rag-60-${{ hashFiles('scripts/rag.sh', 'scripts/rag-fetch.py', 'examples/rag/model/src/lib.rs') }}
+          restore-keys: rag-
       - name: Index with a worker killed mid-run, then search
         run: ARTICLES=60 CHECK=1 ./scripts/rag.sh
       - name: Cluster logs

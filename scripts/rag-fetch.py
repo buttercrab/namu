@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -22,18 +23,34 @@ API = "https://en.wikipedia.org/w/api.php"
 AGENT = "namu-rag-example/0.1 (https://github.com/buttercrab/namu)"
 
 
-def get(params, tries=5):
+def get(params, tries=8):
+    """One API call. Rate limits and server errors are waited out, as long as Wikipedia asks
+    (`Retry-After`) or, if it does not say, twice as long each time, up to a minute; other client
+    errors are not retried."""
     url = API + "?" + urllib.parse.urlencode({**params, "format": "json", "formatversion": 2})
     for attempt in range(tries):
         try:
             request = urllib.request.Request(url, headers={"User-Agent": AGENT})
             with urllib.request.urlopen(request, timeout=30) as response:
                 return json.load(response)
-        except Exception as err:  # Network hiccups and rate limits: back off and try again.
+        except urllib.error.HTTPError as err:
+            if (err.code != 429 and err.code < 500) or attempt == tries - 1:
+                raise
+            wait = retry_after(err) or min(2**attempt, 60)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as err:
             if attempt == tries - 1:
                 raise
-            print(f"  retrying after {err}", file=sys.stderr)
-            time.sleep(2**attempt)
+            wait = min(2**attempt, 60)
+        print(f"  retrying in {wait}s after {err}", file=sys.stderr)
+        time.sleep(wait)
+
+
+def retry_after(err):
+    """The seconds a 429 or 503 asks to wait, if it says, capped at five minutes."""
+    try:
+        return min(int(err.headers.get("Retry-After", "")), 300)
+    except ValueError:
+        return None
 
 
 def titles(category, limit):

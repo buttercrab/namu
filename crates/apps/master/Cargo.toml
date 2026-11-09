@@ -37,7 +37,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 url = "2"
 uuid = { version = "1.17", features = ["v4", "serde"] }
-zstd = "0.13.4"
+zstd = "0.14.3"
 
 [dev-dependencies]
 namu = { path = "../../.." }
