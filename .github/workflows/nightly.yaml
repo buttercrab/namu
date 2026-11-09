@@ -23,6 +23,7 @@ jobs:
             run: PAGES=3000 DEPTH=7 ./scripts/crawl.sh
           - name: RAG (300 articles, a worker killed, recall@5)
             run: ARTICLES=300 CHECK=1 ./scripts/rag.sh
+            rag: true
     steps:
       - uses: actions/checkout@v4
       - name: Install toolchain and Redis
@@ -36,13 +37,17 @@ jobs:
           workspaces: |
             .
             examples/rag/query
-      - uses: actions/cache@v4
+      # Only the RAG leg: another would save the key first, without the 300 articles.
+      - if: matrix.rag
+        uses: actions/cache@v4
         with:
           path: |
             data/rag/corpus-*
             data/rag/model
             data/rag/bin
-          key: rag-${{ hashFiles('scripts/rag.sh', 'scripts/rag-fetch.py', 'examples/rag/model/src/lib.rs') }}
+          # Keyed by corpus size: the job that saves a key first decides what it holds.
+          key: rag-300-${{ hashFiles('scripts/rag.sh', 'scripts/rag-fetch.py', 'examples/rag/model/src/lib.rs') }}
+          restore-keys: rag-
       - name: Run
         run: ${{ matrix.run }}
       - name: Cluster logs
