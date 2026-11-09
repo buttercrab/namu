@@ -716,8 +716,16 @@ async fn a_dead_owners_runs_start_again_on_its_successor() {
         .collect();
     assert_eq!(owned_by_two.len(), 1, "one run each: {runs:?}");
 
-    // Worker 2's lease ends; the lowest live worker succeeds it.
+    // Worker 2's lease ends. Until the sweep buries it, it is still a member: a lease may run
+    // out only because the store was down, and peers that dropped it would never take it back.
     plane.store.end_lease(2).await.unwrap();
+    let ids: Vec<u64> = (plane.control.membership().await.unwrap().members)
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(ids, [0, 1, 2, 3]);
+
+    // The sweep buries it, and the lowest live worker succeeds it.
     plane.control.sweep().await.unwrap();
     let membership = plane.control.membership().await.unwrap();
     assert_eq!(membership.successors, BTreeMap::from([(2, 1)]));

@@ -7,7 +7,7 @@
 //! a run survives a crash.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Context;
@@ -50,6 +50,8 @@ pub struct LocalCluster {
     tasks: Mutex<BTreeSet<TaskRef>>,
     next_owner: AtomicUsize,
     log: Arc<MemoryLog>,
+    /// While set, reading the log fails, as it does while its store restarts.
+    log_down: Arc<AtomicBool>,
 }
 
 type Recorded = HashMap<RunId, BTreeMap<BranchId, Report>>;
@@ -144,6 +146,7 @@ impl LocalCluster {
         assert!(!task_sets.is_empty(), "a cluster needs a worker");
         let dead = Arc::new(Dead::default());
         let log = Arc::new(MemoryLog::default());
+        let log_down = Arc::new(AtomicBool::new(false));
         let routes = Arc::new(Routes::default());
         let workers: Vec<Worker> = (1..)
             .zip(task_sets.into_iter().zip(endpoints))
@@ -153,7 +156,13 @@ impl LocalCluster {
                     inner: transport,
                     dead: dead.clone(),
                 });
-                let log = Arc::new(MortalLog::new(id, log.clone(), dead.clone(), log_delay));
+                let log = Arc::new(MortalLog::new(
+                    id,
+                    log.clone(),
+                    dead.clone(),
+                    log_down.clone(),
+                    log_delay,
+                ));
                 let slots = Worker::default_task_slots();
                 Worker::spawn(id, tasks, routes.clone(), transport, log, inbox, slots)
             })
@@ -222,6 +231,7 @@ impl LocalCluster {
             tasks: Mutex::default(),
             next_owner: AtomicUsize::new(0),
             log,
+            log_down,
         }
     }
 
@@ -393,6 +403,12 @@ impl LocalCluster {
         self.kill(worker)
     }
 
+    /// Makes reading the shared log fail, or work again, as it does while its store restarts.
+    /// Only reads fail; appends still land.
+    pub fn log_down(&self, down: bool) {
+        self.log_down.store(down, Ordering::SeqCst);
+    }
+
     pub fn kill(&self, worker: WorkerId) -> anyhow::Result<()> {
         self.dead.0.write().unwrap().insert(worker);
         let successor = self.live().first().context("no worker left alive")?.id();
@@ -443,6 +459,7 @@ struct MortalLog {
     worker: WorkerId,
     inner: Arc<MemoryLog>,
     dead: Arc<Dead>,
+    down: Arc<AtomicBool>,
     /// Appends on their way, if they take time to become durable.
     writer: Option<mpsc::UnboundedSender<Append>>,
 }
@@ -451,7 +468,13 @@ struct MortalLog {
 type Append = (Instant, Vec<Record>, oneshot::Sender<()>);
 
 impl MortalLog {
-    fn new(worker: WorkerId, inner: Arc<MemoryLog>, dead: Arc<Dead>, delay: Duration) -> Self {
+    fn new(
+        worker: WorkerId,
+        inner: Arc<MemoryLog>,
+        dead: Arc<Dead>,
+        down: Arc<AtomicBool>,
+        delay: Duration,
+    ) -> Self {
         let writer = (!delay.is_zero()).then(|| {
             let (writer, mut appends) = mpsc::unbounded_channel::<Append>();
             let (inner, dead) = (inner.clone(), dead.clone());
@@ -471,8 +494,14 @@ impl MortalLog {
             worker,
             inner,
             dead,
+            down,
             writer,
         }
+    }
+
+    fn readable(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.down.load(Ordering::SeqCst), "the log is down");
+        Ok(())
     }
 }
 
@@ -493,14 +522,17 @@ impl Log for MortalLog {
     }
 
     async fn node(&self, run: RunId, id: NodeId) -> anyhow::Result<Option<Arc<Node>>> {
+        self.readable()?;
         self.inner.node(run, id).await
     }
 
     async fn run(&self, run: RunId) -> anyhow::Result<Logged> {
+        self.readable()?;
         self.inner.run(run).await
     }
 
     async fn estate(&self, worker: WorkerId) -> anyhow::Result<Vec<RunEstate>> {
+        self.readable()?;
         self.inner.estate(worker).await
     }
 }
@@ -560,6 +592,42 @@ mod tests {
             cluster.start(worker, run, started);
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the run ran again");
+        assert_eq!(cluster.recorded()[&run].len(), 1);
+    }
+
+    /// A control plane that restarts while the log's store does too sends `Start` again when the
+    /// log cannot be read: the run must not start again until the log says it is new.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_start_sent_again_while_the_log_is_down_waits_for_the_log() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let tasks = FnTasks::new().with("count", {
+            let calls = calls.clone();
+            move |x: i32| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, String>(x)
+            }
+        });
+        let cluster = LocalCluster::uniform(2, Arc::new(tasks));
+        cluster.run(once()).await.unwrap();
+        let run = *cluster.recorded().keys().next().expect("the run reported");
+
+        cluster.log_down(true);
+        for worker in [1, 2] {
+            let started = Started {
+                workflow: once(),
+                inputs: Vec::new(),
+            };
+            cluster.start(worker, run, started);
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "started while the log was down"
+        );
+        cluster.log_down(false);
+        tokio::time::sleep(Duration::from_millis(800)).await;
         assert_eq!(calls.load(Ordering::SeqCst), 1, "the run ran again");
         assert_eq!(cluster.recorded()[&run].len(), 1);
     }

@@ -345,6 +345,7 @@ impl Inner {
             root_scope: run.spec.info.root_scope,
         };
         self.ending.lock().unwrap().insert(run_id, ending);
+        tracing::debug!(run = %run_id, ?waiting, "run over; asking the other workers to forget it");
         for worker in waiting {
             let reply_to = self.id;
             self.deliver(
@@ -385,6 +386,7 @@ impl Inner {
 
     pub(super) fn on_forget(self: &Arc<Self>, run: RunId, reply_to: WorkerId) {
         self.pending.lock().unwrap().remove(&run);
+        tracing::debug!(%run, owner = reply_to, "forgetting a run that is over");
         let stats = self
             .runs
             .lock()
@@ -400,6 +402,7 @@ impl Inner {
         if let Some(ending) = self.ending.lock().unwrap().get_mut(&run) {
             record_stats(&mut ending.workers, worker, stats);
             ending.waiting.remove(&worker);
+            tracing::debug!(%run, worker, waiting = ?ending.waiting, "a worker forgot the run");
         }
         self.check_forgotten(run);
     }

@@ -74,18 +74,25 @@ if redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; then
   exit 1
 fi
 # How Redis starts: with REDIS_PERSIST=1, durable (an append-only file, synced every write), so
-# it can be stopped and started again with nothing lost, as MemoryDB is. Prints its pid.
+# it can be stopped and started again with nothing lost, as MemoryDB is. In cluster mode, as
+# MemoryDB always is: one node holding every slot, which refuses a transaction across slots, as
+# MemoryDB does. Prints its pid.
 if [[ ${REDIS_PERSIST:-0} == 1 ]]; then
-  redis_opts="--appendonly yes --appendfsync always --dir $POC_DIR"
+  redis_opts="--appendonly yes --appendfsync always"
 else
   redis_opts="--save '' --appendonly no"
 fi
+redis_opts="$redis_opts --dir $POC_DIR --cluster-enabled yes --cluster-config-file redis-nodes.conf"
 cat >"$POC_DIR/start-redis" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 redis-server --port "$REDIS_PORT" $redis_opts >>"$POC_DIR/logs/redis.log" 2>&1 &
 pid=\$!
 until redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; do sleep 0.1; done
+# The first start takes every slot; a restart finds them in its cluster config.
+redis-cli -p "$REDIS_PORT" cluster info | grep -q cluster_slots_assigned:16384 ||
+  redis-cli -p "$REDIS_PORT" cluster addslotsrange 0 16383 >/dev/null
+until redis-cli -p "$REDIS_PORT" cluster info | grep -q cluster_state:ok; do sleep 0.1; done
 echo "\$pid"
 EOF
 chmod +x "$POC_DIR/start-redis"

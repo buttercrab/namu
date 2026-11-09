@@ -1,17 +1,21 @@
 //! The control plane's state in Redis.
 //!
 //! Keys:
-//! - `namu:task:{id}:{version}`, `namu:workflow:{id}:{version}`: JSON, set once (`SET NX`).
-//! - `namu:member:{id}`: a member's record, until it is buried; `namu:lease:{id}`, its lease, which
-//!   expires unless renewed; `namu:alive`, the set of workers not yet buried; `namu:successors`,
-//!   dead worker -> successor; `namu:worker_names`.
-//! - `namu:run:{id}:spec` (JSON, set once), `namu:run:{id}:owner`, `namu:run:{id}:end` (JSON, set
-//!   once), and `namu:running`, the set of runs that have not ended.
-//! - `namu:run:{id}:results` and `:failures`, lists in the order reports arrived, and `:reported`,
-//!   the set of branches whose report is in one of them.
+//! - `{namu}:task:{id}:{version}`, `{namu}:workflow:{id}:{version}`: JSON, set once (`SET NX`).
+//! - `{namu}:member:{id}`: a member's record, until it is buried; `{namu}:lease:{id}`, its lease,
+//!   which expires unless renewed; `{namu}:alive`, the set of workers not yet buried;
+//!   `{namu}:successors`, dead worker -> successor; `{namu}:worker_names`.
+//! - `{namu}:run:{id}:spec` (JSON, set once), `{namu}:run:{id}:owner`, `{namu}:run:{id}:end` (JSON,
+//!   set once), and `{namu}:running`, the set of runs that have not ended.
+//! - `{namu}:run:{id}:results` and `:failures`, lists in the order reports arrived, and
+//!   `:reported`, the set of branches whose report is in one of them.
 //!
 //! Ids never contain `:` (the control plane checks), so keys cannot collide. Nothing scans the
-//! keyspace: members are read through `namu:alive`, runs through `namu:running`.
+//! keyspace: members are read through `{namu}:alive`, runs through `{namu}:running`.
+//!
+//! Every key has the hash tag `{namu}`, so on Redis in cluster mode (MemoryDB always is) they share
+//! one slot, as the store's transactions need: one that touches keys in different slots is refused
+//! (`CROSSSLOT`).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -28,31 +32,31 @@ use uuid::Uuid;
 
 use super::{Inserted, Reported, RunEnd, RunRecord, RunSpec, Store};
 
-const WORKER_SEQ: &str = "namu:worker_seq";
-const WORKER_NAMES: &str = "namu:worker_names";
-const OWNER_CURSOR: &str = "namu:owner_cursor";
-const ALIVE: &str = "namu:alive";
-const SUCCESSORS: &str = "namu:successors";
-const RUNNING: &str = "namu:running";
+const WORKER_SEQ: &str = "{namu}:worker_seq";
+const WORKER_NAMES: &str = "{namu}:worker_names";
+const OWNER_CURSOR: &str = "{namu}:owner_cursor";
+const ALIVE: &str = "{namu}:alive";
+const SUCCESSORS: &str = "{namu}:successors";
+const RUNNING: &str = "{namu}:running";
 
 fn task_key(id: &str, version: &str) -> String {
-    format!("namu:task:{id}:{version}")
+    format!("{{namu}}:task:{id}:{version}")
 }
 
 fn workflow_key(id: &str, version: &str) -> String {
-    format!("namu:workflow:{id}:{version}")
+    format!("{{namu}}:workflow:{id}:{version}")
 }
 
 fn member_key(id: u64) -> String {
-    format!("namu:member:{id}")
+    format!("{{namu}}:member:{id}")
 }
 
 fn lease_key(id: u64) -> String {
-    format!("namu:lease:{id}")
+    format!("{{namu}}:lease:{id}")
 }
 
 fn run_key(id: Uuid, part: &str) -> String {
-    format!("namu:run:{id}:{part}")
+    format!("{{namu}}:run:{id}:{part}")
 }
 
 #[derive(Clone)]
@@ -93,6 +97,22 @@ impl RedisStore {
             .await?
             .with_context(|| format!("{key} vanished"))?;
         Ok(Inserted::Existing(existing))
+    }
+
+    /// The records of members `ids`, by id; a member buried meanwhile has none.
+    async fn records(&self, ids: &[u64]) -> anyhow::Result<Vec<Member>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys: Vec<String> = ids.iter().map(|&id| member_key(id)).collect();
+        let records: Vec<Option<String>> = self.conn().mget(&keys).await?;
+        let mut members = records
+            .into_iter()
+            .flatten()
+            .map(|record| serde_json::from_str(&record).context("decoding a member"))
+            .collect::<anyhow::Result<Vec<Member>>>()?;
+        members.sort_by_key(|member| member.id);
+        Ok(members)
     }
 
     async fn get<T: DeserializeOwned>(&self, key: &str) -> anyhow::Result<Option<T>> {
@@ -219,30 +239,25 @@ impl Store for RedisStore {
         Ok(())
     }
 
-    async fn members(&self) -> anyhow::Result<Vec<Member>> {
+    async fn leased(&self) -> anyhow::Result<Vec<Member>> {
         let alive = self.alive().await?;
         if alive.is_empty() {
             return Ok(Vec::new());
         }
         let leases: Vec<String> = alive.iter().map(|&id| lease_key(id)).collect();
         let leased: Vec<Option<u8>> = self.conn().mget(&leases).await?;
-        let keys: Vec<String> = alive
-            .iter()
+        let ids: Vec<u64> = alive
+            .into_iter()
             .zip(leased)
             .filter(|(_, lease)| lease.is_some())
-            .map(|(&id, _)| member_key(id))
+            .map(|(id, _)| id)
             .collect();
-        if keys.is_empty() {
-            return Ok(Vec::new());
-        }
-        let records: Vec<Option<String>> = self.conn().mget(&keys).await?;
-        let mut members = records
-            .into_iter()
-            .flatten()
-            .map(|record| serde_json::from_str(&record).context("decoding a member"))
-            .collect::<anyhow::Result<Vec<Member>>>()?;
-        members.sort_by_key(|member| member.id);
-        Ok(members)
+        self.records(&ids).await
+    }
+
+    async fn members(&self) -> anyhow::Result<Vec<Member>> {
+        let alive = self.alive().await?;
+        self.records(&alive).await
     }
 
     async fn alive(&self) -> anyhow::Result<Vec<u64>> {

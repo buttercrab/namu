@@ -104,6 +104,10 @@ pub trait Store: Send + Sync + 'static {
     /// Ends member `id`'s lease now.
     async fn end_lease(&self, id: u64) -> anyhow::Result<()>;
     /// The members whose lease holds, by id.
+    async fn leased(&self) -> anyhow::Result<Vec<Member>>;
+    /// Every member not yet buried, by id, whether or not its lease holds: the membership. A
+    /// lease that ran out is the sweep's to judge (it may have run out only because the store
+    /// was down), so the mesh keeps the member until it is buried.
     async fn members(&self) -> anyhow::Result<Vec<Member>>;
     /// Workers that joined and are not yet buried: those without a lease have died.
     async fn alive(&self) -> anyhow::Result<Vec<u64>>;

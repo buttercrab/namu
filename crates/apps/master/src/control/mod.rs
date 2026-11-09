@@ -260,7 +260,7 @@ impl Control {
             .map_err(ApiError::bad_request)?;
         let workers: Vec<Member> = self
             .store
-            .members()
+            .leased()
             .await?
             .into_iter()
             .filter(|member| !member.draining)
@@ -502,7 +502,7 @@ impl Control {
     pub async fn drain(&self, worker: u64) -> Result<Membership, ApiError> {
         let mut member = self
             .store
-            .members()
+            .leased()
             .await?
             .into_iter()
             .find(|member| member.id == worker)
@@ -610,12 +610,15 @@ impl Control {
             }
             return Ok(());
         }
-        let members = self.store.members().await?;
+        // Who was alive is read before whose lease holds, so a worker that joins in between is
+        // judged at the next sweep, not found alive without a lease and buried as it joins.
+        let alive = self.store.alive().await?;
+        let members = self.store.leased().await?;
         let Some(successor) = members.iter().map(|member| member.id).min() else {
             // Nobody to take over yet; decided once a worker joins.
             return Ok(());
         };
-        for dead in self.store.alive().await? {
+        for dead in alive {
             if !members.iter().any(|member| member.id == dead) {
                 tracing::warn!(dead, successor, "worker died; its successor takes over");
                 self.store.bury(dead, successor).await?;

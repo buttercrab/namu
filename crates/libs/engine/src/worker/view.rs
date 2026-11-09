@@ -124,32 +124,37 @@ impl Inner {
             return Ok(node);
         }
         let holder = owner(id);
-        // Nodes held by a dead worker, or no longer held by their creator, are in the log.
-        let node = if self.routes.resolve(holder) != holder || holder == self.id {
-            self.log.node(run.id(), id).await?
-        } else {
-            let (waiter, reply) = oneshot::channel();
-            let first = {
-                let mut fetches = self.fetches.lock().unwrap();
+        // Whether the holder lives is decided under the lock `refetch_from_log` takes after a
+        // membership change, so a fetch from a worker that just died is never left waiting.
+        let fetch = {
+            let mut fetches = self.fetches.lock().unwrap();
+            (self.routes.resolve(holder) == holder && holder != self.id).then(|| {
+                let (waiter, reply) = oneshot::channel();
                 let waiters = fetches.entry((run.id(), id)).or_default();
                 waiters.push(waiter);
-                waiters.len() == 1
-            };
-            if first {
-                let reply_to = self.id;
-                let fetch = Message::FetchNode {
-                    run: run.id(),
-                    id,
-                    reply_to,
-                };
-                self.deliver(holder, fetch);
-                run.fetches.fetch_add(1, Ordering::Relaxed);
-                crate::telemetry::node_fetched();
-            }
-            match reply.await.context("node fetch abandoned")? {
-                Some(node) => Some(node),
-                // Its creator no longer holds it.
-                None => self.log.node(run.id(), id).await?,
+                (reply, waiters.len() == 1)
+            })
+        };
+        // Nodes held by a dead worker, or no longer held by their creator, are in the log.
+        let node = match fetch {
+            None => self.log.node(run.id(), id).await?,
+            Some((reply, first)) => {
+                if first {
+                    let reply_to = self.id;
+                    let fetch = Message::FetchNode {
+                        run: run.id(),
+                        id,
+                        reply_to,
+                    };
+                    self.deliver(holder, fetch);
+                    run.fetches.fetch_add(1, Ordering::Relaxed);
+                    crate::telemetry::node_fetched();
+                }
+                match reply.await.context("node fetch abandoned")? {
+                    Some(node) => Some(node),
+                    // Its creator no longer holds it.
+                    None => self.log.node(run.id(), id).await?,
+                }
             }
         };
         let node = node.with_context(|| format!("node {id} is gone"))?;
