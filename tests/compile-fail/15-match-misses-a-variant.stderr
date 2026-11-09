@@ -1,0 +1,19 @@
+error[E0004]: non-exhaustive patterns: `Size::Small` not covered
+  --> tests/compile-fail/15-match-misses-a-variant.rs:16:5
+   |
+16 |     match size(n) {
+   |     ^^^^^ pattern `Size::Small` not covered
+   |
+note: `Size` defined here
+  --> tests/compile-fail/15-match-misses-a-variant.rs:5:10
+   |
+ 5 | pub enum Size {
+   |          ^^^^
+ 6 |     Small,
+   |     ----- not covered
+   = note: the matched value is of type `Size`
+help: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown
+   |
+14 ~ #[workflow],
+15 + Size::Small => todo!()
+   |

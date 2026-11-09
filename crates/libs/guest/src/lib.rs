@@ -43,6 +43,10 @@
 //! A native build of the crate exports `namu_signature`, which `namu build` reads (it builds a
 //! WASM task for the host too, for that).
 
+// The derives name this crate by its name, as tasks see it.
+#[cfg(test)]
+extern crate self as namu_guest;
+
 pub use namu_core::types::Describe;
 /// Describes a type's shape, as it crosses: `#[derive(Serialize, Deserialize, Describe)]`.
 pub use namu_macros::GuestDescribe as Describe;
@@ -81,8 +85,9 @@ pub mod stream_bindings {
 
 /// Version of the native C ABI exported by the task macros. Version 3 added streams, version 4
 /// batch sessions, version 5 moved values from JSON to MessagePack, version 6 gave each call its
-/// key.
-pub const NATIVE_ABI_VERSION: u32 = 6;
+/// key, version 7 made a call's or a batch item's failure a [`Raised`](namu_core::raise::Raised):
+/// its message and its own error value.
+pub const NATIVE_ABI_VERSION: u32 = 7;
 
 std::thread_local! {
     static CALL_KEY: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
@@ -110,16 +115,26 @@ pub fn call_keys() -> Vec<String> {
 pub trait Continuous: Default + 'static {
     type In: serde::de::DeserializeOwned;
     type Out: serde::Serialize;
+    /// What an item fails with: a message (`anyhow::Error`), or a type of its own, which an
+    /// attempt of the call catches.
+    type Error: namu_core::raise::Raise;
 
     /// Takes in `admit` and returns what finished in this step, each with its own result.
-    fn step(&mut self, admit: Vec<(u64, Self::In)>) -> Vec<(u64, Result<Self::Out, String>)>;
+    fn step(&mut self, admit: Vec<(u64, Self::In)>) -> Stepped<Self>;
 }
+
+/// What a continuous batch's step finished: each item's id, and its output or its error.
+pub type Stepped<C> = Vec<(
+    u64,
+    Result<<C as Continuous>::Out, <C as Continuous>::Error>,
+)>;
 
 #[doc(hidden)]
 pub mod __private {
     use std::any::Any;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    pub use namu_core::raise::{Raise, Raised};
     pub use namu_core::signature::Signature;
     pub use namu_core::types::{Def, Defs, Describe, Type, named};
     pub use rmp_serde;
@@ -150,8 +165,8 @@ pub mod __private {
     pub fn open_keyed(
         key: String,
         input: &[u8],
-        open: fn(&[u8]) -> Result<Items, String>,
-    ) -> Result<Items, String> {
+        open: fn(&[u8]) -> Result<Items, Raised>,
+    ) -> Result<Items, Raised> {
         let mut key = Some(key);
         let mut items = lend_key(&mut key, || open(input))?;
         Ok(Box::new(std::iter::from_fn(move || {
@@ -162,11 +177,11 @@ pub mod __private {
     /// A value as it crosses the task boundary: MessagePack.
     pub type Bytes = Vec<u8>;
 
-    /// A stream's items, each encoded or the task's error.
-    pub type Items = Box<dyn Iterator<Item = Result<Bytes, String>>>;
+    /// A stream's items, each encoded or the task's failure.
+    pub type Items = Box<dyn Iterator<Item = Result<Bytes, Raised>>>;
 
-    /// What a batch step finished: each item's id, and its output or its own error.
-    pub type Finished = Vec<(u64, Result<Bytes, String>)>;
+    /// What a batch step finished: each item's id, and its output or its own failure.
+    pub type Finished = Vec<(u64, Result<Bytes, Raised>)>;
 
     /// An item a batch step takes in: its id, its call's key, and its input.
     pub type Admitted = (u64, String, Bytes);
@@ -192,7 +207,7 @@ pub mod __private {
     where
         T: serde::de::DeserializeOwned + 'static,
         R: serde::Serialize + 'static,
-        E: std::fmt::Display + 'static,
+        E: Raise + 'static,
     {
         Box::new(move |admit| {
             let mut finished = Vec::new();
@@ -204,7 +219,7 @@ pub mod __private {
                         keys.push(key);
                         items.push(item);
                     }
-                    Err(err) => finished.push((id, Err(format!("invalid task input: {err}")))),
+                    Err(err) => finished.push((id, Err(invalid_input(err)))),
                 }
             }
             if items.is_empty() {
@@ -222,7 +237,7 @@ pub mod __private {
             finished.extend(
                 ids.into_iter()
                     .zip(outputs)
-                    .map(|(id, output)| (id, encode(output))),
+                    .map(|(id, output)| (id, encode_raised(output))),
             );
             Ok(finished)
         })
@@ -240,44 +255,49 @@ pub mod __private {
                         keys.push(key);
                         items.push((id, item));
                     }
-                    Err(err) => finished.push((id, Err(format!("invalid task input: {err}")))),
+                    Err(err) => finished.push((id, Err(invalid_input(err)))),
                 }
             }
             let done = catch_unwind(AssertUnwindSafe(|| with_keys(keys, || session.step(items))))
                 .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
-            finished.extend(done.into_iter().map(|(id, output)| (id, encode(output))));
+            let done = done
+                .into_iter()
+                .map(|(id, output)| (id, encode_raised(output)));
+            finished.extend(done);
             Ok(finished)
         })
     }
 
-    fn encode<R: serde::Serialize, E: std::fmt::Display>(
-        output: Result<R, E>,
-    ) -> Result<Bytes, String> {
-        output
-            .map_err(|err| err.to_string())
-            .and_then(|output| rmp_serde::to_vec_named(&output).map_err(|err| err.to_string()))
+    /// An output, encoded, or its failure, with its own error value if it has one.
+    fn encode_raised<R: serde::Serialize, E: Raise>(output: Result<R, E>) -> Result<Bytes, Raised> {
+        let output = output.map_err(Raise::raise)?;
+        rmp_serde::to_vec_named(&output).map_err(|err| Raised::from(err.to_string()))
+    }
+
+    fn invalid_input(err: impl std::fmt::Display) -> Raised {
+        format!("invalid task input: {err}").into()
     }
 
     /// Runs a task body against its encoded input and encodes its result.
-    pub fn run<T, E, F>(input: &[u8], body: F) -> Result<Bytes, String>
+    pub fn run<T, E, F>(input: &[u8], body: F) -> Result<Bytes, Raised>
     where
         T: serde::Serialize,
-        E: std::fmt::Display,
+        E: Raise,
         F: FnOnce(Bytes) -> Result<Result<T, E>, rmp_serde::decode::Error>,
     {
         let output = catch_unwind(AssertUnwindSafe(|| body(input.to_vec())))
             .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
         match output {
-            Ok(output) => encode(output),
-            Err(err) => Err(format!("invalid task input: {err}")),
+            Ok(output) => encode_raised(output),
+            Err(err) => Err(invalid_input(err)),
         }
     }
 
     /// Opens a stream task against its encoded input; its items are encoded as they are pulled.
-    pub fn open<T, E, I, F>(input: &[u8], body: F) -> Result<Items, String>
+    pub fn open<T, E, I, F>(input: &[u8], body: F) -> Result<Items, Raised>
     where
         T: serde::Serialize,
-        E: std::fmt::Display,
+        E: Raise,
         I: Iterator<Item = Result<T, E>> + 'static,
         F: FnOnce(Bytes) -> Result<Result<I, E>, rmp_serde::decode::Error>,
     {
@@ -285,15 +305,15 @@ pub mod __private {
             .map_err(|panic| format!("task panicked: {}", panic_message(&panic)))?;
         let mut items = match items {
             Ok(Ok(items)) => items,
-            Ok(Err(err)) => return Err(err.to_string()),
-            Err(err) => return Err(format!("invalid task input: {err}")),
+            Ok(Err(err)) => return Err(err.raise()),
+            Err(err) => return Err(invalid_input(err)),
         };
         Ok(Box::new(std::iter::from_fn(move || {
             let item = catch_unwind(AssertUnwindSafe(|| items.next()));
             Some(match item {
                 Ok(None) => return None,
-                Ok(Some(output)) => encode(output),
-                Err(panic) => Err(format!("task panicked: {}", panic_message(&panic))),
+                Ok(Some(output)) => encode_raised(output),
+                Err(panic) => Err(format!("task panicked: {}", panic_message(&panic)).into()),
             })
         })))
     }
@@ -308,6 +328,15 @@ pub mod __private {
         T::describe(defs)
     }
 
+    /// What a single task fails with: the `E` of its `Result<T, E>`, if it is a type of its own.
+    pub fn single_error<F, T, E>(_decode: F, defs: &mut Defs) -> Option<Type>
+    where
+        F: FnOnce(Bytes) -> Result<Result<T, E>, rmp_serde::decode::Error>,
+        E: Raise,
+    {
+        E::error_type(defs)
+    }
+
     /// What a stream gives, as a workflow sees it: the list of its items.
     pub fn stream_output<F, I, T, E, E2>(_decode: F, defs: &mut Defs) -> Type
     where
@@ -318,14 +347,26 @@ pub mod __private {
         Type::List(Box::new(T::describe(defs)))
     }
 
+    /// What a stream fails with, opening or at an item (which ends it): the `E` of its
+    /// `Result<impl Iterator<Item = Result<T, E>>, E>`, if it is a type of its own.
+    pub fn stream_error<F, I, T, E>(_decode: F, defs: &mut Defs) -> Option<Type>
+    where
+        F: FnOnce(Bytes) -> Result<Result<I, E>, rmp_serde::decode::Error>,
+        I: Iterator<Item = Result<T, E>>,
+        E: Raise,
+    {
+        E::error_type(defs)
+    }
+
     /// A dynamic batch task's signature, per item, as a workflow calls it.
-    pub fn batch_signature<T: Describe, R: Describe, E>(
+    pub fn batch_signature<T: Describe, R: Describe, E: Raise>(
         _task: fn(Vec<T>) -> Vec<Result<R, E>>,
     ) -> Signature {
         let mut defs = Defs::new();
         let input = T::describe(&mut defs);
         let output = R::describe(&mut defs);
-        Signature::new(vec![input], output, defs)
+        let error = E::error_type(&mut defs);
+        Signature::new(vec![input], output, defs).failing_with(error)
     }
 
     /// A continuous batch task's signature, per item.
@@ -338,7 +379,8 @@ pub mod __private {
         let mut defs = Defs::new();
         let input = C::In::describe(&mut defs);
         let output = C::Out::describe(&mut defs);
-        Signature::new(vec![input], output, defs)
+        let error = C::Error::error_type(&mut defs);
+        Signature::new(vec![input], output, defs).failing_with(error)
     }
 
     /// Hands the task's signature, as MessagePack, to `namu build`.
@@ -387,7 +429,8 @@ pub mod __private {
         unsafe { std::slice::from_raw_parts(in_ptr, in_len) }
     }
 
-    /// Native ABI entry point shared by every native task. The key is UTF-8.
+    /// Native ABI entry point shared by every native task. The key is UTF-8. A failure is handed
+    /// over as MessagePack, `[message, error]`, `error` being the task's own error value or nil.
     ///
     /// # Safety
     /// `key_ptr` must point to `key_len` readable bytes and `in_ptr` to `in_len`; `out_ptr` and
@@ -400,19 +443,19 @@ pub mod __private {
         in_len: usize,
         out_ptr: *mut *mut u8,
         out_len: *mut usize,
-        call: fn(&[u8]) -> Result<Bytes, String>,
+        call: fn(&[u8]) -> Result<Bytes, Raised>,
     ) -> i32 {
         let key = String::from_utf8_lossy(unsafe { input(key_ptr, key_len) }).into_owned();
         let (code, payload) = match with_key(key, || call(unsafe { input(in_ptr, in_len) })) {
             Ok(output) => (0, output),
-            Err(err) => (1, err.into_bytes()),
+            Err(raised) => (1, encode_failure(&raised)),
         };
         unsafe { hand_over(payload, out_ptr, out_len) };
         code
     }
 
     /// Native ABI entry point that opens a stream. On success `handle` is set; on failure the
-    /// error is handed over in `out_ptr`/`out_len`.
+    /// failure is handed over in `out_ptr`/`out_len`, as MessagePack `[message, error]`.
     ///
     /// # Safety
     /// `in_ptr` must point to `in_len` readable bytes; the out-pointers must be writable.
@@ -425,7 +468,7 @@ pub mod __private {
         handle: *mut *mut std::ffi::c_void,
         out_ptr: *mut *mut u8,
         out_len: *mut usize,
-        open: fn(&[u8]) -> Result<Items, String>,
+        open: fn(&[u8]) -> Result<Items, Raised>,
     ) -> i32 {
         let key = String::from_utf8_lossy(unsafe { input(key_ptr, key_len) }).into_owned();
         match open_keyed(key, unsafe { input(in_ptr, in_len) }, open) {
@@ -433,15 +476,15 @@ pub mod __private {
                 unsafe { *handle = Box::into_raw(Box::new(items)).cast() };
                 0
             }
-            Err(err) => {
-                unsafe { hand_over(err.into_bytes(), out_ptr, out_len) };
+            Err(raised) => {
+                unsafe { hand_over(encode_failure(&raised), out_ptr, out_len) };
                 1
             }
         }
     }
 
     /// Native ABI entry point for a stream's next item: 0 and the item, 1 at the end, or 2 and
-    /// the task's error.
+    /// the task's failure, as MessagePack `[message, error]`.
     ///
     /// # Safety
     /// `handle` must come from [`native_open`] and not be closed; the out-pointers must be
@@ -455,7 +498,7 @@ pub mod __private {
         let (code, payload) = match items.next() {
             None => return 1,
             Some(Ok(item)) => (0, item),
-            Some(Err(err)) => (2, err.into_bytes()),
+            Some(Err(raised)) => (2, encode_failure(&raised)),
         };
         unsafe { hand_over(payload, out_ptr, out_len) };
         code
@@ -495,12 +538,20 @@ pub mod __private {
     /// input.
     type NativeAdmitted = (u64, String, serde_bytes::ByteBuf);
 
-    /// An item a batch step finished: its id and its encoded output, or its error.
-    type Done = (u64, Result<serde_bytes::ByteBuf, String>);
+    /// An item a batch step finished: its id and its encoded output, or its failure.
+    type Done = (u64, Result<serde_bytes::ByteBuf, Raised>);
+
+    /// A failure as it crosses the native ABI: MessagePack, `[message, error]`.
+    fn encode_failure(raised: &Raised) -> Bytes {
+        rmp_serde::to_vec(raised).unwrap_or_else(|_| {
+            let message = Raised::from(raised.message.clone());
+            rmp_serde::to_vec(&message).expect("a message encodes")
+        })
+    }
 
     /// Native ABI entry point for a batch step. The input is a MessagePack array of
-    /// `[id, key, input]`,
-    /// the output one of `[id, {"Ok": output} | {"Err": error}]`; or 1 and the session's error.
+    /// `[id, key, input]`, the output one of `[id, {"Ok": output} | {"Err": [message, error]}]`;
+    /// or 1 and the session's error.
     ///
     /// # Safety
     /// `handle` must come from [`native_batch_open`] and not be closed; `in_ptr` must point to
@@ -558,7 +609,7 @@ macro_rules! task {
     (fn $name:ident($($args:tt)*) -> $ret:ty $body:block) => {
         fn $name($($args)*) -> $ret $body
         $crate::__decoder!(__namu_decode, $name($($args)*) -> $ret);
-        $crate::__signature!(single_output, $name($($args)*));
+        $crate::__signature!(single_output, single_error, $name($($args)*));
         $crate::__export_task!();
     };
 }
@@ -570,7 +621,7 @@ macro_rules! stream {
     (fn $name:ident($($args:tt)*) -> $ret:ty $body:block) => {
         fn $name($($args)*) -> $ret $body
         $crate::__decoder!(__namu_decode, $name($($args)*) -> $ret);
-        $crate::__signature!(stream_output, $name($($args)*));
+        $crate::__signature!(stream_output, stream_error, $name($($args)*));
         $crate::__export_stream!();
     };
 }
@@ -637,19 +688,20 @@ macro_rules! __decoder {
     };
 }
 
-/// Defines `__namu_signature()`: the task's parameters, described, and its output, read off its
-/// decoder by `$output`.
+/// Defines `__namu_signature()`: the task's parameters, described, and its output and error,
+/// read off its decoder by `$output` and `$error`.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __signature {
-    ($output:ident, $name:ident($($arg:ident : $ty:ty),* $(,)?)) => {
+    ($output:ident, $error:ident, $name:ident($($arg:ident : $ty:ty),* $(,)?)) => {
         fn __namu_signature() -> $crate::__private::Signature {
             let mut defs = $crate::__private::Defs::new();
             let params = ::std::vec![
                 $(<$ty as $crate::__private::Describe>::describe(&mut defs)),*
             ];
             let output = $crate::__private::$output(__namu_decode, &mut defs);
-            $crate::__private::Signature::new(params, output, defs)
+            let error = $crate::__private::$error(__namu_decode, &mut defs);
+            $crate::__private::Signature::new(params, output, defs).failing_with(error)
         }
     };
 }
@@ -658,16 +710,25 @@ macro_rules! __signature {
 #[macro_export]
 macro_rules! __export_task {
     () => {
-        fn __namu_call(input: &[u8]) -> ::std::result::Result<$crate::__private::Bytes, String> {
+        fn __namu_call(
+            input: &[u8],
+        ) -> ::std::result::Result<$crate::__private::Bytes, $crate::__private::Raised> {
             $crate::__private::run(input, __namu_decode)
         }
 
         #[cfg(target_family = "wasm")]
         const _: () = {
+            use $crate::bindings::Failure;
+
             struct NamuTask;
             impl $crate::bindings::Guest for NamuTask {
-                fn call(key: String, input: Vec<u8>) -> ::std::result::Result<Vec<u8>, String> {
-                    $crate::__private::with_key(key, || __namu_call(&input))
+                fn call(key: String, input: Vec<u8>) -> ::std::result::Result<Vec<u8>, Failure> {
+                    $crate::__private::with_key(key, || __namu_call(&input)).map_err(|raised| {
+                        Failure {
+                            message: raised.message,
+                            error: raised.error,
+                        }
+                    })
                 }
             }
     $crate::bindings::export!(NamuTask with_types_in $crate::bindings);
@@ -704,13 +765,24 @@ macro_rules! __export_task {
 #[macro_export]
 macro_rules! __export_stream {
     () => {
-        fn __namu_open(input: &[u8]) -> ::std::result::Result<$crate::__private::Items, String> {
+        fn __namu_open(
+            input: &[u8],
+        ) -> ::std::result::Result<$crate::__private::Items, $crate::__private::Raised> {
             $crate::__private::open(input, __namu_decode)
         }
 
         #[cfg(target_family = "wasm")]
         const _: () = {
-            use $crate::stream_bindings::exports::namu::task::source::{Guest, GuestItems, Items};
+            use $crate::stream_bindings::exports::namu::task::source::{
+                Failure, Guest, GuestItems, Items,
+            };
+
+            fn failure(raised: $crate::__private::Raised) -> Failure {
+                Failure {
+                    message: raised.message,
+                    error: raised.error,
+                }
+            }
 
             struct NamuStream;
             struct NamuItems(::std::cell::RefCell<$crate::__private::Items>);
@@ -718,15 +790,16 @@ macro_rules! __export_stream {
             impl Guest for NamuStream {
                 type Items = NamuItems;
 
-                fn open(key: String, input: Vec<u8>) -> ::std::result::Result<Items, String> {
-                    let items = $crate::__private::open_keyed(key, &input, __namu_open)?;
+                fn open(key: String, input: Vec<u8>) -> ::std::result::Result<Items, Failure> {
+                    let items =
+                        $crate::__private::open_keyed(key, &input, __namu_open).map_err(failure)?;
                     Ok(Items::new(NamuItems(::std::cell::RefCell::new(items))))
                 }
             }
 
             impl GuestItems for NamuItems {
-                fn next(&self) -> Option<::std::result::Result<Vec<u8>, String>> {
-                    self.0.borrow_mut().next()
+                fn next(&self) -> Option<::std::result::Result<Vec<u8>, Failure>> {
+                    self.0.borrow_mut().next().map(|item| item.map_err(failure))
                 }
             }
 
@@ -785,7 +858,7 @@ macro_rules! __export_batch {
         #[cfg(target_family = "wasm")]
         const _: () = {
             use $crate::batch_bindings::exports::namu::task::batch::{
-                Admitted, Finished, Guest, GuestSession, Session,
+                Admitted, Failure, Finished, Guest, GuestSession, Session,
             };
 
             struct NamuBatch;
@@ -814,7 +887,13 @@ macro_rules! __export_batch {
                     let finished = (self.0.borrow_mut())(admit)?;
                     Ok(finished
                         .into_iter()
-                        .map(|(id, output)| Finished { id, output })
+                        .map(|(id, output)| Finished {
+                            id,
+                            output: output.map_err(|raised| Failure {
+                                message: raised.message,
+                                error: raised.error,
+                            }),
+                        })
                         .collect())
                 }
             }
@@ -889,12 +968,45 @@ macro_rules! __export_native_common {
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::__private::{
-        Bytes, Items, dynamic, native_call, native_free, open_keyed, rmp_serde,
+        Bytes, Items, Raised, dynamic, native_call, native_free, open_keyed, rmp_serde, run,
     };
     use super::{call_key, call_keys};
 
-    fn whoami(_input: &[u8]) -> Result<Bytes, String> {
-        call_key().map(String::into_bytes).ok_or("no key".into())
+    fn whoami(_input: &[u8]) -> Result<Bytes, Raised> {
+        call_key()
+            .map(String::into_bytes)
+            .ok_or_else(|| "no key".to_string().into())
+    }
+
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, super::Describe)]
+    enum Fetch {
+        NotFound,
+        Limited { retry_after: u64 },
+    }
+
+    impl std::fmt::Display for Fetch {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{self:?}")
+        }
+    }
+
+    fn limited(_input: Bytes) -> Result<Result<(), Fetch>, rmp_serde::decode::Error> {
+        Ok(Err(Fetch::Limited { retry_after: 3 }))
+    }
+
+    fn failed(_input: Bytes) -> Result<Result<(), anyhow::Error>, rmp_serde::decode::Error> {
+        Ok(Err(anyhow::anyhow!("no luck")))
+    }
+
+    #[test]
+    fn a_task_s_own_error_crosses_with_its_message() {
+        let raised = run(&[0xc0], limited).unwrap_err();
+        assert_eq!(raised.message, "Limited { retry_after: 3 }");
+        let error: Fetch = rmp_serde::from_slice(&raised.error.unwrap()).unwrap();
+        assert_eq!(error, Fetch::Limited { retry_after: 3 });
+        // A message is only a message.
+        let raised = run(&[0xc0], failed).unwrap_err();
+        assert_eq!((raised.message.as_str(), raised.error), ("no luck", None));
     }
 
     #[test]
@@ -920,7 +1032,7 @@ mod tests {
         assert_eq!(call_key(), None);
     }
 
-    fn keys(_input: &[u8]) -> Result<Items, String> {
+    fn keys(_input: &[u8]) -> Result<Items, Raised> {
         let opened = call_key();
         Ok(Box::new([opened, None].into_iter().map(|key| {
             Ok(key.or_else(call_key).unwrap_or_default().into_bytes())

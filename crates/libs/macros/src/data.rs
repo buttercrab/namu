@@ -55,12 +55,18 @@ fn describe(input: &DeriveInput, exports: &TokenStream2, bound: TokenStream2) ->
         Some(def) => quote! { #exports::named(::std::any::type_name::<Self>(), defs, |defs| #def) },
         None => quote! { #exports::Type::Named(::std::any::type_name::<Self>().to_string()) },
     };
+    let names = match serde_names(input) {
+        Ok(names) => names,
+        Err(err) => return err.to_compile_error(),
+    };
     quote! {
         impl #impl_generics #exports::Describe for #name #type_generics #where_clause {
             fn describe(defs: &mut #exports::Defs) -> #exports::Type {
                 let _ = &defs;
                 #body
             }
+
+            #names
         }
     }
 }
@@ -104,6 +110,53 @@ fn shape(input: &DeriveInput, exports: &TokenStream2) -> syn::Result<Option<Toke
                 body.union_token,
                 "a union cannot be described",
             ));
+        }
+    })
+}
+
+/// An enum's `serde_name`: its variants' and their fields' names in Rust, to serde's. Nothing for
+/// a struct, or an enum serde writes as Rust does.
+fn serde_names(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let Body::Enum(body) = &input.data else {
+        return Ok(TokenStream2::new());
+    };
+    let container = Serde::of(&input.attrs)?;
+    let mut arms = Vec::new();
+    for variant in &body.variants {
+        let serde = Serde::of(&variant.attrs)?;
+        let rust = variant.ident.to_string();
+        let name = serde
+            .rename
+            .unwrap_or_else(|| rename(&rust, container.rename_all.as_deref(), Case::Variant));
+        if name != rust {
+            arms.push(quote! { (#rust, None) => Some(#name), });
+        }
+        for field in &variant.fields {
+            let Some(ident) = &field.ident else {
+                continue;
+            };
+            let field_serde = Serde::of(&field.attrs)?;
+            let field_rust = ident.to_string();
+            let field_name = field_serde
+                .rename
+                .unwrap_or_else(|| rename(&field_rust, serde.rename_all.as_deref(), Case::Field));
+            if field_name != field_rust {
+                arms.push(quote! { (#rust, Some(#field_rust)) => Some(#field_name), });
+            }
+        }
+    }
+    if arms.is_empty() {
+        return Ok(TokenStream2::new());
+    }
+    Ok(quote! {
+        fn serde_name(
+            variant: &str,
+            field: ::std::option::Option<&str>,
+        ) -> ::std::option::Option<&'static str> {
+            match (variant, field) {
+                #(#arms)*
+                _ => None,
+            }
         }
     })
 }

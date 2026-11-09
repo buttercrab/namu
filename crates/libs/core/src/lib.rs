@@ -8,6 +8,7 @@ pub mod json;
 pub mod liveness;
 pub mod msgpack;
 pub mod parallel;
+pub mod raise;
 pub mod registry;
 pub mod scopes;
 pub mod signature;

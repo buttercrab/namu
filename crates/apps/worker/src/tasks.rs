@@ -108,7 +108,8 @@ impl RuntimeTasks {
                 retry: Retry::new(
                     manifest.retries,
                     Duration::from_millis(manifest.retry_backoff_ms.unwrap_or(100)),
-                ),
+                )
+                .on(manifest.retry_on.iter().cloned()),
             }),
         })
     }

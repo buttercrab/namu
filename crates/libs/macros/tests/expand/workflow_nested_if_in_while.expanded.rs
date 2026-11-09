@@ -1,4 +1,11 @@
 use namu_macros::{task, workflow};
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct less_than {}
+impl ::namu::__macro_exports::Raises for less_than {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn less_than<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     a: impl ::namu::__macro_exports::IntoArg<i32>,
@@ -10,6 +17,13 @@ fn less_than<G: 'static>(
     ]);
     ::namu::__macro_exports::call(__builder, "less_than", __inputs)
 }
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct is_even {}
+impl ::namu::__macro_exports::Raises for is_even {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn is_even<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     a: impl ::namu::__macro_exports::IntoArg<i32>,
@@ -19,6 +33,13 @@ fn is_even<G: 'static>(
     ]);
     ::namu::__macro_exports::call(__builder, "is_even", __inputs)
 }
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct add_one {}
+impl ::namu::__macro_exports::Raises for add_one {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn add_one<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     a: impl ::namu::__macro_exports::IntoArg<i32>,
@@ -27,6 +48,13 @@ fn add_one<G: 'static>(
         ::namu::__macro_exports::IntoArg::into_arg(a, __builder),
     ]);
     ::namu::__macro_exports::call(__builder, "add_one", __inputs)
+}
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct add_two {}
+impl ::namu::__macro_exports::Raises for add_two {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
 }
 fn add_two<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,

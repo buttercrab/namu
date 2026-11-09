@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use anyhow::Context;
-use namu_core::ir::Call;
+use namu_core::ir::{Call, Catch};
 use namu_core::value::Value;
 use namu_core::{OpId, ValueId};
 use tokio::runtime::{Handle, RuntimeFlavor};
@@ -21,7 +21,7 @@ use crate::kernel::{self, Plan, Point, Start, ValueStore};
 use crate::log::Record;
 use crate::message::{Branch, BranchId, Handoff, Report, Reported, Resume};
 use crate::scope::{Continuation, Fold, Scope, Then};
-use crate::tasks::{Args, CallKey, CallTask, Kind, Task, TaskRef, unpack_output};
+use crate::tasks::{Args, CallKey, CallTask, Failure, Kind, Task, TaskRef, unpack_output};
 use crate::telemetry::{self, Outcome};
 use crate::tree::Node;
 
@@ -152,21 +152,23 @@ impl Inner {
                             at.set_ctx(next);
                             at.branch.resume = Resume::Kernel(Start::After { op });
                         }
-                        // An attempted call: its error is a value, and control takes the error
-                        // edge.
-                        Err(message) if let Some(catch) = &call.catch => {
-                            let error = (catch.error, Value::new(message));
-                            at.set_ctx(view.put(&at.ctx, vec![error], Point::Action(op)).await?);
-                            at.branch.resume = Resume::Kernel(Start::At {
-                                op: catch.next,
-                                pred: Some(op),
-                            });
-                        }
-                        Err(message) => {
-                            let failure = format!("{}: {message}", task_ref.id);
-                            self.report(run, &at.branch, Report::Failure(failure));
-                            return Ok(());
-                        }
+                        Err(failure) => match caught(call.catch.as_ref(), failure) {
+                            // An attempted call: its error is a value, and control takes the
+                            // error edge.
+                            Ok((catch, error)) => {
+                                let error = vec![(catch.error, error)];
+                                at.set_ctx(view.put(&at.ctx, error, Point::Action(op)).await?);
+                                at.branch.resume = Resume::Kernel(Start::At {
+                                    op: catch.next,
+                                    pred: Some(op),
+                                });
+                            }
+                            Err(failure) => {
+                                let failure = format!("{}: {failure}", task_ref.id);
+                                self.report(run, &at.branch, Report::Failure(failure));
+                                return Ok(());
+                            }
+                        },
                     }
                     if task.checkpoint {
                         self.checkpoint(run, at).await?;
@@ -215,7 +217,7 @@ impl Inner {
     }
 
     /// Runs a task call here and stores its outputs in a new node under the branch's context.
-    /// `Ok(Err(_))` is the task's own failure, with its message.
+    /// `Ok(Err(_))` is the task's own failure.
     async fn run_call(
         self: &Arc<Self>,
         view: &View<'_>,
@@ -224,14 +226,14 @@ impl Inner {
         op: OpId,
         call: &Call,
         at: &mut Driving,
-    ) -> anyhow::Result<Result<Arc<Node>, String>> {
+    ) -> anyhow::Result<Result<Arc<Node>, Failure>> {
         let args = gather(view, call, &at.ctx).await?;
         let key = at.key(view.run, op);
         let output = self.invoke(task_ref, task, args, key).await?;
         view.run.calls.fetch_add(1, Ordering::Relaxed);
         match output {
             Ok(output) => Ok(Ok(store(view, op, call, task_ref, &at.ctx, output).await?)),
-            Err(message) => Ok(Err(message)),
+            Err(failure) => Ok(Err(failure)),
         }
     }
 
@@ -332,13 +334,13 @@ impl Inner {
                         .with_context(|| format!("task {}", planned.task_ref.id))?;
                     outputs[index] = Some(parts);
                 }
-                Err(message) => {
+                Err(failure) => {
                     if failed.as_ref().is_none_or(|(first, _)| index < *first) {
                         started[index + 1..]
                             .iter()
                             .flatten()
                             .for_each(AbortHandle::abort);
-                        failed = Some((index, format!("{}: {message}", planned.task_ref.id)));
+                        failed = Some((index, format!("{}: {failure}", planned.task_ref.id)));
                     }
                 }
             }
@@ -458,7 +460,7 @@ impl Inner {
         task: &Task,
         args: Args,
         key: CallKey,
-    ) -> anyhow::Result<Result<Value, String>> {
+    ) -> anyhow::Result<Result<Value, Failure>> {
         let mut tries = 0;
         loop {
             let started = std::time::Instant::now();
@@ -482,8 +484,8 @@ impl Inner {
             };
             telemetry::task_called(task_ref, outcome, started.elapsed());
             match (&output, task.retry.wait(tries)) {
-                (Ok(Err(message)), Some(wait)) => {
-                    tracing::debug!(task = task_ref.id, %key, tries, ?wait, "trying again: {message}");
+                (Ok(Err(failure)), Some(wait)) if task.retry.retries(failure) => {
+                    tracing::debug!(task = task_ref.id, %key, tries, ?wait, "trying again: {failure}");
                     telemetry::task_retried(task_ref);
                     tokio::time::sleep(wait).await;
                     tries += 1;
@@ -498,7 +500,7 @@ impl Inner {
         task: &Arc<dyn CallTask>,
         args: Args,
         key: CallKey,
-    ) -> anyhow::Result<Result<Value, String>> {
+    ) -> anyhow::Result<Result<Value, Failure>> {
         let _slot = self.task_slots.acquire().await?;
         run_task(|| task.call(args, key))
     }
@@ -614,6 +616,20 @@ struct Planned<'w> {
 }
 
 /// A call's arguments, read from `ctx`.
+/// What an attempted call's failure binds: its error value if the catch is typed, its message if
+/// not. A typed catch does not catch a failure with no error value (a crash): that fails the
+/// branch, as does any failure of a call that is not attempted.
+fn caught(catch: Option<&Catch>, failure: Failure) -> Result<(&Catch, Value), Failure> {
+    match (catch, failure.error) {
+        (Some(catch), Some(error)) if catch.typed => Ok((catch, error)),
+        (Some(catch), _) if !catch.typed => Ok((catch, Value::new(failure.message))),
+        (_, error) => Err(Failure {
+            message: failure.message,
+            error,
+        }),
+    }
+}
+
 async fn gather(view: &View<'_>, call: &Call, ctx: &Arc<Node>) -> anyhow::Result<Args> {
     let mut args = Vec::with_capacity(call.inputs.len());
     for &input in &call.inputs {

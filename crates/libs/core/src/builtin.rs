@@ -7,6 +7,9 @@
 //! - Field access, indexing and tuples take values apart and put them together as MessagePack, as
 //!   they cross every boundary: a field is a slice of its struct's bytes, not decoded.
 //! - `format!` writes scalars as Rust's `Display` does.
+//! - An option is none if it is nil, and a some is what it holds: serde writes `Some(x)` as `x`.
+//! - An enum's variant is read from its MessagePack too: serde writes a unit variant as its name,
+//!   and any other as a map of its name to what it holds.
 
 use anyhow::{Context, anyhow, bail};
 use bytes::Bytes;
@@ -36,6 +39,24 @@ pub fn eval(op: &BuiltinOp, inputs: &[Value]) -> anyhow::Result<Value> {
                 .map(Value::encode)
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(Value::encoded(msgpack::array(&parts)))
+        }
+        BuiltinOp::Variant { name } => {
+            let [value] = encoded::<1>(inputs)?;
+            Ok(Value::new(msgpack::variant(&value)? == name))
+        }
+        BuiltinOp::Expect { message } => {
+            let [holds] = read::<bool, 1>(ScalarOp::And, inputs)?;
+            anyhow::ensure!(holds, "{message}");
+            Ok(Value::new(true))
+        }
+        BuiltinOp::IsSome => {
+            let [value] = encoded::<1>(inputs)?;
+            Ok(Value::new(!msgpack::is_nil(&value)))
+        }
+        BuiltinOp::Unwrap => {
+            let [value] = encoded::<1>(inputs)?;
+            anyhow::ensure!(!msgpack::is_nil(&value), "a none has no value");
+            Ok(Value::encoded(value))
         }
         BuiltinOp::Format { pieces } => {
             anyhow::ensure!(
@@ -314,5 +335,63 @@ mod tests {
         );
         assert!(run::<bool>(ScalarOp::Gt, ScalarType::String, &[a.clone(), b.clone()]).unwrap());
         assert!(scalar(ScalarOp::Sub, ScalarType::String, &[a, b]).is_err());
+    }
+
+    #[test]
+    fn an_enum_is_told_by_its_variant_and_holds_its_fields() {
+        #[derive(serde::Serialize)]
+        enum Fetched {
+            Gone,
+            Moved(String),
+            Limited { retry_after: u64 },
+        }
+        let encode = |fetched: &Fetched| Value::encoded(rmp_serde::to_vec_named(fetched).unwrap());
+        let is = |value: &Value, name: &str| -> bool {
+            let op = BuiltinOp::Variant { name: name.into() };
+            eval(&op, std::slice::from_ref(value))
+                .unwrap()
+                .take()
+                .unwrap()
+        };
+        let field = |value: Value, name: &str| {
+            eval(&BuiltinOp::Field { name: name.into() }, &[value]).unwrap()
+        };
+        let gone = encode(&Fetched::Gone);
+        assert!(is(&gone, "Gone") && !is(&gone, "Moved"));
+        let moved = encode(&Fetched::Moved("/new".into()));
+        assert!(is(&moved, "Moved"));
+        let to: String = field(moved, "Moved").take().unwrap();
+        assert_eq!(to, "/new");
+        let limited = encode(&Fetched::Limited { retry_after: 3 });
+        assert!(is(&limited, "Limited"));
+        let after: u64 = field(field(limited.clone(), "Limited"), "retry_after")
+            .take()
+            .unwrap();
+        assert_eq!(after, 3);
+        // What no arm matches fails.
+        let expect = BuiltinOp::Expect {
+            message: "no arm".into(),
+        };
+        let missed = eval(&expect, &[Value::new(false)]).unwrap_err().to_string();
+        assert_eq!(missed, "no arm");
+        assert!(eval(&expect, &[Value::new(true)]).is_ok());
+        assert!(is(&limited, "Limited") && !is(&gone, "Limited"));
+    }
+
+    #[test]
+    fn an_option_is_some_or_none_and_a_some_is_what_it_holds() {
+        let encode = |option: Option<&str>| Value::encoded(rmp_serde::to_vec(&option).unwrap());
+        let some = encode(Some("page"));
+        let none = encode(None);
+        let is_some = |value: &Value| -> bool {
+            eval(&BuiltinOp::IsSome, std::slice::from_ref(value))
+                .unwrap()
+                .take()
+                .unwrap()
+        };
+        assert!(is_some(&some) && !is_some(&none));
+        let page: String = eval(&BuiltinOp::Unwrap, &[some]).unwrap().take().unwrap();
+        assert_eq!(page, "page");
+        assert!(eval(&BuiltinOp::Unwrap, &[none]).is_err());
     }
 }

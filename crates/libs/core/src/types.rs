@@ -65,6 +65,14 @@ pub trait Describe {
         let _ = defs;
         Type::Named(type_name::<Self>().to_string())
     }
+
+    /// For an enum: the name serde gives its variant written `variant` in Rust, or, with `field`,
+    /// that variant's field written `field`. What a workflow's `match` reads; `None` if serde
+    /// writes it as Rust does.
+    fn serde_name(variant: &str, field: Option<&str>) -> Option<&'static str> {
+        let _ = (variant, field);
+        None
+    }
 }
 
 macro_rules! scalars {

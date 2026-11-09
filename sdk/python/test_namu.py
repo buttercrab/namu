@@ -29,8 +29,13 @@ class Codec(unittest.TestCase):
 class Worker(unittest.TestCase):
     def test_a_worker_process_runs_calls(self):
         module = textwrap.dedent('''
+            import enum
             from dataclasses import dataclass
             import namu
+
+            class Gone(enum.Enum):
+                not_found = 1
+                moved = 2
 
             @dataclass
             class Point:
@@ -49,6 +54,10 @@ class Worker(unittest.TestCase):
             @namu.task
             def fails(x: int) -> int:
                 raise ValueError(f"bad {x}")
+
+            @namu.task(error=Gone)
+            def page(url: str) -> str:
+                raise namu.Failed(Gone.moved, f"{url} moved")
 
             @namu.batch
             def lengths(words: list[str]) -> list[int]:
@@ -75,6 +84,9 @@ class Worker(unittest.TestCase):
             self.assertEqual(call("shift", "k1", [{"x": 1, "y": 2}, 10]), (True, {"x": 11, "y": 12}))
             self.assertEqual(call("whoami", "run/7/0/3", None), (True, "run/7/0/3"))
             self.assertEqual(call("fails", "k2", 4), (False, "ValueError: bad 4"))
+            # A task's own error goes back as a value too: an enum's member by its name.
+            ok, message, error = ask("call", "page", "k6", _msgpack.dumps("/a"))
+            self.assertEqual((ok, message, _msgpack.loads(error)), (False, "/a moved", "moved"))
             self.assertEqual(call("missing", "k3", None)[0], False)
             self.assertEqual(ask("step", []), [False, "RuntimeError: no batch session is open"])
             # From here on, the process serves a batch session.
@@ -154,6 +166,34 @@ class Signatures(unittest.TestCase):
             self.signature(source, "loose"),
             {"input": {"tuple": [{"named": ""}, page]}, "output": {"named": "Unknown"}, "defs": defs},
         )
+
+    def test_the_type_a_task_fails_with_is_read_from_its_decorator(self):
+        signature = self.signature('''
+            import enum
+            import namu
+
+            class Fetch(enum.Enum):
+                not_found = "not found"
+                limited: str = "limited"
+                retries: int  # an annotation alone is no member
+
+            @namu.task(error=Fetch)
+            def fetch(url: str) -> str:
+                ...
+
+            @namu.task
+            def plain(url: str) -> str:
+                ...
+        ''', "fetch")
+        self.assertEqual(signature["error"], {"named": "tasks.Fetch"})
+        self.assertEqual(signature["defs"]["tasks.Fetch"], {"enum": [["not_found", []], ["limited", []]]})
+        self.assertNotIn("error", self.signature('''
+            import namu
+
+            @namu.task
+            def plain(url: str) -> str:
+                ...
+        ''', "plain"))
 
     def test_a_typed_dicts_keys_that_may_be_missing_are_options(self):
         source = """

@@ -1,5 +1,5 @@
-error: only `match attempt(task(..)) { Ok(..) => .., Err(..) => .. }` is supported
- --> tests/compile-fail/07-match-without-attempt.rs:9:11
-  |
-9 |     match check(x) {
-  |           ^^^^^^^^
+error: a task's failure is matched on through an attempt: `match attempt(task(..)) { Ok(..) => .., Err(..) => .. }`
+  --> tests/compile-fail/07-match-without-attempt.rs:10:9
+   |
+10 |         Ok(v) => v,
+   |         ^^^^^

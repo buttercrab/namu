@@ -1,4 +1,11 @@
 use namu_macros::task;
+#[doc(hidden)]
+#[allow(non_camel_case_types)]
+struct batch_task {}
+impl ::namu::__macro_exports::Raises for batch_task {
+    type Error = ::std::string::String;
+    const TYPED: bool = false;
+}
 fn batch_task<G: 'static>(
     __builder: &::namu::__macro_exports::Builder<G>,
     inputs: impl ::namu::__macro_exports::IntoArg<i32>,

@@ -13,8 +13,9 @@ struct Refiner {
 impl namu_guest::Continuous for Refiner {
     type In = String;
     type Out = String;
+    type Error = String;
 
-    fn step(&mut self, admit: Vec<(u64, String)>) -> Vec<(u64, Result<String, String>)> {
+    fn step(&mut self, admit: Vec<(u64, String)>) -> Vec<(u64, Result<String, Self::Error>)> {
         for (id, word) in admit {
             let letters = word.len();
             self.active.insert(id, (word, letters));

@@ -318,6 +318,7 @@ fn task_manifest_from_config(task: &config::TaskConfig) -> TaskManifest {
         checkpoint: task.checkpoint,
         retries: task.retries,
         retry_backoff_ms: task.retry_backoff_ms,
+        retry_on: task.retry_on.clone(),
         window: task.window,
         batch_size: task.batch_size,
         max_wait_ms: task.max_wait_ms,
