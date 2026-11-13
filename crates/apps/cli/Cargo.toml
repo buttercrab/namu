@@ -30,7 +30,7 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 tar = "0.4"
 tokio = { workspace = true }
-toml = "0.8"
+toml = "1.1"
 toml_edit = "0.24"
 walkdir = "2.5"
 zstd = "0.14.3"
